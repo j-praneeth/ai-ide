@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { VscSettingsGear } from 'react-icons/vsc';
+import { VscSettingsGear, VscDeviceMobile } from 'react-icons/vsc';
 import { API_URL as API } from '../config';
 const SETTINGS_STORAGE_KEY = 'nebula_ide_settings';
 
@@ -311,10 +311,151 @@ export default function SettingsPanel({ onSettingsChange }) {
             )}
           </div>
         ))}
-        {filteredGroups.length === 0 && (
+        {filteredGroups.length === 0 && !search && null}
+        {filteredGroups.length === 0 && search && (
           <div className="search-message">No settings match your search.</div>
         )}
+
+        {/* Mobile Companion Section */}
+        {(!search || 'mobile companion qr code phone'.includes(search.toLowerCase())) && (
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+              <VscDeviceMobile size={14} style={{ color: 'var(--text-muted)' }} />
+              <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
+                Mobile Companion
+              </span>
+            </div>
+            <MobileCompanionSection />
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+function MobileCompanionSection() {
+  const [qrData, setQrData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [mobileStatus, setMobileStatus] = useState(null);
+
+  const fetchQR = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/mobile/qr`);
+      const data = await res.json();
+      setQrData(data);
+    } catch (err) {
+      setError('Could not generate QR code. Is the backend running?');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/mobile/status`);
+      const data = await res.json();
+      setMobileStatus(data);
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    fetchQR();
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 5000);
+    return () => clearInterval(interval);
+  }, [fetchQR, fetchStatus]);
+
+  return (
+    <div>
+      <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 12 }}>
+        Connect your phone to monitor IDE activity, send AI prompts, and run terminal commands remotely.
+      </div>
+
+      {/* Connection Status */}
+      {mobileStatus && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
+          padding: '8px 12px', borderRadius: 'var(--radius-md)',
+          background: mobileStatus.connected_clients > 0 ? 'rgba(74, 222, 128, 0.1)' : 'var(--bg-surface)',
+          border: `1px solid ${mobileStatus.connected_clients > 0 ? 'rgba(74, 222, 128, 0.3)' : 'var(--border)'}`,
+        }}>
+          <span style={{
+            width: 8, height: 8, borderRadius: '50%',
+            background: mobileStatus.connected_clients > 0 ? '#4ADE80' : 'var(--text-muted)',
+          }} />
+          <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)' }}>
+            {mobileStatus.connected_clients > 0
+              ? `${mobileStatus.connected_clients} device${mobileStatus.connected_clients > 1 ? 's' : ''} connected`
+              : 'No devices connected'}
+          </span>
+        </div>
+      )}
+
+      {/* QR Code */}
+      {loading && (
+        <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 'var(--font-size-sm)' }}>
+          Generating QR code...
+        </div>
+      )}
+
+      {error && (
+        <div style={{
+          padding: '8px 12px', marginBottom: 12, borderRadius: 'var(--radius-md)',
+          background: 'rgba(229, 83, 75, 0.1)', border: '1px solid rgba(229, 83, 75, 0.3)',
+          fontSize: 'var(--font-size-xs)', color: '#e5534b',
+        }}>
+          {error}
+        </div>
+      )}
+
+      {qrData && qrData.qr_image && (
+        <div style={{ textAlign: 'center', marginBottom: 12 }}>
+          <div style={{
+            display: 'inline-block', padding: 12, borderRadius: 'var(--radius-md)',
+            background: '#ffffff', border: '1px solid var(--border)',
+          }}>
+            <img
+              src={`data:image/png;base64,${qrData.qr_image}`}
+              alt="Mobile companion QR code"
+              style={{ width: 180, height: 180, imageRendering: 'pixelated' }}
+            />
+          </div>
+          <div style={{ marginTop: 8, fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
+            Scan with Nebula Companion app
+          </div>
+        </div>
+      )}
+
+      {/* Manual connection info */}
+      {qrData && qrData.connection_info && (
+        <div style={{
+          padding: '10px 12px', borderRadius: 'var(--radius-md)',
+          background: 'var(--bg-surface)', border: '1px solid var(--border)',
+          marginBottom: 12,
+        }}>
+          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 6 }}>
+            Or connect manually:
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--font-size-xs)', color: 'var(--text-primary)' }}>
+            IP: {qrData.connection_info.ip}:{qrData.connection_info.port}
+          </div>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={fetchQR}
+        disabled={loading}
+        style={{
+          ...controlStyle, cursor: loading ? 'not-allowed' : 'pointer',
+          width: '100%', textAlign: 'center', marginBottom: 8,
+        }}
+      >
+        ↻ Refresh QR Code
+      </button>
     </div>
   );
 }

@@ -8,6 +8,16 @@ from fastapi.responses import StreamingResponse
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
+def _emit_agent_event(event: dict):
+    """Emit agent activity to connected mobile clients."""
+    try:
+        from mobile_bridge import emit_sync
+        event_copy = {**event, "source": "desktop_agent"}
+        emit_sync(event_copy)
+    except Exception:
+        pass
+
 # In-memory conversation history: list of {"role": "user"|"assistant", "content": "..."}
 CONVERSATION_HISTORY: list = []
 MAX_HISTORY_MESSAGES = 50
@@ -105,6 +115,7 @@ def chat_stream(prompt: str):
             final_answer = ""
             for event in run_agent_stream(prompt, conversation_history=history_for_agent):
                 yield f"data: {json_module.dumps(event)}\n\n"
+                _emit_agent_event(event)
                 if event.get("type") == "done":
                     final_answer = event.get("answer", "")
 

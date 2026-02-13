@@ -1,0 +1,140 @@
+.scan-page {
+  background: var(--bg-primary);
+  align-items: center;
+}
+
+.scan-header {
+  text-align: center;
+  padding: 40px 20px 24px;
+}
+
+.scan-logo {
+  font-size: 56px;
+  color: var(--accent);
+  margin-bottom: 12px;
+  filter: drop-shadow(0 0 20px rgba(212, 168, 67, 0.4));
+}
+
+.scan-header h1 {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.scan-header p {
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+.scan-content {
+  flex: 1;
+  width: 100%;
+  max-width: 400px;
+  padding: 0 24px 40px;
+  overflow-y: auto;
+}
+
+.scanner-container {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  max-height: 280px;
+  background: var(--bg-secondary);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.qr-reader {
+  width: 100%;
+  height: 100%;
+}
+
+.qr-reader video {
+  object-fit: cover;
+  border-radius: var(--radius);
+}
+
+.scanner-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scanner-frame {
+  width: 120px;
+  height: 120px;
+  border: 2px dashed var(--text-muted);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scanner-icon {
+  font-size: 40px;
+  color: var(--text-muted);
+}
+
+.scan-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  padding: 12px;
+  font-size: 14px;
+  color: var(--warning);
+  margin-bottom: 16px;
+}
+
+.scan-error {
+  padding: 12px 16px;
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--error);
+  font-size: 13px;
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.scan-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.manual-section {
+  margin-bottom: 24px;
+}
+
+.manual-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.scan-instructions {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+}
+
+.scan-instructions h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--text-primary);
+}
+
+.scan-instructions ol {
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.8;
+}

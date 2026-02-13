@@ -7,6 +7,22 @@ import re
 
 router = APIRouter()
 
+# ── Mobile bridge event emission ──────────────────────────────────────
+def _emit_terminal_event(command: str, output: str, exit_code: int, cwd: str):
+    """Emit terminal activity to connected mobile clients."""
+    try:
+        from mobile_bridge import emit_sync
+        emit_sync({
+            "type": "terminal_output",
+            "source": "desktop",
+            "command": command,
+            "output": output[:500],  # Truncate for mobile
+            "exit_code": exit_code,
+            "cwd": cwd,
+        })
+    except Exception:
+        pass  # Don't break terminal if mobile bridge is unavailable
+
 # Use the actual project root (parent of backend/)
 import file_manager
 
@@ -251,6 +267,9 @@ def run_command(command: str, session: str = "default"):
                 output += f"Error: {str(e)}\n"
                 exit_code = -1
             break
+
+    # Emit to mobile companion
+    _emit_terminal_event(command.strip(), output, exit_code, cwd)
 
     return {
         "output": output,

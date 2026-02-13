@@ -43,6 +43,18 @@ backend/*.spec.bak
 *.manifest
 *.spec.tmp
 
+# Mobile companion app
+mobile/node_modules/
+mobile/dist/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/capacitor-cordova-android-plugins/build/
+mobile/android/capacitor-android/build/
+mobile/android/capacitor-*/build/
+mobile/android/local.properties
+*.apk
+
 # Misc
 *.log
 .cache/
