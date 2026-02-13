@@ -1,6 +1,8 @@
 import sys
 import os
 import argparse
+import logging
+import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +10,8 @@ from file_manager import router as file_router, set_project_root_path
 from terminal import router as terminal_router
 from ai import router as ai_router
 from mobile_bridge import router as mobile_router, set_backend_port
+
+logger = logging.getLogger("nebula.main")
 
 app = FastAPI(title="AI IDE Backend")
 
@@ -33,6 +37,20 @@ def health():
     return {"status": "healthy"}
 
 
+def _auto_connect_relay():
+    """Auto-connect to cloud relay on startup if configured."""
+    try:
+        from relay_config import RELAY_URL, RELAY_AUTO_CONNECT
+        if RELAY_URL and RELAY_AUTO_CONNECT:
+            import time
+            time.sleep(2)  # Let uvicorn start first
+            from relay_client import start_relay
+            result = start_relay()
+            logger.info("Auto-connected to relay. Room code: %s", result.get("room_code"))
+    except Exception as e:
+        logger.warning("Auto-connect to relay skipped: %s", e)
+
+
 def main():
     import uvicorn
 
@@ -49,6 +67,9 @@ def main():
 
     # Store the port for mobile bridge QR code generation
     set_backend_port(args.port)
+
+    # Auto-connect to relay in background (non-blocking)
+    threading.Thread(target=_auto_connect_relay, daemon=True).start()
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

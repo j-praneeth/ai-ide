@@ -59,6 +59,11 @@ case "$TARGET" in
         ;;
     win|windows|win32)
         echo "Building Windows .exe installer..."
+        # On macOS, we skip PyInstaller (can't cross-compile) but include backend source
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            echo "Note: Cross-building from macOS. Backend will use Python source + auto-setup."
+            echo "      For a native PyInstaller .exe, build on Windows with: scripts\\build-backend.bat"
+        fi
         npx electron-builder --win
         echo ""
         echo "✓ Windows build complete!"

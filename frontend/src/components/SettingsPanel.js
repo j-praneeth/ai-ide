@@ -334,72 +334,55 @@ export default function SettingsPanel({ onSettingsChange }) {
 }
 
 function MobileCompanionSection() {
-  const [qrData, setQrData] = useState(null);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [mobileStatus, setMobileStatus] = useState(null);
-
-  const fetchQR = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`${API}/mobile/qr`);
-      const data = await res.json();
-      setQrData(data);
-    } catch (err) {
-      setError('Could not generate QR code. Is the backend running?');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [relayConnecting, setRelayConnecting] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/mobile/status`);
-      const data = await res.json();
-      setMobileStatus(data);
+      const res = await fetch(`${API}/mobile/relay/status`);
+      setMobileStatus(await res.json());
     } catch (_) {}
   }, []);
 
   useEffect(() => {
-    fetchQR();
     fetchStatus();
     const interval = setInterval(fetchStatus, 5000);
     return () => clearInterval(interval);
-  }, [fetchQR, fetchStatus]);
+  }, [fetchStatus]);
+
+  const generateRoomCode = async () => {
+    setRelayConnecting(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/mobile/relay/connect`, { method: 'POST' });
+      const data = await res.json();
+      if (data.status === 'connected') {
+        fetchStatus();
+      } else {
+        setError(data.message || 'Failed to generate room code');
+      }
+    } catch (err) {
+      setError('Failed to connect: ' + (err.message || 'Network error'));
+    } finally {
+      setRelayConnecting(false);
+    }
+  };
+
+  const disconnectRelay = async () => {
+    try {
+      await fetch(`${API}/mobile/relay/disconnect`, { method: 'POST' });
+      fetchStatus();
+    } catch (_) {}
+  };
+
+  const isRelayConnected = mobileStatus?.connected;
 
   return (
     <div>
       <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 12 }}>
         Connect your phone to monitor IDE activity, send AI prompts, and run terminal commands remotely.
       </div>
-
-      {/* Connection Status */}
-      {mobileStatus && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
-          padding: '8px 12px', borderRadius: 'var(--radius-md)',
-          background: mobileStatus.connected_clients > 0 ? 'rgba(74, 222, 128, 0.1)' : 'var(--bg-surface)',
-          border: `1px solid ${mobileStatus.connected_clients > 0 ? 'rgba(74, 222, 128, 0.3)' : 'var(--border)'}`,
-        }}>
-          <span style={{
-            width: 8, height: 8, borderRadius: '50%',
-            background: mobileStatus.connected_clients > 0 ? '#4ADE80' : 'var(--text-muted)',
-          }} />
-          <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)' }}>
-            {mobileStatus.connected_clients > 0
-              ? `${mobileStatus.connected_clients} device${mobileStatus.connected_clients > 1 ? 's' : ''} connected`
-              : 'No devices connected'}
-          </span>
-        </div>
-      )}
-
-      {/* QR Code */}
-      {loading && (
-        <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 'var(--font-size-sm)' }}>
-          Generating QR code...
-        </div>
-      )}
 
       {error && (
         <div style={{
@@ -411,51 +394,60 @@ function MobileCompanionSection() {
         </div>
       )}
 
-      {qrData && qrData.qr_image && (
-        <div style={{ textAlign: 'center', marginBottom: 12 }}>
-          <div style={{
-            display: 'inline-block', padding: 12, borderRadius: 'var(--radius-md)',
-            background: '#ffffff', border: '1px solid var(--border)',
-          }}>
-            <img
-              src={`data:image/png;base64,${qrData.qr_image}`}
-              alt="Mobile companion QR code"
-              style={{ width: 180, height: 180, imageRendering: 'pixelated' }}
-            />
-          </div>
-          <div style={{ marginTop: 8, fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
-            Scan with Nebula Companion app
-          </div>
+      <div style={{
+        padding: '14px', borderRadius: 'var(--radius-md)',
+        background: 'var(--bg-surface)',
+        border: `1px solid ${isRelayConnected ? 'rgba(74, 222, 128, 0.3)' : 'var(--border)'}`,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
+            Mobile Companion
+          </span>
+          {isRelayConnected && (
+            <span style={{ fontSize: 'var(--font-size-xs)', color: '#4ADE80', fontWeight: 500 }}>● Active</span>
+          )}
         </div>
-      )}
 
-      {/* Manual connection info */}
-      {qrData && qrData.connection_info && (
-        <div style={{
-          padding: '10px 12px', borderRadius: 'var(--radius-md)',
-          background: 'var(--bg-surface)', border: '1px solid var(--border)',
-          marginBottom: 12,
-        }}>
-          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 6 }}>
-            Or connect manually:
+        {isRelayConnected ? (
+          <div>
+            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
+              Enter this code in the Nebula Companion app on your phone:
+            </div>
+            <div style={{
+              padding: '20px 16px', borderRadius: 'var(--radius-md)', background: 'var(--bg-primary)',
+              textAlign: 'center', marginBottom: 12,
+            }}>
+              <div style={{
+                fontFamily: 'var(--font-mono)', fontSize: 36, fontWeight: 700,
+                color: 'var(--accent)', letterSpacing: 10,
+              }}>
+                {mobileStatus.room_code}
+              </div>
+            </div>
+            <button type="button" onClick={disconnectRelay}
+              style={{ ...controlStyle, width: '100%', textAlign: 'center', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 'var(--font-size-xs)' }}
+            >
+              Disconnect
+            </button>
           </div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--font-size-xs)', color: 'var(--text-primary)' }}>
-            IP: {qrData.connection_info.ip}:{qrData.connection_info.port}
+        ) : (
+          <div>
+            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 12 }}>
+              Generate a room code to connect your phone. Works from anywhere — no need to be on the same WiFi.
+            </div>
+            <button type="button" onClick={generateRoomCode} disabled={relayConnecting}
+              style={{
+                ...controlStyle, width: '100%', textAlign: 'center',
+                cursor: relayConnecting ? 'not-allowed' : 'pointer',
+                background: 'var(--accent)', color: '#0D0D12', fontWeight: 600, border: 'none',
+                padding: '10px 16px',
+              }}
+            >
+              {relayConnecting ? 'Generating...' : 'Generate Room Code'}
+            </button>
           </div>
-        </div>
-      )}
-
-      <button
-        type="button"
-        onClick={fetchQR}
-        disabled={loading}
-        style={{
-          ...controlStyle, cursor: loading ? 'not-allowed' : 'pointer',
-          width: '100%', textAlign: 'center', marginBottom: 8,
-        }}
-      >
-        ↻ Refresh QR Code
-      </button>
+        )}
+      </div>
     </div>
   );
 }

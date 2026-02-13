@@ -46,6 +46,22 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "backend/",
+        "to": "backend-src/",
+        "filter": [
+          "**/*.py",
+          "requirements.txt",
+          "relay_config.json",
+          "agent/**/*.py",
+          "!__pycache__/**",
+          "!*.pyc",
+          "!build/**",
+          "!dist/**",
+          "!venv/**",
+          "!*.spec"
+        ]
       }
     ],
     "mac": {

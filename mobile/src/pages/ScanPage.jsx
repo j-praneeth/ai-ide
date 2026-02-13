@@ -1,62 +1,29 @@
-import { useState, useEffect, useRef } from 'react';
-import { Html5Qrcode } from 'html5-qrcode';
+import { useState } from 'react';
 import nebulaWS from '../services/websocket';
+import { RELAY_URL } from '../config';
 import './ScanPage.css';
 
 export default function ScanPage({ onConnected }) {
-  const [scanning, setScanning] = useState(false);
   const [error, setError] = useState(null);
   const [status, setStatus] = useState('');
-  const [manualInput, setManualInput] = useState('');
-  const [showManual, setShowManual] = useState(false);
-  const scannerRef = useRef(null);
-  const html5QrRef = useRef(null);
+  const [roomCode, setRoomCode] = useState('');
 
-  const startScanner = async () => {
+  const connectRelay = () => {
+    const code = roomCode.trim().toUpperCase();
+    if (!code) {
+      setError('Please enter the room code shown on your desktop IDE.');
+      return;
+    }
+    if (!RELAY_URL) {
+      setError('Remote access is not configured.');
+      return;
+    }
+
+    setStatus('Connecting...');
     setError(null);
-    setStatus('Starting camera...');
 
     try {
-      const html5Qr = new Html5Qrcode('qr-reader');
-      html5QrRef.current = html5Qr;
-
-      await html5Qr.start(
-        { facingMode: 'environment' },
-        {
-          fps: 10,
-          qrbox: { width: 250, height: 250 },
-          aspectRatio: 1,
-        },
-        (decodedText) => {
-          // Success - try to connect
-          handleQRData(decodedText);
-          html5Qr.stop().catch(() => {});
-          setScanning(false);
-        },
-        () => {} // Ignore scan failures
-      );
-      setScanning(true);
-      setStatus('Point camera at QR code on your desktop IDE');
-    } catch (err) {
-      setError('Camera access denied. Please allow camera permissions or use manual input.');
-      setStatus('');
-      setShowManual(true);
-    }
-  };
-
-  const stopScanner = () => {
-    if (html5QrRef.current) {
-      html5QrRef.current.stop().catch(() => {});
-      html5QrRef.current = null;
-    }
-    setScanning(false);
-    setStatus('');
-  };
-
-  const handleQRData = (data) => {
-    setStatus('Connecting to IDE...');
-    try {
-      nebulaWS.connect(data);
+      nebulaWS.connectRelay(RELAY_URL, code);
 
       const unsub = nebulaWS.on('connection', ({ connected }) => {
         if (connected) {
@@ -66,53 +33,18 @@ export default function ScanPage({ onConnected }) {
         }
       });
 
-      // Timeout if connection doesn't establish
       setTimeout(() => {
         if (!nebulaWS.connected) {
-          setError('Connection timed out. Make sure you are on the same WiFi network as your computer.');
+          setError('Connection timed out. Check the room code and try again.');
           setStatus('');
           unsub();
         }
-      }, 8000);
+      }, 10000);
     } catch (err) {
-      setError('Invalid QR code. Please scan the code shown in your Nebula IDE.');
+      setError(err.message || 'Connection failed');
       setStatus('');
     }
   };
-
-  const handleManualConnect = () => {
-    if (!manualInput.trim()) return;
-    // Try to build connection info from IP:Port
-    const parts = manualInput.trim().split(':');
-    let ip, port;
-    if (parts.length === 2) {
-      ip = parts[0];
-      port = parts[1];
-    } else {
-      ip = manualInput.trim();
-      port = '8000';
-    }
-
-    // Need to get the token from the backend first
-    setStatus('Fetching connection token...');
-    fetch(`http://${ip}:${port}/mobile/qr`)
-      .then(r => r.json())
-      .then(data => {
-        handleQRData(JSON.stringify(data.connection_info));
-      })
-      .catch(() => {
-        setError('Could not reach IDE at that address. Check IP and port.');
-        setStatus('');
-      });
-  };
-
-  useEffect(() => {
-    return () => {
-      if (html5QrRef.current) {
-        html5QrRef.current.stop().catch(() => {});
-      }
-    };
-  }, []);
 
   return (
     <div className="page scan-page">
@@ -123,18 +55,6 @@ export default function ScanPage({ onConnected }) {
       </div>
 
       <div className="scan-content">
-        {/* QR Scanner Area */}
-        <div className="scanner-container">
-          <div id="qr-reader" ref={scannerRef} className="qr-reader" />
-          {!scanning && !status && (
-            <div className="scanner-overlay">
-              <div className="scanner-frame">
-                <span className="scanner-icon">⊞</span>
-              </div>
-            </div>
-          )}
-        </div>
-
         {status && (
           <div className="scan-status fade-in">
             <span className="dot dot-yellow dot-pulse" />
@@ -143,61 +63,43 @@ export default function ScanPage({ onConnected }) {
         )}
 
         {error && (
-          <div className="scan-error fade-in">
-            {error}
-          </div>
+          <div className="scan-error fade-in">{error}</div>
         )}
 
-        {/* Actions */}
-        <div className="scan-actions">
-          {!scanning ? (
-            <button className="btn btn-primary btn-full" onClick={startScanner}>
-              Scan QR Code
-            </button>
-          ) : (
-            <button className="btn btn-secondary btn-full" onClick={stopScanner}>
-              Stop Scanner
-            </button>
-          )}
-
-          <button
-            className="btn btn-secondary btn-full"
-            onClick={() => setShowManual(!showManual)}
-          >
-            {showManual ? 'Hide Manual Input' : 'Enter IP Manually'}
-          </button>
-        </div>
-
-        {/* Manual Input */}
-        {showManual && (
-          <div className="manual-section fade-in">
-            <p className="manual-hint">
-              Enter your computer's local IP address (shown in the IDE)
+        <div className="tab-content fade-in">
+          <div className="card">
+            <div className="card-title">Enter Room Code</div>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>
+              Enter the 6-character code shown on your desktop IDE.
             </p>
-            <div className="input-group">
-              <input
-                className="input"
-                type="text"
-                placeholder="192.168.1.100:8000"
-                value={manualInput}
-                onChange={e => setManualInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleManualConnect()}
-              />
-              <button className="btn btn-primary" onClick={handleManualConnect}>
-                Connect
-              </button>
-            </div>
-          </div>
-        )}
 
-        <div className="scan-instructions">
-          <h3>How to connect:</h3>
-          <ol>
-            <li>Open Nebula IDE on your computer</li>
-            <li>Both devices must be on the same WiFi</li>
-            <li>Go to Settings and find "Mobile Companion"</li>
-            <li>Scan the QR code or enter the IP address</li>
-          </ol>
+            <input
+              className="input room-code-input"
+              type="text"
+              placeholder="ABC123"
+              value={roomCode}
+              onChange={e => setRoomCode(e.target.value.toUpperCase())}
+              onKeyDown={e => e.key === 'Enter' && connectRelay()}
+              maxLength={6}
+              autoCapitalize="characters"
+              autoComplete="off"
+              style={{ marginBottom: 16, letterSpacing: 6, textAlign: 'center', fontSize: 28, fontWeight: 700 }}
+            />
+
+            <button className="btn btn-primary btn-full" onClick={connectRelay}>
+              Connect
+            </button>
+          </div>
+
+          <div className="scan-instructions">
+            <h3>How to get a room code:</h3>
+            <ol>
+              <li>Open Nebula IDE on your desktop</li>
+              <li>Go to <strong>Settings → Mobile Companion</strong></li>
+              <li>Click <strong>"Generate Room Code"</strong></li>
+              <li>Enter the code above</li>
+            </ol>
+          </div>
         </div>
       </div>
     </div>

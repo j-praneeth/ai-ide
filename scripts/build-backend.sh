@@ -58,6 +58,7 @@ $PYTHON -m PyInstaller \
     --workpath "$BACKEND_DIR/build" \
     --specpath "$BACKEND_DIR" \
     --add-data "agent:agent" \
+    --add-data "relay_config.json:." \
     --hidden-import uvicorn \
     --hidden-import uvicorn.logging \
     --hidden-import uvicorn.loops.auto \
@@ -80,6 +81,11 @@ $PYTHON -m PyInstaller \
     --hidden-import agent.tools \
     --hidden-import agent.indexer \
     --hidden-import agent.diff_engine \
+    --hidden-import mobile_bridge \
+    --hidden-import relay_client \
+    --hidden-import relay_config \
+    --hidden-import websockets \
+    --hidden-import qrcode \
     --exclude-module torch \
     --exclude-module transformers \
     --exclude-module sentence_transformers \

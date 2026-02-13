@@ -10,9 +10,15 @@ __pycache__/
 venv/
 env/
 .env
+.env.*
+!.env.example
 *.egg-info/
 dist/
 build/
+
+# Relay config (contains secrets — never commit)
+backend/relay_config.json
+mobile/.env
 
 # IDE
 .idea/

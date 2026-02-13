@@ -41,6 +41,7 @@ function eventColor(type) {
 export default function DashboardPage() {
   const [events, setEvents] = useState([]);
   const [workspace, setWorkspace] = useState('');
+  const [desktopOnline, setDesktopOnline] = useState(nebulaWS.desktopOnline);
   const feedRef = useRef(null);
 
   useEffect(() => {
@@ -56,6 +57,9 @@ export default function DashboardPage() {
     const unsub = nebulaWS.on('message', (data) => {
       if (data.type === 'ide_status') {
         setWorkspace(data.workspace_name || '');
+      }
+      if (data.type === 'desktop_status') {
+        setDesktopOnline(data.online);
       }
       setEvents(prev => [data, ...prev].slice(0, 100));
     });
@@ -75,6 +79,16 @@ export default function DashboardPage() {
       <div className="page-header">
         <h1>Live Activity</h1>
         {workspace && <p>Workspace: {workspace}</p>}
+        {nebulaWS.mode === 'relay' && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6, marginTop: 6,
+            fontSize: 12, color: desktopOnline ? 'var(--success)' : 'var(--text-muted)',
+          }}>
+            <span className={`dot ${desktopOnline ? 'dot-green dot-pulse' : 'dot-red'}`} />
+            Desktop {desktopOnline ? 'online' : 'offline'}
+            {nebulaWS.roomCode && <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>Room: {nebulaWS.roomCode}</span>}
+          </div>
+        )}
       </div>
 
       <div className="page-content" ref={feedRef}>

@@ -1,0 +1,5 @@
+{
+  "relay_url": "https://your-relay.up.railway.app",
+  "relay_secret": "your-secret-key-here",
+  "auto_connect": true
+}

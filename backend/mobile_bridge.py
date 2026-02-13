@@ -90,12 +90,19 @@ def emit_sync(event: dict):
     if len(_event_history) > MAX_HISTORY:
         _event_history.pop(0)
 
-    # Schedule the async broadcast
+    # Schedule the async broadcast (local WebSocket clients)
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(_broadcast_to_clients(event))
     except RuntimeError:
         # No running loop — happens during startup; skip
+        pass
+
+    # Also push to cloud relay if connected
+    try:
+        from relay_client import relay_emit
+        relay_emit(event)
+    except Exception:
         pass
 
 
@@ -169,12 +176,68 @@ def refresh_token():
 
 @router.get("/status")
 def mobile_status():
-    """Return the number of connected mobile clients."""
+    """Return the number of connected mobile clients and relay status."""
+    relay_info = {"connected": False, "room_code": None, "relay_url": None}
+    try:
+        from relay_client import get_relay_info
+        relay_info = get_relay_info()
+    except Exception:
+        pass
+
     return {
         "connected_clients": len(_clients),
         "local_ip": get_local_ip(),
         "port": _get_backend_port(),
+        "relay": relay_info,
     }
+
+
+# ── Cloud Relay Endpoints ─────────────────────────────────────────────
+
+@router.post("/relay/connect")
+def relay_connect():
+    """Generate a room code by connecting to the cloud relay.
+    Uses pre-configured admin credentials — users never see the relay URL or API key."""
+    try:
+        from relay_client import start_relay, is_relay_connected, get_relay_info
+        if is_relay_connected():
+            info = get_relay_info()
+            return {"status": "connected", "room_code": info.get("room_code")}
+        result = start_relay()  # Uses relay_config.py internally
+        return {"status": "connected", **result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/relay/disconnect")
+def relay_disconnect():
+    """Disconnect from the cloud relay server."""
+    try:
+        from relay_client import stop_relay
+        stop_relay()
+        return {"status": "disconnected"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/relay/status")
+def relay_status():
+    """Get current relay connection status (room code, connected state)."""
+    try:
+        from relay_client import get_relay_info
+        return get_relay_info()
+    except Exception:
+        return {"connected": False, "room_code": None}
+
+
+@router.get("/relay/configured")
+def relay_configured():
+    """Check if the relay has been configured by the admin."""
+    try:
+        from relay_config import RELAY_URL
+        return {"configured": bool(RELAY_URL)}
+    except Exception:
+        return {"configured": False}
 
 
 # ── WebSocket Endpoint ────────────────────────────────────────────────
