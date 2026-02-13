@@ -415,8 +415,8 @@ function MobileCompanionSection() {
             Mobile Companion
           </span>
           {isRelayConnected && (
-            <span style={{ fontSize: 'var(--font-size-xs)', color: mobileStatus?.connected ? '#4ADE80' : '#f0c674', fontWeight: 500 }}>
-              {mobileStatus?.connected ? '● Active' : '● Connecting...'}
+            <span style={{ fontSize: 'var(--font-size-xs)', color: mobileStatus?.connected ? '#4ADE80' : (mobileStatus?.error ? '#e5534b' : '#f0c674'), fontWeight: 500 }}>
+              {mobileStatus?.connected ? '● Active' : (mobileStatus?.error ? '● Error' : '● Connecting...')}
             </span>
           )}
         </div>
@@ -437,6 +437,15 @@ function MobileCompanionSection() {
                 {mobileStatus?.room_code}
               </div>
             </div>
+            {mobileStatus?.error && !mobileStatus?.connected && (
+              <div style={{
+                padding: '8px 12px', marginBottom: 12, borderRadius: 'var(--radius-md)',
+                background: 'rgba(229, 83, 75, 0.08)', border: '1px solid rgba(229, 83, 75, 0.2)',
+                fontSize: 'var(--font-size-xs)', color: '#e5534b', wordBreak: 'break-word',
+              }}>
+                Relay connection error: {mobileStatus.error}
+              </div>
+            )}
             {(mobileStatus?.mobile_count > 0) && (
               <div style={{
                 padding: '8px 12px', marginBottom: 12, borderRadius: 'var(--radius-md)',

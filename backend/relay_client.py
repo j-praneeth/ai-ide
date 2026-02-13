@@ -30,6 +30,7 @@ _room_secret: Optional[str] = None
 _ws = None
 _connected = False
 _mobile_count = 0
+_last_error: Optional[str] = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _thread: Optional[threading.Thread] = None
 _should_run = False
@@ -45,6 +46,7 @@ def get_relay_info() -> dict:
         "room_code": _room_code,
         "connected": _connected,
         "mobile_count": _mobile_count,
+        "error": _last_error,
     }
 
 
@@ -76,12 +78,45 @@ def relay_emit(event: dict):
 
 # ── Relay Connection ──────────────────────────────────────────────────
 
+def _get_ssl_context():
+    """Create an SSL context for WSS connections, handling PyInstaller bundles."""
+    import ssl
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        logger.info("SSL: using certifi CA bundle")
+        return ctx
+    except ImportError:
+        pass
+    try:
+        ctx = ssl.create_default_context()
+        logger.info("SSL: using system CA bundle")
+        return ctx
+    except Exception:
+        pass
+    # Last resort: don't verify (not ideal, but better than failing)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    logger.warning("SSL: using unverified context (no CA bundle found)")
+    return ctx
+
+
 async def _connect_and_run():
     """Main async loop: connect to relay, send events, receive commands."""
-    global _ws, _connected, _event_queue
-    import websockets
+    global _ws, _connected, _event_queue, _last_error
+
+    try:
+        import websockets
+    except ImportError as e:
+        _last_error = f"websockets library not available: {e}"
+        logger.error(_last_error)
+        return
 
     _event_queue = asyncio.Queue(maxsize=500)
+
+    # Get SSL context once
+    ssl_ctx = _get_ssl_context()
 
     reconnect_delay = 2
 
@@ -91,17 +126,18 @@ async def _connect_and_run():
         ws_url = f"{ws_url}/ws/desktop?room={_room_code}&secret={_room_secret}"
 
         try:
-            logger.info("Connecting to relay: room=%s", _room_code)
+            logger.info("Connecting to relay: room=%s url=%s", _room_code, ws_url[:80])
             async with websockets.connect(
                 ws_url,
+                ssl=ssl_ctx,
                 ping_interval=20,
                 ping_timeout=10,
                 close_timeout=5,
                 open_timeout=15,
             ) as ws_conn:
-                # Check if server sent an error before we consider ourselves connected
                 _ws = ws_conn
                 _connected = True
+                _last_error = None
                 reconnect_delay = 2
                 logger.info("Connected to relay (room: %s)", _room_code)
 
@@ -117,7 +153,8 @@ async def _connect_and_run():
                     task.cancel()
 
         except Exception as e:
-            logger.warning("Relay connection error: %s", e)
+            _last_error = str(e)
+            logger.warning("Relay connection error: %s (type: %s)", e, type(e).__name__)
         finally:
             _ws = None
             _connected = False
@@ -376,10 +413,14 @@ def start_relay(relay_url: str = "", api_key: str = ""):
     _should_run = True
 
     def _run_loop():
-        global _loop
-        _loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_loop)
-        _loop.run_until_complete(_connect_and_run())
+        global _loop, _last_error
+        try:
+            _loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_loop)
+            _loop.run_until_complete(_connect_and_run())
+        except Exception as e:
+            _last_error = f"Relay thread crashed: {e}"
+            logger.exception("Relay background thread crashed: %s", e)
 
     _thread = threading.Thread(target=_run_loop, daemon=True, name="relay-client")
     _thread.start()

@@ -3,6 +3,7 @@ uvicorn>=0.24.0
 python-multipart>=0.0.6
 requests>=2.31.0
 websockets>=12.0
+certifi>=2023.0
 qrcode[pil]>=7.4.2
 # Optional: for semantic code search (AI features)
 # sentence-transformers>=2.2.2

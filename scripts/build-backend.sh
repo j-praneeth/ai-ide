@@ -85,6 +85,11 @@ $PYTHON -m PyInstaller \
     --hidden-import relay_client \
     --hidden-import relay_config \
     --hidden-import websockets \
+    --hidden-import websockets.asyncio \
+    --hidden-import websockets.asyncio.client \
+    --hidden-import websockets.legacy \
+    --hidden-import websockets.legacy.client \
+    --hidden-import certifi \
     --hidden-import qrcode \
     --exclude-module torch \
     --exclude-module transformers \
