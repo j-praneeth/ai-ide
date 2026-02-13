@@ -17,8 +17,7 @@ import {
   VscDiscard,
 } from 'react-icons/vsc';
 import axios from 'axios';
-
-const API = 'http://127.0.0.1:8000';
+import { API_URL as API } from '../config';
 
 async function runCommand(command) {
   const res = await axios.post(`${API}/terminal/run`, null, {
@@ -132,6 +131,7 @@ function DiffViewer({ path, isStaged, onClose }) {
 
 export default function SourceControlPanel({ onOpenFile }) {
   const [branch, setBranch] = useState('');
+  const [repoName, setRepoName] = useState('');
   const [statusOutput, setStatusOutput] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -143,22 +143,31 @@ export default function SourceControlPanel({ onOpenFile }) {
   const fetchStatus = useCallback(async () => {
     setError(null);
     try {
-      const [statusRes, branchRes] = await Promise.all([
+      const [statusRes, branchRes, repoRootRes] = await Promise.all([
         runCommand('git status --porcelain -uall'),
         runCommand('git branch --show-current'),
+        runCommand('git rev-parse --show-toplevel'),
       ]);
       if (statusRes.exit_code !== 0) {
         setStatusOutput(null);
         setError(statusRes.output || 'Not a git repository');
         setBranch('');
+        setRepoName('');
         return;
       }
       setStatusOutput(statusRes.output);
       setBranch((branchRes.output || '').trim());
+      // Extract folder name from the git root path
+      const rootPath = (repoRootRes.output || '').trim();
+      if (rootPath) {
+        const parts = rootPath.replace(/\\/g, '/').split('/');
+        setRepoName(parts[parts.length - 1] || '');
+      }
     } catch (err) {
       setStatusOutput(null);
       setError(err.message || 'Not a git repository');
       setBranch('');
+      setRepoName('');
     } finally {
       setLoading(false);
     }
@@ -273,7 +282,7 @@ export default function SourceControlPanel({ onOpenFile }) {
           {/* Repository row */}
           <div className="scm-repo-row">
             <VscGitMerge size={14} className="scm-repo-icon" />
-            <span className="scm-repo-name">ai-ide</span>
+            <span className="scm-repo-name">{repoName || 'Repository'}</span>
             <span className="scm-branch-name">{branch || 'HEAD'}</span>
             <div className="scm-repo-actions">
               <button className="scm-icon-btn" title="Sync Changes" onClick={handleRefresh}>

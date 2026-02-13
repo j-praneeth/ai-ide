@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import axios from 'axios';
 import './App.css';
+import { API_URL as API } from './config';
 
 // Components
 import ActivityBar from './components/ActivityBar';
@@ -16,8 +17,6 @@ import ChatPanel from './components/ChatPanel';
 import StatusBar from './components/StatusBar';
 import CommandPalette from './components/CommandPalette';
 import OpenFolderDialog from './components/OpenFolderDialog';
-
-const API = 'http://127.0.0.1:8000';
 
 // Language detection by file extension
 function getLanguage(filename) {

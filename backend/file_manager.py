@@ -10,6 +10,14 @@ _BACKEND_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = _BACKEND_DIR.parent  # /Users/.../ai-ide/
 
 
+def set_project_root_path(path_str):
+    """Set the project root from an external source (e.g. CLI args, Electron)."""
+    global PROJECT_ROOT
+    target = Path(path_str).resolve()
+    if target.exists() and target.is_dir():
+        PROJECT_ROOT = target
+
+
 @router.get("/workspace")
 def get_workspace():
     """Return the current project root path."""

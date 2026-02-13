@@ -136,6 +136,7 @@ def read_file(input_data: Dict[str, Any]) -> str:
 # 3. run_command (hardened)
 # ---------------------------
 def run_command(input_data: Dict[str, Any]) -> str:
+    import platform as _platform
     command = input_data.get("command")
     if not command:
         return "Error: command is required."
@@ -151,19 +152,33 @@ def run_command(input_data: Dict[str, Any]) -> str:
         "pip install",
         "brew install",
         "sudo",
+        "format c:",
+        "del /s /q c:",
+        "rd /s /q c:",
     ]
-    if any(b in command for b in blocked_keywords):
+    cmd_lower = command.lower()
+    if any(b in cmd_lower for b in blocked_keywords):
         return "Blocked: Dangerous or global installation command not allowed."
 
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(get_project_root()),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        is_windows = _platform.system() == "Windows"
+        if is_windows:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", command],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(get_project_root()),
+            )
+        else:
+            result = subprocess.run(
+                command,
+                shell=True,
+                cwd=str(get_project_root()),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
         return (result.stdout or "") + (result.stderr or "")
     except subprocess.TimeoutExpired:
         return "Error: Command timed out after 30s."

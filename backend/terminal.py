@@ -10,11 +10,14 @@ router = APIRouter()
 # Use the actual project root (parent of backend/)
 import file_manager
 
+# Detect platform
+IS_WINDOWS = platform.system() == "Windows"
+
 # Per-session cwd tracking (key = session id string, value = cwd path string)
 _session_cwds: dict = {}
 
-# Blocked dangerous commands
-BLOCKED_PATTERNS = [
+# Blocked dangerous commands (cross-platform)
+BLOCKED_PATTERNS_UNIX = [
     "rm -rf /",
     "rm -rf ~",
     "shutdown",
@@ -26,6 +29,18 @@ BLOCKED_PATTERNS = [
     "sudo rm",
     "chmod -R 777 /",
 ]
+
+BLOCKED_PATTERNS_WINDOWS = [
+    "format c:",
+    "format d:",
+    "del /s /q c:\\",
+    "rd /s /q c:\\",
+    "shutdown",
+    "restart",
+    "rmdir /s /q c:\\",
+]
+
+BLOCKED_PATTERNS = BLOCKED_PATTERNS_WINDOWS if IS_WINDOWS else BLOCKED_PATTERNS_UNIX
 
 
 def _get_hostname():
@@ -62,6 +77,22 @@ def _get_short_dir(full_path, project_root):
         return os.path.basename(full_path)
 
 
+def _get_prompt_char():
+    """Get the prompt character based on platform."""
+    if IS_WINDOWS:
+        return ">"
+    return "%"
+
+
+def _get_shell_name():
+    """Get the default shell name for display."""
+    if IS_WINDOWS:
+        return "powershell"
+    # Try to detect the shell
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    return os.path.basename(shell)
+
+
 def _extract_cd(command):
     """Extract cd target from a command like 'cd foo', 'cd..', 'cd foo && ls'.
     Returns (cd_target, remaining_command) or (None, command) if no cd."""
@@ -81,6 +112,21 @@ def _extract_cd(command):
         elif rest:
             return None, command
         return target, rest if rest else None
+
+    # Windows-style drive navigation: 'cd C:\path' or 'cd D:\'
+    if IS_WINDOWS:
+        m_win = re.match(r'^cd\s+([A-Za-z]:\\[^\s;&|]*)\s*(.*)', stripped)
+        if m_win:
+            target = m_win.group(1)
+            rest = m_win.group(2).strip()
+            if rest.startswith('&&'):
+                rest = rest[2:].strip()
+            elif rest.startswith('&'):
+                rest = rest[1:].strip()
+            elif rest:
+                return None, command
+            return target, rest if rest else None
+
     # Match 'cd <path>' possibly followed by && or ; 
     m = re.match(r'^cd\s+("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^\s;&|]+)\s*(.*)', stripped)
     if m:
@@ -91,6 +137,8 @@ def _extract_cd(command):
             rest = rest[2:].strip()
         elif rest.startswith(';'):
             rest = rest[1:].strip()
+        elif IS_WINDOWS and rest.startswith('&'):
+            rest = rest[1:].strip()
         elif rest:
             # Something unexpected, treat whole thing as command
             return None, command
@@ -98,12 +146,21 @@ def _extract_cd(command):
     return None, command
 
 
+def _build_env():
+    """Build environment variables for subprocess, platform-aware."""
+    env = {**os.environ}
+    if not IS_WINDOWS:
+        env["TERM"] = "xterm-256color"
+    return env
+
+
 @router.post("/run")
 def run_command(command: str, session: str = "default"):
     """Run a terminal command with persistent cwd tracking per session."""
     # Security: block dangerous commands
+    cmd_lower = command.lower()
     for pattern in BLOCKED_PATTERNS:
-        if pattern in command:
+        if pattern.lower() in cmd_lower:
             return {"error": "Blocked: dangerous command pattern detected"}
 
     project_root = str(file_manager.PROJECT_ROOT)
@@ -119,10 +176,17 @@ def run_command(command: str, session: str = "default"):
     remaining = command.strip()
 
     # Handle shell builtins that need special treatment
-    if remaining == 'pwd':
+    if remaining == 'pwd' or (IS_WINDOWS and remaining.lower() == 'cd'):
         return {"output": cwd + "\n", "exit_code": 0, "cwd": cwd}
     if remaining.startswith('export '):
         # export commands are session-only; silently accept
+        return {"output": "", "exit_code": 0, "cwd": cwd}
+    # Windows: handle 'set' for environment variables
+    if IS_WINDOWS and remaining.lower().startswith('set '):
+        return {"output": "", "exit_code": 0, "cwd": cwd}
+
+    # Handle 'clear' / 'cls' commands
+    if remaining in ('clear', 'cls'):
         return {"output": "", "exit_code": 0, "cwd": cwd}
 
     # Process cd commands to track directory changes
@@ -134,6 +198,9 @@ def run_command(command: str, session: str = "default"):
                 # cd - is not tracked, just note it
                 pass
             elif cd_target.startswith('/'):
+                new_cwd = cd_target
+            elif IS_WINDOWS and len(cd_target) >= 2 and cd_target[1] == ':':
+                # Windows absolute path like C:\Users
                 new_cwd = cd_target
             elif cd_target.startswith('~'):
                 new_cwd = os.path.expanduser(cd_target)
@@ -153,15 +220,26 @@ def run_command(command: str, session: str = "default"):
         else:
             # Not a cd command, run it
             try:
-                result = subprocess.run(
-                    remaining,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    cwd=cwd,
-                    env={**os.environ, "TERM": "xterm-256color"},
-                )
+                if IS_WINDOWS:
+                    # Use PowerShell on Windows for better compatibility
+                    result = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command", remaining],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        cwd=cwd,
+                        env=_build_env(),
+                    )
+                else:
+                    result = subprocess.run(
+                        remaining,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        cwd=cwd,
+                        env=_build_env(),
+                    )
                 output += result.stdout or ""
                 if result.stderr:
                     output += result.stderr
@@ -196,4 +274,7 @@ def get_terminal_info(session: str = "default"):
         "cwd": cwd,
         "short_cwd": _get_short_dir(cwd, project_root),
         "project_root": project_root,
+        "shell": _get_shell_name(),
+        "prompt_char": _get_prompt_char(),
+        "platform": platform.system().lower(),
     }

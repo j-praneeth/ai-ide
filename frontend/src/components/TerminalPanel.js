@@ -9,8 +9,7 @@ import {
   VscClose,
 } from 'react-icons/vsc';
 import axios from 'axios';
-
-const API = 'http://127.0.0.1:8000';
+import { API_URL as API } from '../config';
 
 const TERM_THEME = {
   background: '#08090d',
@@ -51,7 +50,7 @@ function initTerminal(container, sessionId, onOutput) {
   const term = new Terminal(TERM_OPTIONS);
   const fit = new FitAddon();
   const inputBuffer = { current: '' };
-  const promptInfo = { current: { username: '', hostname: '', short_cwd: '' } };
+  const promptInfo = { current: { username: '', hostname: '', short_cwd: '', prompt_char: '%', platform: '' } };
 
   // Fetch prompt info from backend
   const fetchPrompt = async () => {
@@ -61,14 +60,16 @@ function initTerminal(container, sessionId, onOutput) {
         username: res.data.username || 'user',
         hostname: res.data.hostname || 'localhost',
         short_cwd: res.data.short_cwd || '~',
+        prompt_char: res.data.prompt_char || '%',
+        platform: res.data.platform || '',
       };
     } catch (_) {}
   };
 
   const writePrompt = () => {
-    const { username, hostname, short_cwd } = promptInfo.current;
-    // VS Code / macOS style: user@host dir %
-    term.write(`\x1b[1;32m${username}@${hostname}\x1b[0m \x1b[1;34m${short_cwd}\x1b[0m \x1b[1;33m%\x1b[0m `);
+    const { username, hostname, short_cwd, prompt_char } = promptInfo.current;
+    // Cross-platform prompt: user@host dir % (or > on Windows)
+    term.write(`\x1b[1;32m${username}@${hostname}\x1b[0m \x1b[1;34m${short_cwd}\x1b[0m \x1b[1;33m${prompt_char}\x1b[0m `);
   };
 
   const executeCommand = async (command) => {
@@ -135,7 +136,9 @@ function initTerminal(container, sessionId, onOutput) {
 }
 
 export default function TerminalPanel({ visible, onClose, onResize }) {
-  const [terminals, setTerminals] = useState([{ id: 1, name: 'zsh' }]);
+  // Detect shell name from platform
+  const shellName = (window.electronAPI?.isElectron && navigator.platform?.startsWith('Win')) ? 'powershell' : 'zsh';
+  const [terminals, setTerminals] = useState([{ id: 1, name: shellName }]);
   const [activeTermId, setActiveTermId] = useState(1);
   const [viewTab, setViewTab] = useState('terminals');
   const [splitMode, setSplitMode] = useState(false);
@@ -196,19 +199,19 @@ export default function TerminalPanel({ visible, onClose, onResize }) {
 
   const addTerminal = useCallback(() => {
     const id = nextId.current++;
-    setTerminals(prev => [...prev, { id, name: `zsh ${id}` }]);
+    setTerminals(prev => [...prev, { id, name: `${shellName} ${id}` }]);
     setActiveTermId(id);
     setViewTab('terminals');
     setSplitMode(false);
-  }, []);
+  }, [shellName]);
 
   const splitTerminal = useCallback(() => {
     const id = nextId.current++;
-    setTerminals(prev => [...prev, { id, name: `zsh ${id}` }]);
+    setTerminals(prev => [...prev, { id, name: `${shellName} ${id}` }]);
     setActiveTermId(id);
     setViewTab('terminals');
     setSplitMode(true);
-  }, []);
+  }, [shellName]);
 
   const closeTerminal = useCallback((id, e) => {
     if (e) e.stopPropagation();
@@ -225,7 +228,7 @@ export default function TerminalPanel({ visible, onClose, onResize }) {
         const newId = nextId.current++;
         setActiveTermId(newId);
         setSplitMode(false);
-        return [{ id: newId, name: 'zsh' }];
+        return [{ id: newId, name: shellName }];
       }
       setActiveTermId(curr => {
         if (curr === id) {
@@ -237,7 +240,7 @@ export default function TerminalPanel({ visible, onClose, onResize }) {
       if (remaining.length < 2) setSplitMode(false);
       return remaining;
     });
-  }, []);
+  }, [shellName]);
 
   const killActive = useCallback(() => {
     closeTerminal(activeTermId);

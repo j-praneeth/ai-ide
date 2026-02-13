@@ -1,0 +1,17 @@
+{
+  "title": "Nebula IDE",
+  "icon": "release/mac-arm64/Nebula IDE.app/Contents/Resources/icon.icns",
+  "background": "assets/dmg-background-dark.png",
+  "window": {
+    "size": {
+      "width": 660,
+      "height": 400
+    }
+  },
+  "icon-size": 80,
+  "contents": [
+    { "x": 180, "y": 255, "type": "file", "path": "release/mac-arm64/Nebula IDE.app" },
+    { "x": 480, "y": 255, "type": "link", "path": "/Applications" }
+  ],
+  "format": "UDBZ"
+}

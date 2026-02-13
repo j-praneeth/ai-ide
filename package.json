@@ -1,0 +1,122 @@
+{
+  "name": "nebula-ide",
+  "version": "1.0.0",
+  "description": "Nebula IDE - A modern AI-powered code editor",
+  "author": "Nebula IDE Team",
+  "license": "MIT",
+  "main": "electron/main.js",
+  "private": true,
+  "scripts": {
+    "start": "concurrently \"npm run start:frontend\" \"npm run start:backend\" \"wait-on http://localhost:3000 && ELECTRON_DEV=true electron .\"",
+    "start:frontend": "cd frontend && npm start",
+    "start:backend": "cd backend && python3 main.py --port 8000",
+    "build:frontend": "cd frontend && CI=false npm run build",
+    "build:backend:mac": "cd backend && pyinstaller --onefile --name nebula-backend --distpath ../dist/backend main.py --add-data 'agent:agent'",
+    "build:backend:win": "cd backend && pyinstaller --onefile --name nebula-backend --distpath ../dist/backend main.py --add-data \"agent;agent\"",
+    "prebuild": "npm run build:frontend",
+    "build:mac": "npm run build:frontend && bash scripts/build-backend.sh && electron-builder --mac",
+    "build:win": "npm run build:frontend && npm run build:backend:win && electron-builder --win",
+    "build:all": "npm run build:frontend && bash scripts/build-backend.sh && electron-builder --mac --win",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "postinstall": "cd frontend && npm install"
+  },
+  "build": {
+    "appId": "com.nebula.ide",
+    "productName": "Nebula IDE",
+    "copyright": "Copyright © 2025 Nebula IDE Team",
+    "publish": null,
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/build/**/*",
+      "!**/node_modules/**/*",
+      "!backend/**/*",
+      "!dist/**/*",
+      "!release/**/*",
+      "!scripts/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/backend/",
+        "to": "backend/",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/icons/icon.png",
+      "category": "public.app-category.developer-tools",
+      "darkModeSupport": true,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "Nebula IDE",
+      "background": "assets/dmg-background.tiff",
+      "window": {
+        "width": 660,
+        "height": 400
+      },
+      "iconSize": 80,
+      "contents": [
+        {
+          "x": 180,
+          "y": 255
+        },
+        {
+          "x": 480,
+          "y": 255,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icons/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Nebula IDE"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icons/",
+      "category": "Development"
+    }
+  },
+  "devDependencies": {
+    "appdmg": "^0.6.6",
+    "concurrently": "^9.0.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "wait-on": "^8.0.0"
+  }
+}

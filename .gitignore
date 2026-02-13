@@ -26,7 +26,25 @@ build/
 frontend/build/
 frontend/.env.local
 
+# Electron / Desktop App
+release/
+dist/
+*.dmg
+*.exe
+*.AppImage
+*.deb
+*.snap
+*.rpm
+
+# PyInstaller
+backend/build/
+backend/dist/
+backend/*.spec.bak
+*.manifest
+*.spec.tmp
+
 # Misc
 *.log
 .cache/
 coverage/
+Thumbs.db

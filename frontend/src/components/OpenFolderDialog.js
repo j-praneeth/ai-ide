@@ -6,8 +6,7 @@ import {
   VscRefresh,
 } from 'react-icons/vsc';
 import axios from 'axios';
-
-const API = 'http://127.0.0.1:8000';
+import { API_URL as API } from '../config';
 
 export default function OpenFolderDialog({ visible, onClose, onOpen }) {
   const [currentPath, setCurrentPath] = useState('~');

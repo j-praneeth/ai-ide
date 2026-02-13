@@ -1,7 +1,8 @@
 {
-  "name": "frontend",
-  "version": "0.1.0",
+  "name": "nebula-ide-frontend",
+  "version": "1.0.0",
   "private": true,
+  "homepage": ".",
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@testing-library/dom": "^10.4.1",

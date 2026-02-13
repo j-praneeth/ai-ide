@@ -7,8 +7,7 @@ import {
   VscCheck,
 } from 'react-icons/vsc';
 import axios from 'axios';
-
-const API = 'http://127.0.0.1:8000';
+import { API_URL as API } from '../config';
 
 function getLanguageFromFile(filename) {
   if (!filename) return '';
