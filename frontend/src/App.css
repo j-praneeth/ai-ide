@@ -1767,77 +1767,95 @@
 
 /* ── Cursor-like Thinking Steps ── */
 
-/* ── Cursor-style Thinking Block ── */
-.thinking-block {
+/* ── Cursor-style Tool Steps Block ── */
+.tool-steps-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   margin-bottom: 10px;
-  border-radius: var(--radius-md);
+}
+
+.tool-step-item {
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  animation: stepSlideIn 0.2s ease;
+}
+
+.tool-step-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  transition: background 0.15s;
+}
+
+.tool-step-header:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.04));
+}
+
+.tool-step-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   overflow: hidden;
 }
 
-.thinking-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 0;
-  cursor: pointer;
-  user-select: none;
+.tool-step-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.thinking-label {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-muted, #888);
-}
-
-.thinking-toggle {
+.tool-step-toggle {
   display: flex;
   align-items: center;
   color: var(--text-muted, #888);
   flex-shrink: 0;
 }
 
-.thinking-content {
-  padding: 4px 0 12px 0;
-}
+/* Color-coded left borders by tool type */
+.tool-step-item.edit_file .tool-step-header { border-left: 3px solid var(--accent-violet); }
+.tool-step-item.write_file .tool-step-header { border-left: 3px solid var(--success, #22c55e); }
+.tool-step-item.read_file .tool-step-header { border-left: 3px solid var(--accent-blue, #60a5fa); }
+.tool-step-item.delete_file .tool-step-header { border-left: 3px solid var(--error, #f87171); }
+.tool-step-item.grep_search .tool-step-header,
+.tool-step-item.codebase_search .tool-step-header,
+.tool-step-item.file_search .tool-step-header { border-left: 3px solid var(--warning, #f59e0b); }
+.tool-step-item.run_command .tool-step-header { border-left: 3px solid var(--info, #06b6d4); }
+.tool-step-item.list_dir .tool-step-header { border-left: 3px solid var(--text-muted, #888); }
 
-.thinking-text {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--text-ghost, #666);
-  margin: 0 0 4px 0;
-}
-
-/* File action boxes (below thinking) */
-.thinking-file-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 0 0 8px 0;
-}
-
-.thinking-file-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+/* Expandable result area */
+.tool-step-result {
   border: 1px solid var(--border-subtle, rgba(255,255,255,0.06));
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-  animation: stepSlideIn 0.2s ease;
+  border-top: none;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: var(--bg-deep, #161616);
+  max-height: 300px;
+  overflow: auto;
 }
 
-.thinking-file-box.edit_file { border-left: 3px solid var(--accent-violet); }
-.thinking-file-box.write_file { border-left: 3px solid var(--success, #22c55e); }
-.thinking-file-box.read_file { border-left: 3px solid var(--accent-blue, #60a5fa); }
-.thinking-file-box.delete_file { border-left: 3px solid var(--error, #f87171); }
-.thinking-file-box.live { border-left: 3px solid var(--accent-violet); background: rgba(139, 92, 246, 0.06); }
+.tool-step-result-content {
+  padding: 8px 12px;
+  font-size: 11.5px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  line-height: 1.5;
+}
 
 @keyframes stepSlideIn {
-  from { opacity: 0; transform: translateX(-8px); }
-  to { opacity: 1; transform: translateX(0); }
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* Live thinking (while agent is working) */
@@ -1846,19 +1864,6 @@
   flex-direction: column;
   gap: 6px;
   padding: 4px 0;
-}
-
-.thinking-block.live {
-  margin-bottom: 8px;
-}
-
-.thinking-block.live .thinking-content {
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.thinking-block.live .thinking-text:last-child {
-  color: var(--text-secondary);
 }
 
 /* ── Chat Message Hover Actions (Copy / Edit / Resend) ── */

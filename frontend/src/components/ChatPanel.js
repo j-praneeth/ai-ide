@@ -92,41 +92,59 @@ function ToolIcon({ tool }) {
   return <VscSparkle size={13} />;
 }
 
-// Cursor-style "Thinking" collapsible block
-function ThinkingBlock({ thinkingTexts, steps }) {
-  const [expanded, setExpanded] = useState(false);
-  if ((!thinkingTexts || thinkingTexts.length === 0) && (!steps || steps.length === 0)) return null;
+// Cursor-style tool steps display - always visible, inline
+function ToolStepsBlock({ steps }) {
+  const [expandedResults, setExpandedResults] = useState({});
 
-  const toolSteps = (steps || []).filter(s => s.type === 'step' && s.tool);
-  const fileActions = toolSteps.filter(s =>
-    ['read_file', 'write_file', 'edit_file', 'delete_file'].includes(s.tool));
+  if (!steps || steps.length === 0) return null;
+
+  // Pair up step + result entries
+  const pairedSteps = [];
+  for (let i = 0; i < steps.length; i++) {
+    if (steps[i].type === 'step') {
+      const result = (i + 1 < steps.length && steps[i + 1].type === 'result') ? steps[i + 1] : null;
+      pairedSteps.push({ step: steps[i], result });
+      if (result) i++; // skip next
+    }
+  }
+
+  const toggleResult = (idx) => {
+    setExpandedResults(prev => ({ ...prev, [idx]: !prev[idx] }));
+  };
 
   return (
-    <div className="thinking-block">
-      <div className="thinking-header" onClick={() => setExpanded(!expanded)}>
-        <span className="thinking-label">Thinking</span>
-        <span className="thinking-toggle">
-          {expanded ? <VscChevronDown size={14} /> : <VscChevronRight size={14} />}
-        </span>
-      </div>
-      {expanded && (
-        <div className="thinking-content">
-          {(thinkingTexts || []).map((text, i) => (
-            <p key={i} className="thinking-text">{text}</p>
-          ))}
-        </div>
-      )}
-      {/* File action boxes - always visible below thinking */}
-      {fileActions.length > 0 && (
-        <div className="thinking-file-actions">
-          {fileActions.map((fa, i) => (
-            <div key={i} className={`thinking-file-box ${fa.tool}`}>
-              <ToolIcon tool={fa.tool} />
-              <span>{fa.message}</span>
+    <div className="tool-steps-block">
+      {pairedSteps.map((pair, i) => {
+        const { step, result } = pair;
+        const isExpanded = expandedResults[i];
+        const isFileOp = ['read_file', 'write_file', 'edit_file', 'delete_file'].includes(step.tool);
+        const isSearch = ['grep_search', 'codebase_search', 'file_search'].includes(step.tool);
+
+        return (
+          <div key={i} className={`tool-step-item ${step.tool}`}>
+            <div
+              className="tool-step-header"
+              onClick={() => result && toggleResult(i)}
+              style={{ cursor: result ? 'pointer' : 'default' }}
+            >
+              <div className="tool-step-left">
+                <ToolIcon tool={step.tool} />
+                <span className="tool-step-label">{step.message}</span>
+              </div>
+              {result && (
+                <span className="tool-step-toggle">
+                  {isExpanded ? <VscChevronDown size={12} /> : <VscChevronRight size={12} />}
+                </span>
+              )}
             </div>
-          ))}
-        </div>
-      )}
+            {isExpanded && result && (
+              <div className="tool-step-result">
+                <pre className="tool-step-result-content">{result.result}</pre>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -174,10 +192,9 @@ function ChatMessage({ message, index, isLast, onCopy, onEdit, onResend, loading
             )}
           </div>
         </div>
-        {/* Thinking block (collapsible) for assistant messages */}
-        {!isUser && ((message.thinkingTexts && message.thinkingTexts.length > 0) ||
-          (message.steps && message.steps.length > 0)) && (
-          <ThinkingBlock thinkingTexts={message.thinkingTexts} steps={message.steps} />
+        {/* Tool steps - always visible, Cursor-style */}
+        {!isUser && message.steps && message.steps.length > 0 && (
+          <ToolStepsBlock steps={message.steps} />
         )}
         <div className="chat-message-body">
           {isUser ? (
@@ -215,7 +232,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
   const thinkingStepsRef = useRef([]);
   const thinkingTextsRef = useRef([]);
   const [editingIndex, setEditingIndex] = useState(null);
-  const [liveThinkingExpanded, setLiveThinkingExpanded] = useState(true);
+  // liveThinkingExpanded removed — tool steps are always visible in Cursor style
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -307,7 +324,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
     setThinkingTexts([]);
     thinkingStepsRef.current = [];
     thinkingTextsRef.current = [];
-    setLiveThinkingExpanded(true);
+
 
     let prompt = promptText;
     const contextParts = [];
@@ -597,40 +614,19 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
           />
         ))}
 
-        {/* Live thinking/working display */}
+        {/* Live working display - Cursor style */}
         {loading && (
           <div className="chat-message assistant">
             <div className="chat-message-avatar">
               <div className="avatar-ai"><VscSparkle size={16} /></div>
             </div>
             <div className="chat-message-content">
+              <div className="chat-message-header">
+                <span className="chat-message-role">AI Assistant</span>
+              </div>
               <div className="chat-thinking-live">
-                {/* Thinking collapsible */}
-                {thinkingTexts.length > 0 && (
-                  <div className="thinking-block live">
-                    <div className="thinking-header" onClick={() => setLiveThinkingExpanded(!liveThinkingExpanded)}>
-                      <span className="thinking-label">Thinking</span>
-                      <span className="thinking-toggle">
-                        {liveThinkingExpanded ? <VscChevronDown size={14} /> : <VscChevronRight size={14} />}
-                      </span>
-                    </div>
-                    {liveThinkingExpanded && (
-                      <div className="thinking-content">
-                        {thinkingTexts.map((text, i) => (
-                          <p key={i} className="thinking-text">{text}</p>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Tool action steps */}
-                {thinkingSteps.filter(s => s.type === 'step' && s.tool).map((step, i) => (
-                  <div key={i} className="thinking-file-box live">
-                    <ToolIcon tool={step.tool} />
-                    <span>{step.message}</span>
-                  </div>
-                ))}
+                {/* Tool steps as they happen */}
+                <ToolStepsBlock steps={thinkingSteps} />
 
                 {/* Loading indicator */}
                 <div className="chat-loading">
@@ -638,7 +634,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
                     <span></span><span></span><span></span>
                   </div>
                   <span className="chat-loading-text">
-                    {thinkingSteps.length === 0 ? 'Thinking...' : 'Working...'}
+                    {thinkingSteps.filter(s => s.type === 'step').length === 0 ? 'Thinking...' : 'Working...'}
                   </span>
                 </div>
               </div>
