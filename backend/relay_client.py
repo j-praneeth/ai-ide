@@ -29,6 +29,7 @@ _room_code: Optional[str] = None
 _room_secret: Optional[str] = None
 _ws = None
 _connected = False
+_mobile_count = 0
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _thread: Optional[threading.Thread] = None
 _should_run = False
@@ -43,6 +44,7 @@ def get_relay_info() -> dict:
         "relay_url": _relay_url,
         "room_code": _room_code,
         "connected": _connected,
+        "mobile_count": _mobile_count,
     }
 
 
@@ -52,15 +54,24 @@ def get_relay_info() -> dict:
 _event_queue: asyncio.Queue = None
 
 
+_last_screen_frame = {"data": None}
+
 def relay_emit(event: dict):
     """Push an event to be sent through the relay. Thread-safe, non-blocking."""
     if not _connected or _event_queue is None:
         return
     event.setdefault("timestamp", time.time())
+
+    # For screen frames, store the latest and let sender pick it up
+    # This prevents the queue from filling with stale frames
+    if event.get("type") == "screen_frame":
+        _last_screen_frame["data"] = event
+        return
+
     try:
         _event_queue.put_nowait(event)
     except asyncio.QueueFull:
-        pass  # Drop if queue is full (shouldn't happen normally)
+        pass  # Drop if queue is full
 
 
 # ── Relay Connection ──────────────────────────────────────────────────
@@ -72,18 +83,26 @@ async def _connect_and_run():
 
     _event_queue = asyncio.Queue(maxsize=500)
 
-    ws_url = _relay_url.replace("https://", "wss://").replace("http://", "ws://")
-    ws_url = f"{ws_url}/ws/desktop?room={_room_code}&secret={_room_secret}"
-
-    reconnect_delay = 1
+    reconnect_delay = 2
 
     while _should_run:
+        # Build URL each iteration using current globals (in case room was re-created)
+        ws_url = _relay_url.replace("https://", "wss://").replace("http://", "ws://")
+        ws_url = f"{ws_url}/ws/desktop?room={_room_code}&secret={_room_secret}"
+
         try:
-            logger.info("Connecting to relay: %s", ws_url)
-            async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10) as ws_conn:
+            logger.info("Connecting to relay: room=%s", _room_code)
+            async with websockets.connect(
+                ws_url,
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=5,
+                open_timeout=15,
+            ) as ws_conn:
+                # Check if server sent an error before we consider ourselves connected
                 _ws = ws_conn
                 _connected = True
-                reconnect_delay = 1
+                reconnect_delay = 2
                 logger.info("Connected to relay (room: %s)", _room_code)
 
                 # Run sender and receiver concurrently
@@ -106,22 +125,37 @@ async def _connect_and_run():
         if _should_run:
             logger.info("Reconnecting to relay in %ds...", reconnect_delay)
             await asyncio.sleep(reconnect_delay)
-            reconnect_delay = min(reconnect_delay * 2, 30)
+            reconnect_delay = min(reconnect_delay * 2, 60)
 
 
 async def _sender(ws):
-    """Send queued events to the relay."""
+    """Send queued events and latest screen frame to the relay."""
     while True:
-        event = await _event_queue.get()
+        # Send queued events first
         try:
-            await ws.send(json.dumps(event))
-        except Exception:
-            # Put back and break so reconnect happens
+            event = _event_queue.get_nowait()
             try:
-                _event_queue.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
-            break
+                await ws.send(json.dumps(event))
+            except Exception:
+                try:
+                    _event_queue.put_nowait(event)
+                except asyncio.QueueFull:
+                    pass
+                break
+        except asyncio.QueueEmpty:
+            pass
+
+        # Send latest screen frame if available
+        frame = _last_screen_frame.get("data")
+        if frame:
+            _last_screen_frame["data"] = None  # Consume it
+            try:
+                await ws.send(json.dumps(frame))
+            except Exception:
+                break
+
+        # Small sleep to prevent busy loop
+        await asyncio.sleep(0.05)
 
 
 async def _receiver(ws):
@@ -149,6 +183,30 @@ async def _receiver(ws):
 
             elif msg_type == "ping":
                 relay_emit({"type": "pong"})
+
+            elif msg_type in ("mobile_joined", "mobile_left"):
+                global _mobile_count
+                _mobile_count = message.get("mobile_count", 0)
+                logger.info("Mobile %s — count: %d", msg_type, _mobile_count)
+
+            elif msg_type in ("remote_click", "remote_scroll", "remote_keypress"):
+                # Queue remote input for Electron
+                try:
+                    from mobile_bridge import _remote_input_queue
+                    input_event = {
+                        "type": "click" if msg_type == "remote_click" else
+                               "scroll" if msg_type == "remote_scroll" else "keypress",
+                        "x": message.get("x", 0),
+                        "y": message.get("y", 0),
+                    }
+                    if msg_type == "remote_scroll":
+                        input_event["deltaX"] = message.get("deltaX", 0)
+                        input_event["deltaY"] = message.get("deltaY", 0)
+                    if msg_type == "remote_keypress":
+                        input_event["key"] = message.get("key", "")
+                    _remote_input_queue.append(input_event)
+                except Exception:
+                    pass
 
         except json.JSONDecodeError:
             pass
@@ -278,6 +336,12 @@ def start_relay(relay_url: str = "", api_key: str = ""):
     If no arguments provided, uses values from relay_config.py."""
     global _relay_url, _room_code, _room_secret, _should_run, _thread, _loop
 
+    # Stop any existing connection first
+    if _should_run or _thread is not None:
+        stop_relay()
+        import time
+        time.sleep(0.5)  # Give the old thread time to stop
+
     # Use admin config if not explicitly provided
     if not relay_url:
         from relay_config import RELAY_URL, RELAY_API_KEY
@@ -288,7 +352,6 @@ def start_relay(relay_url: str = "", api_key: str = ""):
         raise ValueError("Relay URL not configured.")
 
     _relay_url = relay_url.rstrip("/")
-    _should_run = True
 
     # Create a room (pass API key for authentication)
     try:
@@ -310,6 +373,8 @@ def start_relay(relay_url: str = "", api_key: str = ""):
         raise
 
     # Start the async connection in a background thread
+    _should_run = True
+
     def _run_loop():
         global _loop
         _loop = asyncio.new_event_loop()
@@ -324,10 +389,19 @@ def start_relay(relay_url: str = "", api_key: str = ""):
 
 def stop_relay():
     """Disconnect from the relay."""
-    global _should_run, _connected
+    global _should_run, _connected, _thread, _ws, _mobile_count, _room_code, _room_secret
     _should_run = False
     _connected = False
+    _mobile_count = 0
+    _room_code = None
+    _room_secret = None
+    # Close WebSocket if open
     if _ws:
-        # The connection will close on next iteration
-        pass
+        try:
+            if _loop and _loop.is_running():
+                asyncio.run_coroutine_threadsafe(_ws.close(), _loop)
+        except Exception:
+            pass
+    _ws = None
+    _thread = None
     logger.info("Relay client stopped")

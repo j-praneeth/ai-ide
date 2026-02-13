@@ -1,10 +1,10 @@
 import './BottomNav.css';
 
 const tabs = [
-  { id: 'dashboard', icon: '◈', label: 'Live' },
   { id: 'chat', icon: '◉', label: 'Chat' },
   { id: 'terminal', icon: '⌘', label: 'Terminal' },
   { id: 'files', icon: '◧', label: 'Files' },
+  { id: 'dashboard', icon: '◈', label: 'Activity' },
 ];
 
 export default function BottomNav({ currentPage, onNavigate, isConnected, onDisconnect }) {
@@ -31,7 +31,7 @@ export default function BottomNav({ currentPage, onNavigate, isConnected, onDisc
         }}
       >
         <span className="nav-icon">{isConnected ? '⊗' : '⊕'}</span>
-        <span className="nav-label">{isConnected ? 'Disconnect' : 'Scan'}</span>
+        <span className="nav-label">{isConnected ? 'Exit' : 'Scan'}</span>
       </button>
     </nav>
   );

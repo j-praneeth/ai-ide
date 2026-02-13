@@ -17,14 +17,32 @@ KNOWN_TOOLS = {
 ACTION_KEYWORDS = [
     "create", "add", "write", "edit", "modify", "change", "update", "delete",
     "remove", "fix", "rename", "move", "insert", "append", "prepend", "replace",
-    "refactor", "install", "run", "execute", "build", "make", "generate",
+    "refactor", "install", "run", "execute", "build", "make",
+]
+
+# Keywords that suggest the user wants INFORMATION / EXPLANATION
+INFO_KEYWORDS = [
+    "explain", "how does", "what is", "what are", "describe", "show me",
+    "architecture", "diagram", "overview", "summarize", "summary", "analyze",
+    "analysis", "compare", "difference", "why does", "how to", "tell me",
+    "list the", "what happens", "walk me through", "help me understand",
+    "documentation", "high level", "low level", "design pattern",
 ]
 
 
 def _user_wants_action(prompt):
-    """Check if the user's prompt implies they want the agent to DO something."""
+    """Check if the user's prompt implies they want the agent to DO something (not just explain)."""
     lower = prompt.lower()
+    # If it looks like an informational query, don't treat it as an action
+    if _user_wants_info(lower):
+        return False
     return any(kw in lower for kw in ACTION_KEYWORDS)
+
+
+def _user_wants_info(prompt):
+    """Check if the user's prompt is asking for information/explanation."""
+    lower = prompt.lower() if not isinstance(prompt, str) or prompt == prompt.lower() else prompt.lower()
+    return any(kw in lower for kw in INFO_KEYWORDS)
 
 
 def _ensure_decision(decision):
@@ -103,8 +121,21 @@ def run_agent(user_prompt, conversation_history=None):
                     )
                     continue
 
+                # Safety check: if user wanted INFO but got a very short answer without exploring
+                if step <= 2 and not tools_called and _user_wants_info(user_prompt) and len(answer) < 200:
+                    logger.warning("LLM gave short answer for info query without exploring codebase. Nudging.")
+                    context_parts.append(
+                        "[System] You gave a very short answer without exploring the codebase first. "
+                        "The user is asking for detailed information. You MUST first use tools to explore: "
+                        "use list_dir to see the project structure, read_file to read key files, "
+                        "grep_search to find relevant code. Then provide a COMPREHENSIVE, DETAILED answer "
+                        "with markdown formatting (headers, bullet points, code blocks, diagrams). "
+                        "Your answer should be at least several paragraphs long. NEVER give a one-line answer."
+                    )
+                    continue
+
                 logger.info("Agent finished at step %d with final answer (tools used: %s)", step, tools_called)
-                return answer if answer else "Done."
+                return answer if answer else "I completed the analysis. Let me know if you need more details."
 
         # It's a tool call (either original or recovered)
         tool_input = decision.get("input") or decision.get("params") or decision.get("arguments") or {}
@@ -183,7 +214,21 @@ def run_agent_stream(user_prompt, conversation_history=None):
                     yield {"type": "thinking", "text": "Need to use tools to perform the requested action. Re-planning..."}
                     continue
 
-                yield {"type": "done", "answer": answer if answer else "Done."}
+                # Safety check: info query with short answer and no exploration
+                if step <= 2 and not tools_called and _user_wants_info(user_prompt) and len(answer) < 200:
+                    context_parts.append(
+                        "[System] You gave a very short answer without exploring the codebase first. "
+                        "The user is asking for detailed information. You MUST first use tools to explore: "
+                        "use list_dir to see the project structure, read_file to read key files, "
+                        "grep_search to find relevant code. Then provide a COMPREHENSIVE, DETAILED answer "
+                        "with markdown formatting (headers, bullet points, code blocks, diagrams). "
+                        "Your answer should be at least several paragraphs long. NEVER give a one-line answer."
+                    )
+                    yield {"type": "thinking", "text": "Need to explore the codebase first to give a thorough answer..."}
+                    continue
+
+                final_text = answer if answer else "I completed the analysis. Let me know if you need more details."
+                yield {"type": "done", "answer": final_text}
                 return
 
         # It's a tool call (either original or recovered)

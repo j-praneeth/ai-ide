@@ -178,14 +178,20 @@ def room_info(room_code: str):
 # ── Desktop WebSocket ────────────────────────────────────────────────
 
 @app.websocket("/ws/desktop")
-async def desktop_ws(ws: WebSocket, room: str = Query(...), secret: str = Query(...)):
+async def desktop_ws(ws: WebSocket, room: str = Query(""), secret: str = Query("")):
     """WebSocket endpoint for the desktop IDE."""
-    room_obj = get_room(room)
+    await ws.accept()
+
+    room_obj = get_room(room) if room else None
     if not room_obj or room_obj.secret != secret:
+        logger.warning("Desktop WS rejected: invalid room=%s", room)
+        try:
+            await ws.send_text(json.dumps({"type": "error", "message": "Invalid room or secret"}))
+        except Exception:
+            pass
         await ws.close(code=4001, reason="Invalid room or secret")
         return
 
-    await ws.accept()
     room_obj.desktop = ws
     room_obj.touch()
     logger.info("Desktop connected to room %s", room)
@@ -205,8 +211,9 @@ async def desktop_ws(ws: WebSocket, room: str = Query(...), secret: str = Query(
                 message = json.loads(data)
                 message.setdefault("timestamp", time.time())
 
-                # Store in history
-                room_obj.add_event(message)
+                # Don't store screen frames in history (too large)
+                if message.get("type") != "screen_frame":
+                    room_obj.add_event(message)
 
                 # Forward to all connected mobiles
                 await _broadcast_to_mobiles(room_obj, message)
@@ -230,17 +237,33 @@ async def desktop_ws(ws: WebSocket, room: str = Query(...), secret: str = Query(
 # ── Mobile WebSocket ─────────────────────────────────────────────────
 
 @app.websocket("/ws/mobile")
-async def mobile_ws(ws: WebSocket, room: str = Query(...)):
+async def mobile_ws(ws: WebSocket, room: str = Query("")):
     """WebSocket endpoint for mobile companion apps."""
-    room_obj = get_room(room)
+    await ws.accept()
+
+    room_obj = get_room(room) if room else None
     if not room_obj:
+        try:
+            await ws.send_text(json.dumps({"type": "error", "message": "Room not found or expired"}))
+        except Exception:
+            pass
         await ws.close(code=4001, reason="Room not found or expired")
         return
-
-    await ws.accept()
     room_obj.mobiles.add(ws)
     room_obj.touch()
-    logger.info("Mobile connected to room %s (total: %d)", room, len(room_obj.mobiles))
+    mobile_count = len(room_obj.mobiles)
+    logger.info("Mobile connected to room %s (total: %d)", room, mobile_count)
+
+    # Notify desktop that a mobile connected
+    if room_obj.desktop:
+        try:
+            await room_obj.desktop.send_text(json.dumps({
+                "type": "mobile_joined",
+                "mobile_count": mobile_count,
+                "timestamp": time.time(),
+            }))
+        except Exception:
+            pass
 
     # Send welcome + desktop status + event history
     try:
@@ -294,6 +317,17 @@ async def mobile_ws(ws: WebSocket, room: str = Query(...)):
         logger.warning("Mobile WS error in room %s: %s", room, e)
     finally:
         room_obj.mobiles.discard(ws)
+        mobile_count = len(room_obj.mobiles)
+        # Notify desktop that a mobile disconnected
+        if room_obj.desktop:
+            try:
+                await room_obj.desktop.send_text(json.dumps({
+                    "type": "mobile_left",
+                    "mobile_count": mobile_count,
+                    "timestamp": time.time(),
+                }))
+            except Exception:
+                pass
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

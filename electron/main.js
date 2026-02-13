@@ -341,7 +341,7 @@ async function startBackend(port) {
     }
 
     console.log(`Starting backend: ${command} ${args.join(' ')}`);
-    updateSplash('Starting backend server...');
+    updateSplash('Starting IDE...');
 
     backendProcess = spawn(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -511,7 +511,7 @@ ipcMain.handle('open-folder-dialog', async () => {
 app.whenReady().then(async () => {
   try {
     // Show splash screen
-    createSplashWindow('Starting Nebula IDE...');
+    createSplashWindow('Starting IDE...');
 
     // Find a free port
     backendPort = await findFreePort();
@@ -523,6 +523,12 @@ app.whenReady().then(async () => {
 
     // Create the main window
     createWindow();
+
+    // Start screen streaming for mobile companion
+    setTimeout(() => {
+      startScreenStream();
+      startRemoteInputPoller();
+    }, 3000);
   } catch (err) {
     console.error('Failed to start application:', err);
     closeSplash();
@@ -560,6 +566,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  stopScreenStream();
   stopBackend();
   if (process.platform !== 'darwin') {
     app.quit();
@@ -567,15 +574,131 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  stopScreenStream();
   stopBackend();
 });
 
 app.on('will-quit', () => {
+  stopScreenStream();
   stopBackend();
 });
 
+// ─── Screen Streaming to Mobile ─────────────────────────────────
+
+let streamInterval = null;
+let isStreaming = false;
+let pendingRemoteInputs = [];
+
+function startScreenStream() {
+  if (isStreaming || !mainWindow) return;
+  isStreaming = true;
+  console.log('Screen streaming started');
+
+  streamInterval = setInterval(async () => {
+    if (!mainWindow || mainWindow.isDestroyed() || !backendPort) return;
+
+    try {
+      const image = await mainWindow.webContents.capturePage();
+      const resized = image.resize({ width: 720 });
+      const jpegBuffer = resized.toJPEG(35);
+      const base64 = jpegBuffer.toString('base64');
+
+      // POST to backend
+      const postData = JSON.stringify({
+        frame: base64,
+        width: resized.getSize().width,
+        height: resized.getSize().height,
+      });
+
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: backendPort,
+        path: '/mobile/screen-frame',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData),
+        },
+        timeout: 3000,
+      });
+
+      req.on('error', () => {}); // Ignore errors silently
+      req.write(postData);
+      req.end();
+    } catch (err) {
+      // Silently ignore capture errors
+    }
+  }, 1500); // ~0.67 fps — good balance of quality vs bandwidth
+}
+
+function stopScreenStream() {
+  if (streamInterval) {
+    clearInterval(streamInterval);
+    streamInterval = null;
+  }
+  isStreaming = false;
+}
+
+// Poll for remote input events from mobile
+function startRemoteInputPoller() {
+  setInterval(() => {
+    if (!backendPort || !mainWindow || mainWindow.isDestroyed()) return;
+
+    const req = http.get(`http://127.0.0.1:${backendPort}/mobile/remote-input`, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          if (data.events && data.events.length > 0) {
+            for (const evt of data.events) {
+              handleRemoteInput(evt);
+            }
+          }
+        } catch (_) {}
+      });
+    });
+    req.on('error', () => {});
+    req.setTimeout(2000, () => req.destroy());
+  }, 500);
+}
+
+function handleRemoteInput(evt) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  if (evt.type === 'click') {
+    const bounds = mainWindow.getContentBounds();
+    const x = Math.round(evt.x * bounds.width);
+    const y = Math.round(evt.y * bounds.height);
+
+    // Simulate mouse click
+    mainWindow.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+    setTimeout(() => {
+      mainWindow.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+    }, 50);
+  } else if (evt.type === 'scroll') {
+    const bounds = mainWindow.getContentBounds();
+    const x = Math.round(evt.x * bounds.width);
+    const y = Math.round(evt.y * bounds.height);
+    mainWindow.webContents.sendInputEvent({
+      type: 'mouseWheel',
+      x, y,
+      deltaX: evt.deltaX || 0,
+      deltaY: evt.deltaY || 0,
+    });
+  } else if (evt.type === 'keypress') {
+    // Send keyboard input
+    if (evt.key) {
+      mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: evt.key });
+      mainWindow.webContents.sendInputEvent({ type: 'char', keyCode: evt.key });
+      mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: evt.key });
+    }
+  }
+}
+
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err);
+  stopScreenStream();
   stopBackend();
 });
 

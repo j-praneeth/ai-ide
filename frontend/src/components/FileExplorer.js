@@ -51,10 +51,14 @@ function getFileIcon(name) {
   return <span className="file-icon" style={{ color: '#6a6a6a' }}>F</span>;
 }
 
-function TreeNode({ node, basePath, depth, openFile, selectedFile, expandedFolders, toggleFolder }) {
+function TreeNode({ node, basePath, depth, openFile, selectedFile, expandedFolders, toggleFolder, lazyChildren }) {
   const fullPath = basePath ? `${basePath}/${node.name}` : node.name;
   const isExpanded = expandedFolders.has(fullPath);
   const isSelected = selectedFile === fullPath;
+
+  // Use lazy-loaded children if available, otherwise fall back to node.children
+  const children = lazyChildren?.[fullPath] || node.children || [];
+  const hasContent = node.hasChildren !== false;
 
   if (node.type === 'folder') {
     return (
@@ -65,14 +69,17 @@ function TreeNode({ node, basePath, depth, openFile, selectedFile, expandedFolde
           onClick={() => toggleFolder(fullPath)}
         >
           <span className="tree-chevron">
-            {isExpanded ? <VscChevronDown size={16} /> : <VscChevronRight size={16} />}
+            {hasContent
+              ? (isExpanded ? <VscChevronDown size={16} /> : <VscChevronRight size={16} />)
+              : <VscChevronRight size={16} style={{ opacity: 0 }} />
+            }
           </span>
           <span className="folder-icon">{isExpanded ? '📂' : '📁'}</span>
           <span className="tree-label">{node.name}</span>
         </div>
-        {isExpanded && node.children && (
+        {isExpanded && children.length > 0 && (
           <div className="tree-children">
-            {node.children
+            {children
               .sort((a, b) => {
                 if (a.type === b.type) return a.name.localeCompare(b.name);
                 return a.type === 'folder' ? -1 : 1;
@@ -87,8 +94,14 @@ function TreeNode({ node, basePath, depth, openFile, selectedFile, expandedFolde
                   selectedFile={selectedFile}
                   expandedFolders={expandedFolders}
                   toggleFolder={toggleFolder}
+                  lazyChildren={lazyChildren}
                 />
               ))}
+          </div>
+        )}
+        {isExpanded && children.length === 0 && hasContent && (
+          <div style={{ paddingLeft: (depth + 1) * 16 + 8, color: 'var(--text-ghost)', fontSize: 'var(--font-size-xs)', padding: '4px 8px' }}>
+            Loading...
           </div>
         )}
       </div>
@@ -112,6 +125,7 @@ function TreeNode({ node, basePath, depth, openFile, selectedFile, expandedFolde
 
 export default function FileExplorer({ tree, openFile, selectedFile, onRefresh, triggerNewFile, onNewFileDone, onOpenFolder }) {
   const [expandedFolders, setExpandedFolders] = useState(new Set());
+  const [lazyChildren, setLazyChildren] = useState({});
   const [showNewFileInput, setShowNewFileInput] = useState(false);
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [newItemName, setNewItemName] = useState('');
@@ -184,13 +198,24 @@ export default function FileExplorer({ tree, openFile, selectedFile, onRefresh, 
         next.delete(path);
       } else {
         next.add(path);
+        // Lazy-load children if not already loaded
+        if (!lazyChildren[path]) {
+          axios.get(`${API}/files/tree-children`, { params: { path } })
+            .then(res => {
+              if (Array.isArray(res.data)) {
+                setLazyChildren(prev => ({ ...prev, [path]: res.data }));
+              }
+            })
+            .catch(() => {});
+        }
       }
       return next;
     });
-  }, []);
+  }, [lazyChildren]);
 
   const collapseAll = useCallback(() => {
     setExpandedFolders(new Set());
+    setLazyChildren({});
   }, []);
 
   return (
@@ -260,6 +285,7 @@ export default function FileExplorer({ tree, openFile, selectedFile, onRefresh, 
                   selectedFile={selectedFile}
                   expandedFolders={expandedFolders}
                   toggleFolder={toggleFolder}
+                  lazyChildren={lazyChildren}
                 />
               ))}
           </>

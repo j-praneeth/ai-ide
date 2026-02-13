@@ -16,7 +16,7 @@ import io
 import base64
 from typing import Dict, Set
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Request
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -240,6 +240,97 @@ def relay_configured():
         return {"configured": False}
 
 
+# ── Screen Streaming ─────────────────────────────────────────────────
+_latest_frame: dict = {}
+_remote_input_queue: list = []
+
+@router.post("/screen-frame")
+async def receive_screen_frame(request: Request):
+    """Accept a screen frame from Electron and relay to mobile clients."""
+    global _latest_frame
+    try:
+        data = await request.json()
+        frame = data.get("frame")
+        if not frame:
+            return {"status": "no_frame"}
+
+        _latest_frame = {
+            "frame": frame,
+            "width": data.get("width", 0),
+            "height": data.get("height", 0),
+            "timestamp": time.time(),
+        }
+
+        # Relay to mobile clients — only if someone is connected
+        has_mobile = len(_clients) > 0
+        relay_connected = False
+        try:
+            from relay_client import is_relay_connected
+            relay_connected = is_relay_connected()
+        except Exception:
+            pass
+
+        if has_mobile or relay_connected:
+            screen_event = {
+                "type": "screen_frame",
+                "frame": frame,
+                "width": _latest_frame["width"],
+                "height": _latest_frame["height"],
+                "timestamp": _latest_frame["timestamp"],
+            }
+            # Don't store screen frames in event history (too large)
+            msg = json.dumps(screen_event)
+            # Broadcast to local clients
+            async with _client_lock:
+                dead = set()
+                for ws in _clients:
+                    try:
+                        await ws.send_text(msg)
+                    except Exception:
+                        dead.add(ws)
+                _clients -= dead
+
+            # Relay to cloud if connected
+            if relay_connected:
+                try:
+                    from relay_client import relay_emit
+                    relay_emit(screen_event)
+                except Exception:
+                    pass
+
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/screen-latest")
+def get_latest_screen():
+    """Return the latest screen frame (for polling fallback)."""
+    if _latest_frame:
+        return _latest_frame
+    return {"frame": None}
+
+
+@router.get("/remote-input")
+def get_remote_input():
+    """Get pending remote input events from mobile (polled by Electron)."""
+    global _remote_input_queue
+    events = list(_remote_input_queue)
+    _remote_input_queue.clear()
+    return {"events": events}
+
+
+@router.post("/remote-input")
+async def post_remote_input(request: Request):
+    """Accept remote input events from mobile clients."""
+    try:
+        data = await request.json()
+        _remote_input_queue.append(data)
+        return {"status": "queued"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 # ── WebSocket Endpoint ────────────────────────────────────────────────
 
 @router.websocket("/ws")
@@ -338,6 +429,21 @@ async def _handle_mobile_message(message: dict, ws: WebSocket):
     elif msg_type == "get_status":
         # Send full status update
         await _send_status(ws)
+
+    elif msg_type in ("remote_click", "remote_scroll", "remote_keypress"):
+        # Queue remote input for Electron to process
+        input_event = {
+            "type": "click" if msg_type == "remote_click" else
+                   "scroll" if msg_type == "remote_scroll" else "keypress",
+            "x": message.get("x", 0),
+            "y": message.get("y", 0),
+        }
+        if msg_type == "remote_scroll":
+            input_event["deltaX"] = message.get("deltaX", 0)
+            input_event["deltaY"] = message.get("deltaY", 0)
+        if msg_type == "remote_keypress":
+            input_event["key"] = message.get("key", "")
+        _remote_input_queue.append(input_event)
 
     else:
         await ws.send_text(json.dumps({

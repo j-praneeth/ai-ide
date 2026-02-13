@@ -341,7 +341,8 @@ function MobileCompanionSection() {
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch(`${API}/mobile/relay/status`);
-      setMobileStatus(await res.json());
+      const data = await res.json();
+      setMobileStatus(data);
     } catch (_) {}
   }, []);
 
@@ -358,6 +359,14 @@ function MobileCompanionSection() {
       const res = await fetch(`${API}/mobile/relay/connect`, { method: 'POST' });
       const data = await res.json();
       if (data.status === 'connected') {
+        // Show room code immediately from connect response
+        setMobileStatus(prev => ({
+          ...prev,
+          connected: true,
+          room_code: data.room_code,
+          relay_url: data.relay_url,
+        }));
+        // Also refresh from status endpoint
         fetchStatus();
       } else {
         setError(data.message || 'Failed to generate room code');
@@ -372,11 +381,13 @@ function MobileCompanionSection() {
   const disconnectRelay = async () => {
     try {
       await fetch(`${API}/mobile/relay/disconnect`, { method: 'POST' });
-      fetchStatus();
+      // Reset state immediately so UI goes back to "Generate Room Code"
+      setMobileStatus(null);
     } catch (_) {}
   };
 
-  const isRelayConnected = mobileStatus?.connected;
+  // Consider connected if we have a room code (even if WebSocket is still connecting)
+  const isRelayConnected = mobileStatus?.connected || mobileStatus?.room_code;
 
   return (
     <div>
@@ -404,7 +415,9 @@ function MobileCompanionSection() {
             Mobile Companion
           </span>
           {isRelayConnected && (
-            <span style={{ fontSize: 'var(--font-size-xs)', color: '#4ADE80', fontWeight: 500 }}>● Active</span>
+            <span style={{ fontSize: 'var(--font-size-xs)', color: mobileStatus?.connected ? '#4ADE80' : '#f0c674', fontWeight: 500 }}>
+              {mobileStatus?.connected ? '● Active' : '● Connecting...'}
+            </span>
           )}
         </div>
 
@@ -421,9 +434,21 @@ function MobileCompanionSection() {
                 fontFamily: 'var(--font-mono)', fontSize: 36, fontWeight: 700,
                 color: 'var(--accent)', letterSpacing: 10,
               }}>
-                {mobileStatus.room_code}
+                {mobileStatus?.room_code}
               </div>
             </div>
+            {(mobileStatus?.mobile_count > 0) && (
+              <div style={{
+                padding: '8px 12px', marginBottom: 12, borderRadius: 'var(--radius-md)',
+                background: 'rgba(74, 222, 128, 0.08)', border: '1px solid rgba(74, 222, 128, 0.2)',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <span style={{ fontSize: 16 }}>📱</span>
+                <span style={{ fontSize: 'var(--font-size-xs)', color: '#4ADE80', fontWeight: 500 }}>
+                  {mobileStatus.mobile_count} device{mobileStatus.mobile_count > 1 ? 's' : ''} connected
+                </span>
+              </div>
+            )}
             <button type="button" onClick={disconnectRelay}
               style={{ ...controlStyle, width: '100%', textAlign: 'center', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 'var(--font-size-xs)' }}
             >

@@ -1,7 +1,7 @@
 import { useState, useEffect, Component } from 'react';
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import BottomNav from './components/BottomNav';
 import ScanPage from './pages/ScanPage';
+import LiveViewPage from './pages/LiveViewPage';
 import DashboardPage from './pages/DashboardPage';
 import ChatPage from './pages/ChatPage';
 import TerminalPage from './pages/TerminalPage';
@@ -50,7 +50,7 @@ class ErrorBoundary extends Component {
 function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [hasConnection, setHasConnection] = useState(false);
-  const [currentPage, setCurrentPage] = useState('dashboard');
+  const [currentPage, setCurrentPage] = useState(null); // null = show live stream only
 
   useEffect(() => {
     // Listen for connection state changes
@@ -75,6 +75,11 @@ function App() {
     );
   }
 
+  // Toggle page: tap same tab again to go back to live view
+  const handleNavigate = (page) => {
+    setCurrentPage(prev => prev === page ? null : page);
+  };
+
   return (
     <ErrorBoundary>
       <div className="app-container">
@@ -86,16 +91,22 @@ function App() {
         </div>
 
         <div className="page-container">
+          {/* Live stream is always rendered in the background */}
+          <div style={{ display: currentPage ? 'none' : 'flex', flexDirection: 'column', height: '100%' }}>
+            <LiveViewPage />
+          </div>
+
+          {/* Other pages overlay on top */}
           {currentPage === 'dashboard' && <DashboardPage />}
           {currentPage === 'chat' && <ChatPage />}
           {currentPage === 'terminal' && <TerminalPage />}
           {currentPage === 'files' && <FilesPage />}
-          {currentPage === 'scan' && <ScanPage onConnected={() => { setHasConnection(true); setCurrentPage('dashboard'); }} />}
+          {currentPage === 'scan' && <ScanPage onConnected={() => { setHasConnection(true); setCurrentPage(null); }} />}
         </div>
 
         <BottomNav
           currentPage={currentPage}
-          onNavigate={setCurrentPage}
+          onNavigate={handleNavigate}
           isConnected={isConnected}
           onDisconnect={() => {
             nebulaWS.disconnect();

@@ -125,10 +125,12 @@ class NebulaWebSocket {
           this.desktopOnline = data.desktop_online;
         }
 
-        // Store event
-        this.events.push(data);
-        if (this.events.length > this.maxEvents) {
-          this.events.shift();
+        // Don't store screen frames in event buffer (too large, would fill memory)
+        if (data.type !== 'screen_frame') {
+          this.events.push(data);
+          if (this.events.length > this.maxEvents) {
+            this.events.shift();
+          }
         }
 
         // Dispatch by type

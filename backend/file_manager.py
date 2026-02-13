@@ -29,7 +29,7 @@ def open_folder(path: str):
     """Change the project root to a new folder."""
     global PROJECT_ROOT
 
-    target = Path(path).resolve()
+    target = Path(path).expanduser().resolve()
 
     if not target.exists():
         return {"error": f"Path does not exist: {path}"}
@@ -82,44 +82,76 @@ SKIP_FILES = {
 MAX_TREE_DEPTH = 10
 
 
+def _list_dir(dir_path):
+    """List immediate children of a directory (one level only). Fast."""
+    items = []
+    try:
+        entries = sorted(dir_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    except PermissionError:
+        return []
+
+    for p in entries:
+        if p.name.startswith(".") and p.name not in ('.env', '.gitignore', '.editorconfig'):
+            continue
+        if p.name in SKIP_FILES:
+            continue
+
+        if p.is_dir():
+            if p.name in SKIP_DIRS:
+                continue
+            # Check if folder has visible children (for chevron indicator)
+            has_children = False
+            try:
+                for child in p.iterdir():
+                    if child.name.startswith(".") and child.name not in ('.env', '.gitignore', '.editorconfig'):
+                        continue
+                    if child.name in SKIP_FILES:
+                        continue
+                    if child.is_dir() and child.name in SKIP_DIRS:
+                        continue
+                    has_children = True
+                    break
+            except PermissionError:
+                pass
+            items.append({
+                "name": p.name,
+                "type": "folder",
+                "children": [],  # Lazy — loaded on expand
+                "hasChildren": has_children,
+            })
+        else:
+            try:
+                size = p.stat().st_size
+            except Exception:
+                size = 0
+            items.append({
+                "name": p.name,
+                "type": "file",
+                "size": size,
+            })
+
+    return items
+
+
 @router.get("/tree")
 def get_tree():
-    def build_tree(path, depth=0):
-        if depth > MAX_TREE_DEPTH:
-            return []
+    """Return the top-level directory listing (one level). Fast."""
+    return _list_dir(PROJECT_ROOT)
 
-        tree = []
-        try:
-            entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-        except PermissionError:
-            return []
 
-        for p in entries:
-            # Skip hidden files/dirs and known directories
-            if p.name.startswith(".") and p.name not in ('.env', '.gitignore', '.editorconfig'):
-                continue
-            if p.name in SKIP_FILES:
-                continue
+@router.get("/tree-children")
+def get_tree_children(path: str):
+    """Return children of a subdirectory (lazy loading on expand)."""
+    target = (PROJECT_ROOT / path).resolve()
 
-            if p.is_dir():
-                if p.name in SKIP_DIRS:
-                    continue
-                children = build_tree(p, depth + 1)
-                tree.append({
-                    "name": p.name,
-                    "type": "folder",
-                    "children": children
-                })
-            else:
-                tree.append({
-                    "name": p.name,
-                    "type": "file",
-                    "size": p.stat().st_size if p.exists() else 0,
-                })
+    # Security: prevent reading outside project root
+    if not str(target).startswith(str(PROJECT_ROOT)):
+        return {"error": "Access denied"}
 
-        return tree
+    if not target.exists() or not target.is_dir():
+        return []
 
-    return build_tree(PROJECT_ROOT)
+    return _list_dir(target)
 
 
 @router.get("/read")

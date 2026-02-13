@@ -67,6 +67,11 @@
   gap: 16px;
 }
 
+/* macOS: push title bar content right to avoid traffic light buttons */
+.platform-darwin .title-bar-left {
+  left: 80px;
+}
+
 .title-bar-menu {
   display: flex;
   gap: 1px;
@@ -154,6 +159,11 @@
   position: relative;
   z-index: 2;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+/* macOS: shift activity bar icons right to avoid traffic light overlap */
+.platform-darwin .activity-bar-horizontal {
+  padding-left: 6px;
 }
 
 .activity-bar-h-item {

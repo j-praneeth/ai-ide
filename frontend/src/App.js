@@ -745,8 +745,11 @@ function App() {
     );
   };
 
+  // Detect platform for CSS adjustments (macOS traffic lights etc.)
+  const platformClass = navigator.platform?.toLowerCase().includes('mac') ? 'platform-darwin' : '';
+
   return (
-    <div className="ide-container">
+    <div className={`ide-container ${platformClass}`}>
       {/* Title Bar */}
       <div className="title-bar">
         <div className="title-bar-left">
