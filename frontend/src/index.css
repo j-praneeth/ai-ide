@@ -1,0 +1,225 @@
+/* ============================================
+   AI IDE — "Nebula" Theme
+   A unique, modern dark IDE design with
+   deep space colors, glass morphism, and
+   warm amber accents.
+   ============================================ */
+
+:root {
+  /* ── Core Backgrounds ── */
+  --bg-void:        #06070b;
+  --bg-deepest:     #08090d;
+  --bg-deep:        #0d1117;
+  --bg-surface:     #131a27;
+  --bg-elevated:    #182032;
+  --bg-hover:       #1e2a3f;
+  --bg-active:      #253551;
+  --bg-glass:       rgba(13, 17, 23, 0.75);
+  --bg-glass-heavy: rgba(13, 17, 23, 0.9);
+  --bg-glow:        rgba(245, 158, 11, 0.04);
+
+  /* ── Accent: Warm Amber/Gold ── */
+  --accent:         #f59e0b;
+  --accent-bright:  #fbbf24;
+  --accent-dim:     #d97706;
+  --accent-glow:    rgba(245, 158, 11, 0.15);
+  --accent-bg:      rgba(245, 158, 11, 0.08);
+
+  /* ── Secondary: Teal/Cyan ── */
+  --cyan:           #22d3ee;
+  --cyan-dim:       #06b6d4;
+  --cyan-glow:      rgba(34, 211, 238, 0.12);
+
+  /* ── Tertiary: Violet (AI features) ── */
+  --violet:         #a78bfa;
+  --violet-dim:     #8b5cf6;
+  --violet-glow:    rgba(167, 139, 250, 0.12);
+  --violet-bg:      rgba(167, 139, 250, 0.06);
+
+  /* ── Semantic Colors ── */
+  --success:        #34d399;
+  --success-dim:    #10b981;
+  --error:          #f87171;
+  --error-dim:      #ef4444;
+  --warning:        #fbbf24;
+  --info:           #60a5fa;
+
+  /* ── Text ── */
+  --text-bright:    #f1f5f9;
+  --text-primary:   #cbd5e1;
+  --text-secondary: #7a8ba3;
+  --text-muted:     #4a5972;
+  --text-ghost:     #2d3a4e;
+
+  /* ── Borders ── */
+  --border:         rgba(255, 255, 255, 0.06);
+  --border-subtle:  rgba(255, 255, 255, 0.03);
+  --border-focus:   var(--accent);
+  --border-glow:    rgba(245, 158, 11, 0.3);
+
+  /* ── Shadows ── */
+  --shadow-sm:      0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-md:      0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg:      0 8px 32px rgba(0, 0, 0, 0.5);
+  --shadow-glow:    0 0 20px rgba(245, 158, 11, 0.1);
+  --shadow-float:   0 12px 40px rgba(0, 0, 0, 0.6), 0 0 1px rgba(255,255,255,0.05);
+
+  /* ── Sizing ── */
+  --activitybar-width: 56px;
+  --sidebar-width: 270px;
+  --statusbar-height: 28px;
+  --titlebar-height: 42px;
+  --tab-height: 40px;
+  --chat-width: 390px;
+
+  /* ── Fonts ── */
+  --font-ui:   'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, monospace;
+  --font-size-xs:   10px;
+  --font-size-sm:   11px;
+  --font-size-base: 13px;
+  --font-size-md:   14px;
+  --font-size-lg:   16px;
+
+  /* ── Motion ── */
+  --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-fast: 0.12s;
+  --duration-normal: 0.2s;
+  --duration-slow: 0.35s;
+
+  /* ── Radius ── */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+}
+
+/* ============================================
+   Base Reset
+   ============================================ */
+
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  background: var(--bg-deepest);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+  letter-spacing: 0.01em;
+}
+
+/* ============================================
+   Custom Scrollbars — Thin & Glassy
+   ============================================ */
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ============================================
+   Selection
+   ============================================ */
+
+::selection {
+  background: rgba(245, 158, 11, 0.25);
+  color: var(--text-bright);
+}
+
+/* ============================================
+   Input Base
+   ============================================ */
+
+input, textarea {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 6px 12px;
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-out),
+              box-shadow var(--duration-fast) var(--ease-out);
+}
+
+input:focus, textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+/* ============================================
+   Button Base
+   ============================================ */
+
+button {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-base);
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+button:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* ============================================
+   Code Font
+   ============================================ */
+
+code, pre {
+  font-family: var(--font-mono);
+}
+
+/* ============================================
+   Kbd Tag
+   ============================================ */
+
+kbd {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  color: var(--text-secondary);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
