@@ -92,18 +92,123 @@ function ToolIcon({ tool }) {
   return <VscSparkle size={13} />;
 }
 
+// Todo list display - collapsible "To-dos N", arrow for completed, circle for pending (Cursor-style)
+function TodoListBlock({ steps, completedIndices }) {
+  const [collapsed, setCollapsed] = useState(false);
+  if (!steps || steps.length === 0) return null;
+  const completedSet = completedIndices instanceof Set
+    ? completedIndices
+    : new Set(Array.isArray(completedIndices) ? completedIndices : []);
+  return (
+    <div className="chat-todo-block">
+      <button
+        type="button"
+        className="chat-todo-header"
+        onClick={() => setCollapsed(c => !c)}
+        aria-expanded={!collapsed}
+      >
+        <span className="chat-todo-chevron">{collapsed ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}</span>
+        <span className="chat-todo-title">To-dos</span>
+        <span className="chat-todo-count">{steps.length}</span>
+      </button>
+      {!collapsed && (
+        <ul className="chat-todo-list">
+          {steps.map((step, i) => (
+            <li key={i} className={completedSet.has(i) ? 'chat-todo-item completed' : 'chat-todo-item'}>
+              <span className="chat-todo-icon" aria-hidden>
+                {completedSet.has(i) ? <span className="chat-todo-arrow">→</span> : <span className="chat-todo-circle">○</span>}
+              </span>
+              <span className="chat-todo-label">{step}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// Parse unified diff into { path, added, removed, lines: [{ type: 'add'|'remove'|'context', text }] }
+function parseUnifiedDiff(diffText) {
+  if (!diffText || typeof diffText !== 'string') return null;
+  const lines = diffText.split('\n');
+  let path = '';
+  const result = { path: '', added: 0, removed: 0, lines: [] };
+  for (const line of lines) {
+    if (line.startsWith('--- ') || line.startsWith('+++ ')) {
+      const p = line.slice(4).trim().replace(/^\s*(?:a\/|b\/)/, '');
+      if (p) path = p;
+      continue;
+    }
+    if (line.startsWith('@@')) continue; // hunk header
+    if (line.startsWith('-') && !line.startsWith('---')) {
+      result.lines.push({ type: 'remove', text: line.slice(1) });
+      result.removed++;
+    } else if (line.startsWith('+') && !line.startsWith('+++')) {
+      result.lines.push({ type: 'add', text: line.slice(1) });
+      result.added++;
+    } else {
+      result.lines.push({ type: 'context', text: line.startsWith(' ') ? line.slice(1) : line });
+    }
+  }
+  result.path = path;
+  return result;
+}
+
+// File diff block: filename +N -M and red/green line diff (like source control view)
+function FileDiffBlock({ path, added, removed, diffLines, maxLines = 50 }) {
+  const [expanded, setExpanded] = useState(true);
+  const hasMore = diffLines && diffLines.length > maxLines;
+  const displayLines = (diffLines || []).slice(0, maxLines);
+  return (
+    <div className="chat-file-diff-block">
+      <button
+        type="button"
+        className="chat-file-diff-header"
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+      >
+        <span className="chat-file-diff-chevron">{expanded ? <VscChevronDown size={12} /> : <VscChevronRight size={12} />}</span>
+        <span className="chat-file-diff-path">{path || 'file'}</span>
+        <span className="chat-file-diff-stats">
+          <span className="diff-add">+{added ?? 0}</span>
+          <span className="diff-remove">−{removed ?? 0}</span>
+        </span>
+      </button>
+      {expanded && (
+        <div className="chat-file-diff-body">
+          {displayLines.map((item, i) => (
+            <div key={i} className={`chat-file-diff-line chat-file-diff-line-${item.type}`}>
+              <span className="chat-file-diff-line-prefix">{item.type === 'add' ? '+' : item.type === 'remove' ? '−' : ' '}</span>
+              <span className="chat-file-diff-line-text">{item.text || ' '}</span>
+            </div>
+          ))}
+          {hasMore && <div className="chat-file-diff-more">{diffLines.length - maxLines} hidden lines</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Cursor-style tool steps display - always visible, inline
-function ToolStepsBlock({ steps }) {
+function ToolStepsBlock({ steps, onConfirmCommand }) {
   const [expandedResults, setExpandedResults] = useState({});
+  const [executingCommands, setExecutingCommands] = useState({});
 
   if (!steps || steps.length === 0) return null;
 
-  // Pair up step + result entries
+  // Pair up step + result entries, handle confirmation_required steps
   const pairedSteps = [];
   for (let i = 0; i < steps.length; i++) {
     if (steps[i].type === 'step') {
+      // Check if this step needs confirmation (has confirmation_required data)
+      const needsConfirmation = steps[i].confirmation_required;
       const result = (i + 1 < steps.length && steps[i + 1].type === 'result') ? steps[i + 1] : null;
-      pairedSteps.push({ step: steps[i], result });
+      pairedSteps.push({ 
+        step: steps[i], 
+        result,
+        needsConfirmation,
+        confirmationData: steps[i].confirmationData,
+      });
       if (result) i++; // skip next
     }
   }
@@ -112,34 +217,163 @@ function ToolStepsBlock({ steps }) {
     setExpandedResults(prev => ({ ...prev, [idx]: !prev[idx] }));
   };
 
+  const handleApprove = async (confirmationData) => {
+    const { commandId, command, tool } = confirmationData;
+    setExecutingCommands(prev => ({ ...prev, [commandId]: true }));
+    
+    try {
+      const response = await axios.post(`${API}/ai/command/approve`, null, {
+        params: {
+          command_id: commandId,
+          approved: true,
+        },
+      });
+
+      if (response.data.status === 'executed') {
+        // Call the callback to add result to steps
+        if (onConfirmCommand) {
+          onConfirmCommand({
+            type: 'result',
+            tool: tool,
+            result: response.data.result,
+            command: command,
+          });
+        }
+      }
+    } catch (err) {
+      if (onConfirmCommand) {
+        onConfirmCommand({
+          type: 'result',
+          tool: tool,
+          result: `Error: ${err.response?.data?.error || err.message || 'Failed to execute command'}`,
+          command: command,
+        });
+      }
+    } finally {
+      setExecutingCommands(prev => {
+        const next = { ...prev };
+        delete next[commandId];
+        return next;
+      });
+    }
+  };
+
+  const handleReject = async (confirmationData) => {
+    const { commandId, command, tool } = confirmationData;
+    
+    try {
+      await axios.post(`${API}/ai/command/approve`, null, {
+        params: {
+          command_id: commandId,
+          approved: false,
+        },
+      });
+    } catch (err) {
+      console.error('Error rejecting command:', err);
+    }
+    
+    // Add rejection message
+    if (onConfirmCommand) {
+      onConfirmCommand({
+        type: 'result',
+        tool: tool,
+        result: 'Command was skipped by user.',
+        command: command,
+      });
+    }
+  };
+
   return (
     <div className="tool-steps-block">
       {pairedSteps.map((pair, i) => {
-        const { step, result } = pair;
+        const { step, result, needsConfirmation, confirmationData } = pair;
         const isExpanded = expandedResults[i];
-        const isFileOp = ['read_file', 'write_file', 'edit_file', 'delete_file'].includes(step.tool);
-        const isSearch = ['grep_search', 'codebase_search', 'file_search'].includes(step.tool);
+        const isExecuting = confirmationData && executingCommands[confirmationData.commandId];
 
         return (
           <div key={i} className={`tool-step-item ${step.tool}`}>
             <div
               className="tool-step-header"
-              onClick={() => result && toggleResult(i)}
-              style={{ cursor: result ? 'pointer' : 'default' }}
+              onClick={() => result && !needsConfirmation && toggleResult(i)}
+              style={{ cursor: (result && !needsConfirmation) ? 'pointer' : 'default' }}
             >
               <div className="tool-step-left">
                 <ToolIcon tool={step.tool} />
                 <span className="tool-step-label">{step.message}</span>
               </div>
-              {result && (
+              {result && !needsConfirmation && (
                 <span className="tool-step-toggle">
                   {isExpanded ? <VscChevronDown size={12} /> : <VscChevronRight size={12} />}
                 </span>
               )}
             </div>
+            
+            {/* Inline confirmation UI - appears below the command */}
+            {needsConfirmation && confirmationData && !result && (
+              <div className="tool-step-confirmation">
+                <div className="tool-step-confirmation-command">
+                  <code>{confirmationData.command}</code>
+                </div>
+                <div className="tool-step-confirmation-actions">
+                  <button
+                    className="tool-step-confirm-btn tool-step-confirm-btn-skip"
+                    onClick={() => handleReject(confirmationData)}
+                    disabled={isExecuting}
+                  >
+                    <VscClose size={14} />
+                    Skip
+                  </button>
+                  <button
+                    className="tool-step-confirm-btn tool-step-confirm-btn-run"
+                    onClick={() => handleApprove(confirmationData)}
+                    disabled={isExecuting}
+                  >
+                    {isExecuting ? (
+                      <>⏳ Executing...</>
+                    ) : (
+                      <>
+                        <VscCheck size={14} />
+                        Run
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+            
             {isExpanded && result && (
               <div className="tool-step-result">
-                <pre className="tool-step-result-content">{result.result}</pre>
+                {(() => {
+                  const tool = step.tool;
+                  const raw = result.result;
+                  // edit_file: result may be JSON with .diff (unified diff)
+                  if (tool === 'edit_file' && raw) {
+                    try {
+                      const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                      if (data && data.diff) {
+                        const parsed = parseUnifiedDiff(data.diff);
+                        const pathFromMsg = (step.message || '').match(/`([^`]+)`/);
+                        const path = (parsed && parsed.path) || (pathFromMsg && pathFromMsg[1]) || 'file';
+                        const added = parsed ? parsed.added : 0;
+                        const removed = parsed ? parsed.removed : 0;
+                        const lines = parsed ? parsed.lines : [];
+                        return (
+                          <FileDiffBlock path={path} added={added} removed={removed} diffLines={lines} />
+                        );
+                      }
+                    } catch (_) { /* not JSON */ }
+                  }
+                  // write_file: "Created: 'path' (N lines)" or "Written: 'path' (N lines)"
+                  if (tool === 'write_file' && typeof raw === 'string') {
+                    const m = raw.match(/(?:Created|Written):\s*'([^']+)'\s*\((\d+)\s*lines?\)/i);
+                    if (m) {
+                      return (
+                        <FileDiffBlock path={m[1]} added={parseInt(m[2], 10)} removed={0} diffLines={[]} />
+                      );
+                    }
+                  }
+                  return <pre className="tool-step-result-content">{raw}</pre>;
+                })()}
               </div>
             )}
           </div>
@@ -149,7 +383,7 @@ function ToolStepsBlock({ steps }) {
   );
 }
 
-function ChatMessage({ message, index, isLast, onCopy, onEdit, onResend, loading }) {
+function ChatMessage({ message, index, isLast, onCopy, onEdit, onResend, loading, onConfirmCommand }) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const [hovering, setHovering] = useState(false);
@@ -192,9 +426,19 @@ function ChatMessage({ message, index, isLast, onCopy, onEdit, onResend, loading
             )}
           </div>
         </div>
+        {/* Todo list when present */}
+        {!isUser && message.todoList && message.todoList.length > 0 && (
+          <TodoListBlock
+            steps={message.todoList}
+            completedIndices={message.todoCompletedIndices || []}
+          />
+        )}
         {/* Tool steps - always visible, Cursor-style */}
         {!isUser && message.steps && message.steps.length > 0 && (
-          <ToolStepsBlock steps={message.steps} />
+          <ToolStepsBlock 
+            steps={message.steps} 
+            onConfirmCommand={onConfirmCommand}
+          />
         )}
         <div className="chat-message-body">
           {isUser ? (
@@ -232,6 +476,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
   const thinkingStepsRef = useRef([]);
   const thinkingTextsRef = useRef([]);
   const [editingIndex, setEditingIndex] = useState(null);
+  const [mode, setMode] = useState('agent'); // 'agent' or 'chat'
   // liveThinkingExpanded removed — tool steps are always visible in Cursor style
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -239,6 +484,10 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
   const [sessions, setSessions] = useState(() => loadSessionsFromStorage());
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [todoList, setTodoList] = useState([]);
+  const [todoCompletedIndices, setTodoCompletedIndices] = useState(new Set());
+  const todoListRef = useRef([]);
+  const todoCompletedRef = useRef(new Set());
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -288,8 +537,12 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
     setInput('');
     setThinkingSteps([]);
     setThinkingTexts([]);
+    setTodoList([]);
+    setTodoCompletedIndices(new Set());
     thinkingStepsRef.current = [];
     thinkingTextsRef.current = [];
+    todoListRef.current = [];
+    todoCompletedRef.current = new Set();
   }, [activeSessionId, messages]);
 
   const loadSession = useCallback((id) => {
@@ -322,6 +575,10 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
     setLoading(true);
     setThinkingSteps([]);
     setThinkingTexts([]);
+    setTodoList([]);
+    setTodoCompletedIndices(new Set());
+    todoListRef.current = [];
+    todoCompletedRef.current = new Set();
     thinkingStepsRef.current = [];
     thinkingTextsRef.current = [];
 
@@ -343,7 +600,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
     }
 
     try {
-      const response = await fetch(`${API}/ai/chat/stream?prompt=${encodeURIComponent(prompt)}`);
+      const response = await fetch(`${API}/ai/chat/stream?prompt=${encodeURIComponent(prompt)}&mode=${mode}`);
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -372,6 +629,34 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
                 const step = { type: 'result', tool: data.tool, result: data.result };
                 thinkingStepsRef.current = [...thinkingStepsRef.current, step];
                 setThinkingSteps(prev => [...prev, step]);
+              } else if (data.type === 'confirmation_required') {
+                // Add a step with confirmation data - will show inline confirmation UI
+                const step = { 
+                  type: 'step', 
+                  message: `Running command: \`${data.command}\``, 
+                  tool: data.tool,
+                  confirmation_required: true,
+                  confirmationData: {
+                    commandId: data.command_id,
+                    command: data.command,
+                    message: data.message,
+                    tool: data.tool,
+                  }
+                };
+                thinkingStepsRef.current = [...thinkingStepsRef.current, step];
+                setThinkingSteps(prev => [...prev, step]);
+              } else if (data.type === 'todo') {
+                const steps = data.steps || [];
+                todoListRef.current = steps;
+                todoCompletedRef.current = new Set();
+                setTodoList(steps);
+                setTodoCompletedIndices(new Set());
+              } else if (data.type === 'todo_step_completed') {
+                const idx = data.index;
+                if (typeof idx === 'number') {
+                  todoCompletedRef.current = new Set([...todoCompletedRef.current, idx]);
+                  setTodoCompletedIndices(prev => new Set([...prev, idx]));
+                }
               } else if (data.type === 'done') {
                 finalAnswer = data.answer || 'Done.';
               } else if (data.type === 'error') {
@@ -384,11 +669,15 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
         }
       }
 
+      const finalTodoList = todoListRef.current;
+      const finalTodoCompleted = todoListRef.current.length ? Array.from(todoCompletedRef.current) : undefined;
       setMessages([...messagesList, {
         role: 'assistant',
         text: finalAnswer,
         steps: [...thinkingStepsRef.current],
         thinkingTexts: [...thinkingTextsRef.current],
+        todoList: finalTodoList.length ? finalTodoList : undefined,
+        todoCompletedIndices: finalTodoCompleted,
       }]);
     } catch (err) {
       setMessages([...messagesList, {
@@ -404,7 +693,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
     setThinkingTexts([]);
     thinkingStepsRef.current = [];
     thinkingTextsRef.current = [];
-  }, [currentFile, currentContent]);
+  }, [currentFile, currentContent, mode]);
 
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
@@ -564,6 +853,22 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
           )}
         </div>
         <div className="chat-header-actions">
+          <div className="chat-mode-toggle">
+            <button
+              className={`chat-mode-btn ${mode === 'agent' ? 'active' : ''}`}
+              onClick={() => setMode('agent')}
+              title="Agent Mode - Can make changes"
+            >
+              Agent
+            </button>
+            <button
+              className={`chat-mode-btn ${mode === 'chat' ? 'active' : ''}`}
+              onClick={() => setMode('chat')}
+              title="Chat Mode - Read-only, information only"
+            >
+              Chat
+            </button>
+          </div>
           <button className="icon-btn" title="New Chat" onClick={newChat}>
             <VscAdd size={14} />
           </button>
@@ -611,6 +916,12 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
             onEdit={handleEditMessage}
             onResend={handleResendMessage}
             loading={loading}
+            onConfirmCommand={(resultStep) => {
+              // For completed messages, we can't update steps dynamically
+              // This callback is mainly for live thinking steps
+              // For completed messages, confirmations should have been handled already
+              console.log('Confirmation for completed message:', resultStep);
+            }}
           />
         ))}
 
@@ -625,8 +936,19 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
                 <span className="chat-message-role">AI Assistant</span>
               </div>
               <div className="chat-thinking-live">
+                {/* Todo list when agent sent one */}
+                {todoList.length > 0 && (
+                  <TodoListBlock steps={todoList} completedIndices={todoCompletedIndices} />
+                )}
                 {/* Tool steps as they happen */}
-                <ToolStepsBlock steps={thinkingSteps} />
+                <ToolStepsBlock 
+                  steps={thinkingSteps}
+                  onConfirmCommand={(resultStep) => {
+                    // Add result step to thinking steps
+                    thinkingStepsRef.current = [...thinkingStepsRef.current, resultStep];
+                    setThinkingSteps(prev => [...prev, resultStep]);
+                  }}
+                />
 
                 {/* Loading indicator */}
                 <div className="chat-loading">

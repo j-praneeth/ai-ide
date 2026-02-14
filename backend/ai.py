@@ -94,12 +94,21 @@ def chat_clear():
 
 
 @router.get("/chat/stream")
-def chat_stream(prompt: str):
-    """SSE streaming endpoint for real-time agent steps."""
+def chat_stream(prompt: str, mode: str = "agent"):
+    """SSE streaming endpoint for real-time agent steps.
+    
+    Args:
+        prompt: User's prompt/query
+        mode: "agent" (can make changes) or "chat" (read-only, information only)
+    """
     if not agent_available:
         def fallback():
             yield f"data: {json_module.dumps({'type': 'done', 'answer': 'AI agent not configured. Install Ollama and pull a model.'})}\n\n"
         return StreamingResponse(fallback(), media_type="text/event-stream")
+
+    # Validate mode
+    if mode not in ["agent", "chat"]:
+        mode = "agent"
 
     import file_manager
     set_project_root(file_manager.PROJECT_ROOT)
@@ -113,7 +122,7 @@ def chat_stream(prompt: str):
             history_for_agent = list(CONVERSATION_HISTORY[:-1]) if len(CONVERSATION_HISTORY) > 1 else []
 
             final_answer = ""
-            for event in run_agent_stream(prompt, conversation_history=history_for_agent):
+            for event in run_agent_stream(prompt, conversation_history=history_for_agent, mode=mode):
                 yield f"data: {json_module.dumps(event)}\n\n"
                 _emit_agent_event(event)
                 if event.get("type") == "done":
@@ -128,8 +137,65 @@ def chat_stream(prompt: str):
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@router.post("/command/approve")
+def approve_command(command_id: str, approved: bool = True):
+    """Approve or reject a pending command.
+    
+    Args:
+        command_id: Unique ID for the pending command
+        approved: True to approve and execute, False to reject
+    """
+    try:
+        from agent.pending_commands import get_pending_command, remove_pending_command
+        from agent.executor import execute
+    except ImportError:
+        return {"error": "Agent module not available"}
+    
+    pending = get_pending_command(command_id)
+    if not pending:
+        return {"error": "Command not found or already processed"}
+    
+    command = pending["command"]
+    tool_input = pending["tool_input"].copy()  # Make a copy to avoid modifying original
+    
+    if not approved:
+        remove_pending_command(command_id)
+        return {"status": "rejected", "message": "Command was rejected by user"}
+    
+    # Execute the approved command
+    try:
+        tool_input["approved"] = True
+        result = execute(pending["tool"], tool_input)
+        remove_pending_command(command_id)
+        
+        if isinstance(result, dict):
+            result_str = json_module.dumps(result, default=str)
+        else:
+            result_str = str(result)
+        
+        return {
+            "status": "executed",
+            "result": result_str,
+            "command": command,
+        }
+    except Exception as e:
+        remove_pending_command(command_id)
+        logger.exception("Error executing approved command: %s", e)
+        return {"status": "error", "error": str(e)}
+
+
 @router.post("/chat")
-def chat(prompt: str):
+def chat(prompt: str, mode: str = "agent"):
+    """Chat endpoint for AI assistant.
+    
+    Args:
+        prompt: User's prompt/query
+        mode: "agent" (can make changes) or "chat" (read-only, information only)
+    """
+    # Validate mode
+    if mode not in ["agent", "chat"]:
+        mode = "agent"
+    
     if agent_available:
         try:
             # Sync agent's project root with the file manager's current project root
@@ -138,7 +204,7 @@ def chat(prompt: str):
 
             CONVERSATION_HISTORY.append({"role": "user", "content": prompt})
             history_for_agent = list(CONVERSATION_HISTORY[:-1]) if len(CONVERSATION_HISTORY) > 1 else []
-            response = run_agent(prompt, conversation_history=history_for_agent)
+            response = run_agent(prompt, conversation_history=history_for_agent, mode=mode)
             CONVERSATION_HISTORY.append({"role": "assistant", "content": response})
             # Trim to last N messages
             if len(CONVERSATION_HISTORY) > MAX_HISTORY_MESSAGES:

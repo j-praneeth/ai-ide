@@ -161,6 +161,9 @@
 
 .room-code-input {
   font-family: 'SF Mono', 'Fira Code', monospace;
+  width: 100%;
+  display: block;
+  box-sizing: border-box;
 }
 
 .scan-instructions {

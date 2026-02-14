@@ -1,6 +1,8 @@
 import os
 import re
 import fnmatch
+import glob
+import json
 import subprocess
 import difflib
 from pathlib import Path
@@ -135,55 +137,279 @@ def read_file(input_data: Dict[str, Any]) -> str:
 # ---------------------------
 # 3. run_command (hardened)
 # ---------------------------
+def _build_command_env():
+    """Build environment variables for subprocess commands, ensuring PATH includes common tool locations."""
+    import platform as _platform
+    env = dict(os.environ)
+    
+    # Get current PATH
+    current_path = env.get("PATH", "")
+    path_parts = current_path.split(os.pathsep) if current_path else []
+    
+    is_windows = _platform.system() == "Windows"
+    
+    if is_windows:
+        # Windows common locations for npm/node
+        common_paths = [
+            os.path.expanduser("~\\AppData\\Roaming\\npm"),  # npm global installs
+            os.path.expanduser("~\\AppData\\Local\\Programs\\nodejs"),  # Node.js installer default
+            "C:\\Program Files\\nodejs",  # Node.js system install
+            "C:\\Program Files (x86)\\nodejs",  # Node.js 32-bit
+            os.path.expanduser("~\\AppData\\Roaming\\nvm"),  # nvm-windows location
+            os.path.expanduser("~\\scoop\\apps\\nodejs\\current\\bin"),  # Scoop
+            os.path.expanduser("~\\scoop\\apps\\nodejs-lts\\current\\bin"),  # Scoop LTS
+            "C:\\ProgramData\\chocolatey\\bin",  # Chocolatey
+            os.path.expanduser("~\\AppData\\Local\\Microsoft\\WindowsApps"),  # Windows Store apps
+        ]
+        
+        # Check for nvm-windows and add current node version
+        nvm_root = os.path.expanduser("~\\AppData\\Roaming\\nvm")
+        if os.path.isdir(nvm_root):
+            # Try to find current node version in nvm
+            try:
+                # Check for nvm current version file or environment variable
+                nvm_current = env.get("NVM_CURRENT", "")
+                if not nvm_current:
+                    # Try to read nvm current version
+                    nvm_versions_dir = os.path.join(nvm_root, "v*")
+                    matches = glob.glob(nvm_versions_dir)
+                    if matches:
+                        # Use the latest version found
+                        latest = sorted(matches)[-1]
+                        nvm_node_path = os.path.join(latest, "nodejs")
+                        if os.path.isdir(nvm_node_path):
+                            common_paths.insert(0, nvm_node_path)
+            except:
+                pass
+    else:
+        # macOS/Linux common locations for npm/node
+        common_paths = [
+            "/usr/local/bin",           # Homebrew default
+            "/opt/homebrew/bin",        # Homebrew on Apple Silicon
+            os.path.expanduser("~/.nvm/versions/node/*/bin"),  # nvm (will be expanded)
+            os.path.expanduser("~/.local/bin"),  # User local bin
+            "/usr/bin",                 # System binaries
+            "/bin",                     # Core system binaries
+        ]
+    
+    # Add common paths if they exist and aren't already in PATH
+    for path_candidate in common_paths:
+        if "*" in path_candidate:
+            # Handle glob patterns (like nvm)
+            matches = glob.glob(path_candidate)
+            for match in matches:
+                if os.path.isdir(match) and match not in path_parts:
+                    path_parts.insert(0, match)
+        else:
+            if os.path.isdir(path_candidate) and path_candidate not in path_parts:
+                path_parts.insert(0, path_candidate)
+    
+    # Also try to find npm/node via common commands (works on both platforms)
+    for cmd in ["npm", "node"]:
+        try:
+            if is_windows:
+                # On Windows, use 'where' command
+                which_result = subprocess.run(
+                    ["where", cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    shell=True,  # 'where' needs shell on Windows
+                )
+            else:
+                # On Unix, use 'which' command
+                which_result = subprocess.run(
+                    ["which", cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+            
+            if which_result.returncode == 0:
+                cmd_path = which_result.stdout.strip().split("\n")[0].split("\r")[0]
+                if cmd_path:
+                    cmd_dir = os.path.dirname(cmd_path)
+                    if cmd_dir and os.path.isdir(cmd_dir) and cmd_dir not in path_parts:
+                        path_parts.insert(0, cmd_dir)
+        except:
+            pass
+    
+    env["PATH"] = os.pathsep.join(path_parts)
+    return env
+
+
 def run_command(input_data: Dict[str, Any]) -> str:
     import platform as _platform
     command = input_data.get("command")
     if not command:
         return "Error: command is required."
 
-    blocked_keywords = [
-        "rm -rf",
-        "shutdown",
-        "reboot",
-        "mkfs",
-        "dd ",
-        "dotnet tool install",
-        "npm install -g",
-        "pip install",
-        "brew install",
-        "sudo",
-        "format c:",
-        "del /s /q c:",
-        "rd /s /q c:",
-    ]
-    cmd_lower = command.lower()
-    if any(b in cmd_lower for b in blocked_keywords):
-        return "Blocked: Dangerous or global installation command not allowed."
+    # Check if user has already approved this command
+    approved = input_data.get("approved", False)
+    if approved:
+        # User approved, proceed with execution
+        pass
+    else:
+        # Check for commands that require confirmation
+        cmd_lower = command.lower()
+        
+        # Truly dangerous commands that should always be blocked
+        dangerous_keywords = [
+            "rm -rf /",
+            "rm -rf ~",
+            "shutdown",
+            "reboot",
+            "mkfs",
+            "dd if=",
+            "format c:",
+            "del /s /q c:",
+            "rd /s /q c:",
+        ]
+        
+        # Commands that require user confirmation (but are allowed after approval)
+        requires_confirmation_keywords = [
+            "npm install -g",      # Global npm installs
+            "pip install",        # Python package installs
+            "brew install",       # Homebrew installs
+            "dotnet tool install", # .NET tool installs
+            "sudo ",              # Sudo commands
+            "rm -rf",             # Recursive delete (but not system paths)
+            "npx create-react-app",  # Create React app (may conflict)
+            "npx create-",        # Other create commands
+        ]
+        
+        # Check for truly dangerous commands
+        if any(b in cmd_lower for b in dangerous_keywords):
+            return "Blocked: This command is too dangerous and cannot be executed."
+        
+        # Check for commands that require confirmation
+        needs_confirmation = any(b in cmd_lower for b in requires_confirmation_keywords)
+        
+        if needs_confirmation:
+            # Return a special dict format requesting confirmation
+            return json.dumps({
+                "status": "confirmation_required",
+                "command": command,
+                "message": f"This command requires your approval before execution:\n\n{command}\n\nDo you want to proceed?",
+            })
 
+    # Determine working directory
+    # If command contains 'cd', extract the directory and use it as cwd
+    # Otherwise, use project root or specified working_directory
+    working_dir = str(get_project_root())
+    working_directory = input_data.get("working_directory") or input_data.get("cwd")
+    
+    # Check if command starts with 'cd' - extract directory and use it as cwd
+    # Pattern: "cd directory" or "cd directory && command" or "cd directory; command"
+    cd_match = re.match(r'^\s*cd\s+([^\s&|;]+)(?:\s*(?:&&|;)\s*(.+))?', command)
+    if cd_match:
+        target_dir = cd_match.group(1).strip()
+        remaining_command = cd_match.group(2) if cd_match.group(2) else None
+        
+        # Resolve relative paths from project root
+        if not os.path.isabs(target_dir):
+            working_dir = str(get_project_root() / target_dir)
+        else:
+            # For absolute paths, validate it's within project root
+            try:
+                target_path = Path(target_dir).resolve()
+                project_root = get_project_root().resolve()
+                if str(target_path).startswith(str(project_root)):
+                    working_dir = str(target_path)
+                else:
+                    working_dir = str(get_project_root())
+            except:
+                working_dir = str(get_project_root())
+        
+        # If there's a command after 'cd', use it instead of the full command
+        # This ensures commands run from the correct directory
+        if remaining_command:
+            command = remaining_command.strip()
+    elif working_directory:
+        # Use specified working directory (relative to project root)
+        if not os.path.isabs(working_directory):
+            working_dir = str(get_project_root() / working_directory)
+        else:
+            working_dir = working_directory
+
+    # Build environment with proper PATH
+    cmd_env = _build_command_env()
+    
+    # For macOS/Linux, use a login shell to ensure proper environment setup
+    # This ensures nvm, homebrew, etc. are available
+    is_windows = _platform.system() == "Windows"
+    
     try:
-        is_windows = _platform.system() == "Windows"
         if is_windows:
+            # On Windows, use PowerShell with proper environment
+            # PowerShell will inherit the enhanced PATH from cmd_env
             result = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", command],
                 capture_output=True,
                 text=True,
                 timeout=30,
-                cwd=str(get_project_root()),
+                cwd=working_dir,
+                env=cmd_env,
+                shell=False,  # Don't use shell=True with list args
             )
         else:
+            # Use bash -l -c to run as login shell, which sources .bashrc/.zshrc/etc
+            # This ensures nvm, homebrew, and other tools are available
+            # Use bash -l (login shell) to source profile files
             result = subprocess.run(
-                command,
-                shell=True,
-                cwd=str(get_project_root()),
+                ["bash", "-l", "-c", command],
+                cwd=working_dir,
                 capture_output=True,
                 text=True,
                 timeout=30,
+                env=cmd_env,
             )
-        return (result.stdout or "") + (result.stderr or "")
+        
+        output = (result.stdout or "") + (result.stderr or "")
+        
+        # Check for common "command not found" errors and provide helpful messages
+        if result.returncode != 0:
+            error_lower = output.lower()
+            is_not_found = (
+                "command not found" in error_lower or 
+                "not recognized" in error_lower or
+                "is not recognized" in error_lower or
+                "cannot find" in error_lower
+            )
+            
+            if is_not_found:
+                # Try to identify which command failed
+                cmd_name = command.split()[0] if command.split() else "command"
+                if cmd_name in ["npm", "node", "npx"]:
+                    if is_windows:
+                        output += "\n\nTip: Make sure Node.js and npm are installed. "
+                        output += "Common installation locations:\n"
+                        output += "  - Node.js installer: C:\\Program Files\\nodejs\n"
+                        output += "  - nvm-windows: %APPDATA%\\nvm\n"
+                        output += "  - Chocolatey: choco install nodejs\n"
+                        output += "  - Scoop: scoop install nodejs\n"
+                        output += "After installation, restart the application or add Node.js to your PATH."
+                    else:
+                        output += "\n\nTip: Make sure Node.js and npm are installed. "
+                        output += "If using nvm, ensure it's initialized in your shell profile (.bashrc, .zshrc, etc.)."
+                elif cmd_name in ["python", "python3", "pip"]:
+                    if is_windows:
+                        output += "\n\nTip: Make sure Python is installed and in your PATH. "
+                        output += "Download from python.org or use: choco install python / scoop install python"
+                    else:
+                        output += "\n\nTip: Make sure Python is installed and in your PATH."
+                elif cmd_name in ["git"]:
+                    if is_windows:
+                        output += "\n\nTip: Make sure Git is installed and in your PATH. "
+                        output += "Download from git-scm.com or use: choco install git / scoop install git"
+                    else:
+                        output += "\n\nTip: Make sure Git is installed and in your PATH."
+        
+        return output
     except subprocess.TimeoutExpired:
         return "Error: Command timed out after 30s."
     except Exception as e:
-        return str(e)
+        return f"Error: {str(e)}"
 
 
 # ---------------------------

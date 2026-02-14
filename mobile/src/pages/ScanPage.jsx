@@ -83,7 +83,15 @@ export default function ScanPage({ onConnected }) {
               maxLength={6}
               autoCapitalize="characters"
               autoComplete="off"
-              style={{ marginBottom: 16, letterSpacing: 6, textAlign: 'center', fontSize: 28, fontWeight: 700 }}
+              style={{ 
+                marginBottom: 16, 
+                letterSpacing: 6, 
+                textAlign: 'center', 
+                fontSize: 28, 
+                fontWeight: 700,
+                width: '100%',
+                display: 'block'
+              }}
             />
 
             <button className="btn btn-primary btn-full" onClick={connectRelay}>
