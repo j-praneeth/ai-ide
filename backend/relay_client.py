@@ -212,11 +212,17 @@ async def _receiver(ws):
             elif msg_type == "get_files":
                 await _handle_get_files()
 
+            elif msg_type == "get_tree_children":
+                await _handle_get_tree_children(message)
+
             elif msg_type == "read_file":
                 await _handle_read_file(message)
 
             elif msg_type == "get_status":
                 await _handle_get_status()
+
+            elif msg_type == "get_chat_history":
+                await _handle_get_chat_history()
 
             elif msg_type == "ping":
                 relay_emit({"type": "pong"})
@@ -362,6 +368,45 @@ async def _handle_get_status():
             "workspace_name": fm.PROJECT_ROOT.name,
             "desktop_online": True,
         })
+    except Exception as e:
+        relay_emit({"type": "error", "message": str(e)})
+
+
+async def _handle_get_chat_history():
+    """Send current chat history to mobile so it can show desktop conversation."""
+    try:
+        import ai
+        history = list(getattr(ai, "CONVERSATION_HISTORY", []))
+        relay_emit({
+            "type": "chat_history",
+            "history": history,
+            "timestamp": time.time(),
+        })
+    except Exception as e:
+        relay_emit({"type": "error", "message": str(e)})
+
+
+async def _handle_get_tree_children(message: dict):
+    """Send folder children to mobile for lazy expand."""
+    try:
+        import file_manager as fm
+        path = message.get("path", "")
+        children = fm.get_tree_children(path)
+        if isinstance(children, dict) and children.get("error"):
+            relay_emit({
+                "type": "tree_children",
+                "path": path,
+                "children": [],
+                "error": children["error"],
+                "timestamp": time.time(),
+            })
+        else:
+            relay_emit({
+                "type": "tree_children",
+                "path": path,
+                "children": children if isinstance(children, list) else [],
+                "timestamp": time.time(),
+            })
     except Exception as e:
         relay_emit({"type": "error", "message": str(e)})
 

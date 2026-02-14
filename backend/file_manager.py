@@ -82,8 +82,9 @@ SKIP_FILES = {
 MAX_TREE_DEPTH = 10
 
 
-def _list_dir(dir_path):
-    """List immediate children of a directory (one level only). Fast."""
+def _list_dir(dir_path, show_hidden=False):
+    """List immediate children of a directory (one level only). Fast.
+    show_hidden: if True, include files/folders whose names start with '.' (hidden)."""
     items = []
     try:
         entries = sorted(dir_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
@@ -91,9 +92,9 @@ def _list_dir(dir_path):
         return []
 
     for p in entries:
-        if p.name.startswith(".") and p.name not in ('.env', '.gitignore', '.editorconfig'):
+        if not show_hidden and p.name.startswith(".") and p.name not in ('.env', '.gitignore', '.editorconfig'):
             continue
-        if p.name in SKIP_FILES:
+        if p.name in SKIP_FILES and not (show_hidden and p.name.startswith('.')):
             continue
 
         if p.is_dir():
@@ -103,9 +104,9 @@ def _list_dir(dir_path):
             has_children = False
             try:
                 for child in p.iterdir():
-                    if child.name.startswith(".") and child.name not in ('.env', '.gitignore', '.editorconfig'):
+                    if not show_hidden and child.name.startswith(".") and child.name not in ('.env', '.gitignore', '.editorconfig'):
                         continue
-                    if child.name in SKIP_FILES:
+                    if child.name in SKIP_FILES and not (show_hidden and child.name.startswith('.')):
                         continue
                     if child.is_dir() and child.name in SKIP_DIRS:
                         continue
@@ -134,14 +135,14 @@ def _list_dir(dir_path):
 
 
 @router.get("/tree")
-def get_tree():
-    """Return the top-level directory listing (one level). Fast."""
-    return _list_dir(PROJECT_ROOT)
+def get_tree(show_hidden: bool = False):
+    """Return the top-level directory listing (one level). Fast. show_hidden: include dotfiles/dotdirs."""
+    return _list_dir(PROJECT_ROOT, show_hidden=show_hidden)
 
 
 @router.get("/tree-children")
-def get_tree_children(path: str):
-    """Return children of a subdirectory (lazy loading on expand)."""
+def get_tree_children(path: str, show_hidden: bool = False):
+    """Return children of a subdirectory (lazy loading on expand). show_hidden: include dotfiles/dotdirs."""
     target = (PROJECT_ROOT / path).resolve()
 
     # Security: prevent reading outside project root
@@ -151,7 +152,7 @@ def get_tree_children(path: str):
     if not target.exists() or not target.is_dir():
         return []
 
-    return _list_dir(target)
+    return _list_dir(target, show_hidden=show_hidden)
 
 
 @router.get("/read")
@@ -225,6 +226,58 @@ def delete_file(path: str):
         else:
             file_path.unlink()
         return {"status": "deleted"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/rename")
+def rename_path(path: str, new_name: str):
+    """Rename a file or folder. new_name is the new base name (not full path)."""
+    file_path = (PROJECT_ROOT / path).resolve()
+    if not str(file_path).startswith(str(PROJECT_ROOT)):
+        return {"error": "Access denied: path outside project directory"}
+    if not file_path.exists():
+        return {"error": "File or folder not found"}
+    if not new_name or new_name.strip() != new_name or "/" in new_name or "\\" in new_name:
+        return {"error": "Invalid new name"}
+    new_path = file_path.parent / new_name.strip()
+    if new_path.exists():
+        return {"error": "A file or folder with that name already exists"}
+    try:
+        file_path.rename(new_path)
+        rel = new_path.relative_to(PROJECT_ROOT)
+        return {"status": "renamed", "path": str(rel)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/move")
+def move_path(path: str, dest: str):
+    """Move a file or folder to a new location. dest is the destination directory path (relative to project root)."""
+    file_path = (PROJECT_ROOT / path).resolve()
+    dest_dir = (PROJECT_ROOT / dest).resolve()
+    if not str(file_path).startswith(str(PROJECT_ROOT)) or not str(dest_dir).startswith(str(PROJECT_ROOT)):
+        return {"error": "Access denied: path outside project directory"}
+    if not file_path.exists():
+        return {"error": "File or folder not found"}
+    if not dest_dir.is_dir():
+        return {"error": "Destination is not a directory"}
+    # Prevent moving a directory into itself or a descendant
+    try:
+        file_path.relative_to(dest_dir)
+        return {"error": "Cannot move a folder into itself"}
+    except ValueError:
+        pass
+    if str(dest_dir).startswith(str(file_path)) and file_path.is_dir():
+        return {"error": "Cannot move a folder into its own subfolder"}
+    new_path = dest_dir / file_path.name
+    if new_path.exists():
+        return {"error": "A file or folder with that name already exists at the destination"}
+    try:
+        import shutil
+        shutil.move(str(file_path), str(new_path))
+        rel = new_path.relative_to(PROJECT_ROOT)
+        return {"status": "moved", "path": str(rel)}
     except Exception as e:
         return {"error": str(e)}
 

@@ -2,14 +2,46 @@ import { useState, useEffect, useRef } from 'react';
 import nebulaWS from '../services/websocket';
 import './ChatPage.css';
 
-export default function ChatPage() {
+export default function ChatPage({ isVisible }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isAgentWorking, setIsAgentWorking] = useState(false);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
+  // When chat tab is visible, request desktop chat history so system chat shows on mobile
   useEffect(() => {
+    if (isVisible && nebulaWS.connected) {
+      nebulaWS.requestChatHistory();
+    }
+  }, [isVisible]);
+
+  useEffect(() => {
+    const unsubChatMessage = nebulaWS.on('chat_message', (data) => {
+      const role = data.role || 'user';
+      const content = data.content || '';
+      if (!content) return;
+      setMessages((prev) => {
+        if (prev.some((m) => m.type === 'thinking' || m.type === 'step')) return prev;
+        return [...prev, { type: role, text: content, timestamp: data.timestamp || Date.now() / 1000 }];
+      });
+    });
+
+    const unsubChatHistory = nebulaWS.on('chat_history', (data) => {
+      const history = data.history || [];
+      if (history.length === 0) return;
+      setMessages((prev) => {
+        // Don't overwrite if agent is currently working (we'd lose in-progress steps)
+        if (prev.some((m) => m.type === 'thinking' || m.type === 'step')) return prev;
+        const asMessages = history.map((m) => ({
+          type: m.role === 'user' ? 'user' : 'assistant',
+          text: m.content || '',
+          timestamp: data.timestamp || Date.now() / 1000,
+        }));
+        return asMessages;
+      });
+    });
+
     const unsubThinking = nebulaWS.on('thinking', (data) => {
       setIsAgentWorking(true);
       setMessages(prev => {
@@ -63,6 +95,8 @@ export default function ChatPage() {
     });
 
     return () => {
+      unsubChatMessage();
+      unsubChatHistory();
       unsubThinking();
       unsubStep();
       unsubResult();

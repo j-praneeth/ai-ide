@@ -34,6 +34,21 @@
   overflow-y: auto;
 }
 
+.scan-qr-container {
+  width: 100%;
+  min-height: 260px;
+  background: var(--bg-secondary);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.scan-qr-container video {
+  object-fit: cover;
+  border-radius: var(--radius);
+}
+
 .scanner-container {
   position: relative;
   width: 100%;

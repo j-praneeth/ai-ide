@@ -70,7 +70,7 @@ function App() {
   if (!hasConnection) {
     return (
       <ErrorBoundary>
-        <ScanPage onConnected={() => setHasConnection(true)} />
+        <ScanPage onConnected={() => { setHasConnection(true); setCurrentPage('chat'); }} />
       </ErrorBoundary>
     );
   }
@@ -91,16 +91,24 @@ function App() {
         </div>
 
         <div className="page-container">
-          {/* Live stream is always rendered in the background */}
+          {/* Live stream: visible when no tab selected */}
           <div style={{ display: currentPage ? 'none' : 'flex', flexDirection: 'column', height: '100%' }}>
             <LiveViewPage />
           </div>
 
-          {/* Other pages overlay on top */}
-          {currentPage === 'dashboard' && <DashboardPage />}
-          {currentPage === 'chat' && <ChatPage />}
-          {currentPage === 'terminal' && <TerminalPage />}
-          {currentPage === 'files' && <FilesPage />}
+          {/* All pages stay mounted so state (e.g. chat) is preserved when switching tabs */}
+          <div style={{ display: currentPage === 'dashboard' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
+            <DashboardPage />
+          </div>
+          <div style={{ display: currentPage === 'chat' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
+            <ChatPage isVisible={currentPage === 'chat'} />
+          </div>
+          <div style={{ display: currentPage === 'terminal' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
+            <TerminalPage />
+          </div>
+          <div style={{ display: currentPage === 'files' ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
+            <FilesPage />
+          </div>
           {currentPage === 'scan' && <ScanPage onConnected={() => { setHasConnection(true); setCurrentPage(null); }} />}
         </div>
 

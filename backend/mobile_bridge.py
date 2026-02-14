@@ -240,6 +240,35 @@ def relay_configured():
         return {"configured": False}
 
 
+@router.get("/relay/qr")
+def relay_qr():
+    """Return QR code image (base64) for relay connection so mobile can scan instead of typing code."""
+    try:
+        from relay_client import get_relay_info
+        info = get_relay_info()
+        if not info.get("connected") or not info.get("room_code"):
+            return {"qr_image": None, "message": "Not connected. Generate room code first."}
+        relay_url = (info.get("relay_url") or "").rstrip("/")
+        room_code = info.get("room_code", "")
+        payload = json.dumps({"mode": "relay", "relay_url": relay_url, "room_code": room_code})
+        qr_image_b64 = None
+        try:
+            import qrcode
+            qr = qrcode.QRCode(version=1, box_size=10, border=2)
+            qr.add_data(payload)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="white", back_color="#0D0D12")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            qr_image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        except Exception as e:
+            logger.warning("Relay QR generation failed: %s", e)
+        return {"qr_image": qr_image_b64, "room_code": room_code}
+    except Exception as e:
+        logger.exception("relay/qr failed: %s", e)
+        return {"qr_image": None, "message": str(e)}
+
+
 # ── Screen Streaming ─────────────────────────────────────────────────
 _latest_frame: dict = {}
 _remote_input_queue: list = []
@@ -421,6 +450,11 @@ async def _handle_mobile_message(message: dict, ws: WebSocket):
         # Request file tree
         await _send_file_tree(ws)
 
+    elif msg_type == "get_tree_children":
+        # Request children of a folder (for lazy expand on mobile)
+        path = message.get("path", "")
+        await _send_tree_children(path, ws)
+
     elif msg_type == "read_file":
         # Read a file
         path = message.get("path", "")
@@ -429,6 +463,10 @@ async def _handle_mobile_message(message: dict, ws: WebSocket):
     elif msg_type == "get_status":
         # Send full status update
         await _send_status(ws)
+
+    elif msg_type == "get_chat_history":
+        # Send current IDE chat history so mobile can show desktop conversation
+        await _send_chat_history(ws)
 
     elif msg_type in ("remote_click", "remote_scroll", "remote_keypress"):
         # Queue remote input for Electron to process
@@ -536,6 +574,55 @@ async def _send_file_tree(ws: WebSocket):
         await ws.send_text(json.dumps({
             "type": "error",
             "message": f"File tree error: {e}",
+        }))
+
+
+async def _send_chat_history(ws: WebSocket):
+    """Send current conversation history to mobile so it can show desktop chat."""
+    try:
+        import ai
+        history = list(getattr(ai, "CONVERSATION_HISTORY", []))
+        await ws.send_text(json.dumps({
+            "type": "chat_history",
+            "history": history,
+            "timestamp": time.time(),
+        }))
+    except Exception as e:
+        logger.exception("Send chat history error: %s", e)
+        await ws.send_text(json.dumps({
+            "type": "error",
+            "message": str(e),
+        }))
+
+
+async def _send_tree_children(path: str, ws: WebSocket):
+    """Send children of a folder for mobile lazy expand."""
+    try:
+        import file_manager as fm
+        children = fm.get_tree_children(path)
+        if isinstance(children, dict) and children.get("error"):
+            await ws.send_text(json.dumps({
+                "type": "tree_children",
+                "path": path,
+                "children": [],
+                "error": children["error"],
+                "timestamp": time.time(),
+            }))
+        else:
+            await ws.send_text(json.dumps({
+                "type": "tree_children",
+                "path": path,
+                "children": children if isinstance(children, list) else [],
+                "timestamp": time.time(),
+            }))
+    except Exception as e:
+        logger.exception("Send tree children error: %s", e)
+        await ws.send_text(json.dumps({
+            "type": "tree_children",
+            "path": path,
+            "children": [],
+            "error": str(e),
+            "timestamp": time.time(),
         }))
 
 

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { VscSettingsGear, VscDeviceMobile } from 'react-icons/vsc';
+import { VscSettingsGear } from 'react-icons/vsc';
 import { API_URL as API } from '../config';
 const SETTINGS_STORAGE_KEY = 'nebula_ide_settings';
 
@@ -47,11 +47,22 @@ const SETTINGS_GROUPS = [
   },
 ];
 
+const AI_PROVIDERS = [
+  { id: 'ollama', label: 'Ollama (local)' },
+  { id: 'openai', label: 'OpenAI' },
+  { id: 'anthropic', label: 'Anthropic (Claude)' },
+  { id: 'google', label: 'Google (Gemini)' },
+  { id: 'groq', label: 'Groq' },
+  { id: 'together', label: 'Together' },
+  { id: 'other', label: 'Other' },
+];
+
 function getDefaults() {
   const v = {};
   SETTINGS_GROUPS.forEach(g => {
     g.settings.forEach(s => { if (s.type !== 'aiModelDropdown') v[s.key] = s.value; });
   });
+  v.aiApiKeyProvider = v.aiApiKeyProvider ?? 'ollama';
   return v;
 }
 
@@ -309,179 +320,74 @@ export default function SettingsPanel({ onSettingsChange }) {
                 <SettingRow key={setting.key} setting={setting} value={values[setting.key]} onChange={v => update(setting.key, v)} />
               )
             )}
+            {group.id === 'ai' && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 500, color: 'var(--text-primary)', marginBottom: 6 }}>API key by provider</div>
+                <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+                  Select a provider, enter its API key, then click Connect to save for that provider.
+                </div>
+                <select
+                  value={values.aiApiKeyProvider ?? 'ollama'}
+                  onChange={e => update('aiApiKeyProvider', e.target.value)}
+                  style={{ ...controlStyle, width: '100%', marginBottom: 8 }}
+                >
+                  {AI_PROVIDERS.map(p => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
+                </select>
+                <input
+                  type="password"
+                  placeholder={`Enter API key for ${AI_PROVIDERS.find(p => p.id === (values.aiApiKeyProvider ?? 'ollama'))?.label ?? 'provider'}`}
+                  value={values.aiApiKey ?? ''}
+                  onChange={e => update('aiApiKey', e.target.value)}
+                  style={{ ...controlStyle, width: '100%', marginBottom: 8 }}
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const key = values.aiApiKey?.trim();
+                    const provider = (values.aiApiKeyProvider ?? 'ollama').toLowerCase();
+                    if (!key) return;
+                    try {
+                      const res = await fetch(`${API}/ai/set-api-key`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ api_key: key, provider }),
+                      });
+                      const data = await res.json().catch(() => ({}));
+                      if (data.status === 'ok') {
+                        setModelFeedback({ type: 'success', message: `API key saved for ${AI_PROVIDERS.find(p => p.id === provider)?.label ?? provider}` });
+                      } else {
+                        setModelFeedback({ type: 'error', message: data.message || 'Failed to save' });
+                      }
+                      setTimeout(() => setModelFeedback(null), 3000);
+                    } catch (_) {
+                      setModelFeedback({ type: 'error', message: 'Failed to save' });
+                      setTimeout(() => setModelFeedback(null), 3000);
+                    }
+                  }}
+                  style={{
+                    ...controlStyle,
+                    width: '100%',
+                    background: 'var(--accent)',
+                    color: '#0D0D12',
+                    fontWeight: 600,
+                    border: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Connect
+                </button>
+              </div>
+            )}
           </div>
         ))}
         {filteredGroups.length === 0 && !search && null}
         {filteredGroups.length === 0 && search && (
           <div className="search-message">No settings match your search.</div>
         )}
-
-        {/* Mobile Companion Section */}
-        {(!search || 'mobile companion qr code phone'.includes(search.toLowerCase())) && (
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              <VscDeviceMobile size={14} style={{ color: 'var(--text-muted)' }} />
-              <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
-                Mobile Companion
-              </span>
-            </div>
-            <MobileCompanionSection />
-          </div>
-        )}
       </div>
     </div>
   );
 }
 
-function MobileCompanionSection() {
-  const [error, setError] = useState(null);
-  const [mobileStatus, setMobileStatus] = useState(null);
-  const [relayConnecting, setRelayConnecting] = useState(false);
-
-  const fetchStatus = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/mobile/relay/status`);
-      const data = await res.json();
-      setMobileStatus(data);
-    } catch (_) {}
-  }, []);
-
-  useEffect(() => {
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 5000);
-    return () => clearInterval(interval);
-  }, [fetchStatus]);
-
-  const generateRoomCode = async () => {
-    setRelayConnecting(true);
-    setError(null);
-    try {
-      const res = await fetch(`${API}/mobile/relay/connect`, { method: 'POST' });
-      const data = await res.json();
-      if (data.status === 'connected') {
-        // Show room code immediately from connect response
-        setMobileStatus(prev => ({
-          ...prev,
-          connected: true,
-          room_code: data.room_code,
-          relay_url: data.relay_url,
-        }));
-        // Also refresh from status endpoint
-        fetchStatus();
-      } else {
-        setError(data.message || 'Failed to generate room code');
-      }
-    } catch (err) {
-      setError('Failed to connect: ' + (err.message || 'Network error'));
-    } finally {
-      setRelayConnecting(false);
-    }
-  };
-
-  const disconnectRelay = async () => {
-    try {
-      await fetch(`${API}/mobile/relay/disconnect`, { method: 'POST' });
-      // Reset state immediately so UI goes back to "Generate Room Code"
-      setMobileStatus(null);
-    } catch (_) {}
-  };
-
-  // Consider connected if we have a room code (even if WebSocket is still connecting)
-  const isRelayConnected = mobileStatus?.connected || mobileStatus?.room_code;
-
-  return (
-    <div>
-      <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 12 }}>
-        Connect your phone to monitor IDE activity, send AI prompts, and run terminal commands remotely.
-      </div>
-
-      {error && (
-        <div style={{
-          padding: '8px 12px', marginBottom: 12, borderRadius: 'var(--radius-md)',
-          background: 'rgba(229, 83, 75, 0.1)', border: '1px solid rgba(229, 83, 75, 0.3)',
-          fontSize: 'var(--font-size-xs)', color: '#e5534b',
-        }}>
-          {error}
-        </div>
-      )}
-
-      <div style={{
-        padding: '14px', borderRadius: 'var(--radius-md)',
-        background: 'var(--bg-surface)',
-        border: `1px solid ${isRelayConnected ? 'rgba(74, 222, 128, 0.3)' : 'var(--border)'}`,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
-            Mobile Companion
-          </span>
-          {isRelayConnected && (
-            <span style={{ fontSize: 'var(--font-size-xs)', color: mobileStatus?.connected ? '#4ADE80' : (mobileStatus?.error ? '#e5534b' : '#f0c674'), fontWeight: 500 }}>
-              {mobileStatus?.connected ? '● Active' : (mobileStatus?.error ? '● Error' : '● Connecting...')}
-            </span>
-          )}
-        </div>
-
-        {isRelayConnected ? (
-          <div>
-            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 10 }}>
-              Enter this code in the Nebula Companion app on your phone:
-            </div>
-            <div style={{
-              padding: '20px 16px', borderRadius: 'var(--radius-md)', background: 'var(--bg-primary)',
-              textAlign: 'center', marginBottom: 12,
-            }}>
-              <div style={{
-                fontFamily: 'var(--font-mono)', fontSize: 36, fontWeight: 700,
-                color: 'var(--accent)', letterSpacing: 10,
-              }}>
-                {mobileStatus?.room_code}
-              </div>
-            </div>
-            {mobileStatus?.error && !mobileStatus?.connected && (
-              <div style={{
-                padding: '8px 12px', marginBottom: 12, borderRadius: 'var(--radius-md)',
-                background: 'rgba(229, 83, 75, 0.08)', border: '1px solid rgba(229, 83, 75, 0.2)',
-                fontSize: 'var(--font-size-xs)', color: '#e5534b', wordBreak: 'break-word',
-              }}>
-                Relay connection error: {mobileStatus.error}
-              </div>
-            )}
-            {(mobileStatus?.mobile_count > 0) && (
-              <div style={{
-                padding: '8px 12px', marginBottom: 12, borderRadius: 'var(--radius-md)',
-                background: 'rgba(74, 222, 128, 0.08)', border: '1px solid rgba(74, 222, 128, 0.2)',
-                display: 'flex', alignItems: 'center', gap: 8,
-              }}>
-                <span style={{ fontSize: 16 }}>📱</span>
-                <span style={{ fontSize: 'var(--font-size-xs)', color: '#4ADE80', fontWeight: 500 }}>
-                  {mobileStatus.mobile_count} device{mobileStatus.mobile_count > 1 ? 's' : ''} connected
-                </span>
-              </div>
-            )}
-            <button type="button" onClick={disconnectRelay}
-              style={{ ...controlStyle, width: '100%', textAlign: 'center', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 'var(--font-size-xs)' }}
-            >
-              Disconnect
-            </button>
-          </div>
-        ) : (
-          <div>
-            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 12 }}>
-              Generate a room code to connect your phone. Works from anywhere — no need to be on the same WiFi.
-            </div>
-            <button type="button" onClick={generateRoomCode} disabled={relayConnecting}
-              style={{
-                ...controlStyle, width: '100%', textAlign: 'center',
-                cursor: relayConnecting ? 'not-allowed' : 'pointer',
-                background: 'var(--accent)', color: '#0D0D12', fontWeight: 600, border: 'none',
-                padding: '10px 16px',
-              }}
-            >
-              {relayConnecting ? 'Generating...' : 'Generate Room Code'}
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}

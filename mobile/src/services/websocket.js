@@ -184,12 +184,20 @@ class NebulaWebSocket {
     this.send('get_files');
   }
 
+  requestTreeChildren(path) {
+    this.send('get_tree_children', { path });
+  }
+
   requestFileContent(path) {
     this.send('read_file', { path });
   }
 
   requestStatus() {
     this.send('get_status');
+  }
+
+  requestChatHistory() {
+    this.send('get_chat_history');
   }
 
   on(eventType, callback) {

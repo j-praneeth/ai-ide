@@ -359,7 +359,8 @@ def run_agent_stream(user_prompt, conversation_history=None, mode="agent"):
             "[System] MODE: AGENT - You can make changes. Complete the FULL task before giving a final answer.\n"
             "Implement by creating and editing files (write_file, edit_file). Prefer write_file over run_command for creating apps/projects. "
             "Do NOT use npx create-react-app or npm install -g. Use run_command only for 'cd project && npm install' or 'npm start'. "
-            "When you finish a todo step, include \"completed_todo\": <index> in your tool-call JSON."
+            "When you finish a todo step, include \"completed_todo\": <index> in your tool-call JSON.\n"
+            "Use real-world conventions: match existing project structure, fix root causes not symptoms, verify after each change (e.g. read file back or run tests)."
         )
         yield {"type": "thinking", "text": "Agent mode: Creating plan and executing actions..."}
 

@@ -486,6 +486,45 @@
   color: var(--text-bright);
 }
 
+.tree-item.tree-drop-target {
+  background: rgba(245, 158, 11, 0.15);
+  outline: 1px dashed var(--accent-amber);
+}
+
+.file-context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 160px;
+  padding: 4px 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.file-context-menu .context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.file-context-menu .context-menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.file-context-menu .context-menu-item-danger:hover {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--error);
+}
+
 /* ============================================
    Search Panel
    ============================================ */
@@ -3163,6 +3202,17 @@
    Open Folder Dialog
    ============================================ */
 
+.open-folder-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: fadeIn 0.15s ease;
+}
+
 .open-folder-dialog {
   background: var(--bg-surface);
   border: 1px solid var(--border);
@@ -3175,6 +3225,65 @@
   flex-direction: column;
   animation: bounceIn 0.25s var(--ease-spring);
   overflow: hidden;
+}
+
+.open-folder-dialog .open-folder-title {
+  margin: 0 0 12px;
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-bright);
+}
+
+.open-folder-dialog .open-folder-hint {
+  margin: 0 0 12px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.open-folder-dialog .open-folder-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  outline: none;
+}
+
+.open-folder-dialog .open-folder-input:focus {
+  border-color: var(--accent);
+}
+
+.open-folder-dialog .open-folder-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.open-folder-dialog .open-folder-actions button {
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.open-folder-dialog .open-folder-actions button[type="submit"] {
+  background: var(--accent);
+  color: #0D0D12;
+  border-color: var(--accent);
+}
+
+.open-folder-dialog .open-folder-actions button:hover {
+  filter: brightness(1.05);
 }
 
 .open-folder-header {

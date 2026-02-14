@@ -15,11 +15,30 @@ function fileIcon(name, type) {
   return icons[ext] || '📄';
 }
 
+// Injects children into a tree node by path (e.g. "frontend" or "frontend/src")
+function injectChildren(nodes, path, children) {
+  if (!path) return nodes.map(n => ({ ...n }));
+  const parts = path.split('/').filter(Boolean);
+  if (parts.length === 0) return nodes.map(n => ({ ...n }));
+
+  function walk(list, depth) {
+    const key = parts[depth];
+    const isLast = depth === parts.length - 1;
+    return list.map(item => {
+      if (item.name !== key) return { ...item };
+      if (isLast) return { ...item, children: children || [] };
+      return { ...item, children: walk(item.children || [], depth + 1) };
+    });
+  }
+  return walk(nodes, 0);
+}
+
 export default function FilesPage() {
   const [tree, setTree] = useState([]);
   const [workspace, setWorkspace] = useState('');
   const [loading, setLoading] = useState(true);
   const [expandedDirs, setExpandedDirs] = useState(new Set());
+  const [childrenLoaded, setChildrenLoaded] = useState(new Set());
   const [viewingFile, setViewingFile] = useState(null);
   const [fileContent, setFileContent] = useState('');
   const [fileLoading, setFileLoading] = useState(false);
@@ -29,6 +48,14 @@ export default function FilesPage() {
       setTree(data.tree || []);
       setWorkspace(data.name || '');
       setLoading(false);
+      setChildrenLoaded(new Set());
+    });
+
+    const unsubChildren = nebulaWS.on('tree_children', (data) => {
+      const path = data.path || '';
+      const children = data.children || [];
+      setTree(prev => injectChildren(prev, path, children));
+      setChildrenLoaded(prev => new Set([...prev, path]));
     });
 
     const unsubContent = nebulaWS.on('file_content', (data) => {
@@ -36,13 +63,11 @@ export default function FilesPage() {
       setFileLoading(false);
     });
 
-    // Request file tree
-    if (nebulaWS.connected) {
-      nebulaWS.requestFiles();
-    }
+    if (nebulaWS.connected) nebulaWS.requestFiles();
 
     return () => {
       unsubTree();
+      unsubChildren();
       unsubContent();
     };
   }, []);
@@ -54,6 +79,9 @@ export default function FilesPage() {
       else next.add(path);
       return next;
     });
+    if (!childrenLoaded.has(path) && nebulaWS.connected) {
+      nebulaWS.requestTreeChildren(path);
+    }
   };
 
   const openFile = (path) => {

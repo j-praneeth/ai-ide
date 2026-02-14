@@ -81,7 +81,18 @@ Call a tool (optionally mark a todo step done when you have finished that step's
 Give final answer (ONLY after ALL work is complete and every todo step is done):
 {"action": "final", "answer": "detailed markdown answer here"}
 
-## TOOLS
+## TOOLS — When to use which (use the right tool for speed and accuracy)
+
+- read_file: When you KNOW the file path and need its contents. Use for a specific file; do not use run_command (cat/head/tail) to read files.
+- file_search: When you need to find files by NAME or pattern (e.g. "config.json", "*.test.js"). Fast file pattern matching.
+- list_dir: When you need to LIST contents of a directory (like LS). Use for exploring a folder.
+- grep_search: When you need to search TEXT/CONTENT inside files (exact strings, regex, symbols). Prefer over run_command grep.
+- codebase_search: When you need SEMANTIC/meaning search (e.g. "where is auth handled"). Use for open-ended understanding; use grep_search for exact text.
+- write_file: Create or overwrite a file. Use to CREATE new files (no separate create_file).
+- edit_file: Change part of a file (old_content → new_content). Read the file first, then edit with exact old_content.
+- delete_file: Delete a file or folder.
+- run_command: For shell commands only (npm, git, cd, mkdir). Do NOT use run_command to read or search files — use read_file, grep_search, file_search instead.
+- todo: For complex multi-step tasks; then execute each step with the tools above.
 
 {"action": "read_file", "input": {"path": "relative/path.py"}}
 {"action": "write_file", "input": {"path": "new_file.py", "content": "file content"}}  # Use write_file to CREATE new files (it creates if doesn't exist)
@@ -91,7 +102,7 @@ Give final answer (ONLY after ALL work is complete and every todo step is done):
 {"action": "list_dir", "input": {"path": "."}}
 {"action": "grep_search", "input": {"query": "search text", "include_pattern": "*.py"}}
 {"action": "codebase_search", "input": {"query": "what to find"}}
-{"action": "run_command", "input": {"command": "shell command"}}  # Use for npm, git, mkdir, etc.
+{"action": "run_command", "input": {"command": "shell command"}}  # Use for npm, git, mkdir, etc. NOT for reading/searching files.
 # IMPORTANT: When creating a project in a subdirectory, use 'cd' in commands:
 # {"action": "run_command", "input": {"command": "cd my-project && npm init -y"}}
 # Or chain commands: {"action": "run_command", "input": {"command": "cd my-project && npm install react"}}
@@ -189,6 +200,44 @@ Formatting:
 - Prefer multi-line over one-liners/complex ternaries.
 - Wrap long lines.
 - Don't reformat unrelated code.
+
+## REAL-WORLD KNOWLEDGE & REASONING
+
+Use real-world conventions and best practices to work accurately and efficiently:
+
+Frameworks & structure:
+- React/Next: components in src/components, pages in src/pages or app/, use React hooks; JSX files .jsx/.tsx; index.js entry.
+- Vue/Nuxt: components in components/, pages in pages/, Composition API or Options API; single-file .vue.
+- Express/FastAPI/Flask: routes in routes/ or api/, app entry in app.js or main.py; middleware order matters.
+- Django: apps in project/, settings.py, urls.py, views.py, models.py; migrations for DB changes.
+- Angular: modules, components in src/app/, services, rxjs; .module.ts and .component.ts.
+- Package managers: package.json (npm/yarn/pnpm), requirements.txt or pyproject.toml (Python), go.mod (Go), Cargo.toml (Rust).
+
+Files & config:
+- Environment: .env for secrets (never commit real keys); use process.env (Node) or os.environ (Python); .env.example as template.
+- Config: config.js, settings.py, or framework-specific config; prefer env over hardcoded values.
+- Import paths: use existing alias (e.g. @/ for src/); match project import style (relative vs absolute).
+
+Debugging & errors:
+- Read the exact error message and stack trace; the first line often points to the real cause.
+- Common causes: typo in name/path, wrong type (string vs number), undefined/null access, async not awaited, wrong import path.
+- Add logging or breakpoints at the failure point; verify assumptions (e.g. file exists, API returns expected shape).
+- Fix the root cause, not only the symptom; avoid empty catch blocks or silencing errors.
+
+APIs & data:
+- REST: GET (read), POST (create), PUT/PATCH (update), DELETE; use correct method and status codes.
+- JSON: validate keys and types; handle missing/optional fields; escape user input.
+- Async: await promises; handle errors with try/catch or .catch(); avoid blocking the event loop.
+
+Security & performance:
+- Never put secrets in code or logs; use env vars and secure storage.
+- Sanitize/validate user input; use parameterized queries for DB; avoid eval() and unsafe deserialization.
+- Prefer specific selectors (e.g. data-testid) over fragile CSS for tests; avoid unnecessary re-renders.
+
+When in doubt:
+- Prefer the pattern already used in the codebase over introducing a new one.
+- One logical change per step; verify after each edit (e.g. run tests, check file content).
+- If a tool fails (e.g. edit_file "old_content not found"), re-read the file and use the exact current text.
 
 ## EDIT RULES
 
@@ -443,6 +492,8 @@ File tree:
     logger.info("Planner sending %d messages (%d chars) to %s via chat API",
                 len(messages), sum(len(m["content"]) for m in messages), model)
 
+    # Longer timeout for first token / slow models (e.g. 180s). Read timeout is the main issue.
+    _timeout = 180
     try:
         response = requests.post(
             OLLAMA_CHAT_URL,
@@ -451,11 +502,17 @@ File tree:
                 "messages": messages,
                 "stream": False,
             },
-            timeout=90,
+            timeout=_timeout,
         )
         response.raise_for_status()
+    except requests.exceptions.Timeout as e:
+        logger.error("Ollama request timed out after %ss: %s", _timeout, e)
+        return {"action": "final", "answer": "The AI model took too long to respond. Make sure Ollama is running and the model is loaded (e.g. run `ollama run <model>` once). You can try a smaller model or try again."}
     except requests.RequestException as e:
         logger.error("Ollama request failed: %s", e)
+        err_msg = str(e)
+        if "timed out" in err_msg.lower() or "timeout" in err_msg.lower():
+            return {"action": "final", "answer": "The AI model timed out. Ensure Ollama is running and the model is loaded. Try again or use a smaller model."}
         return {"action": "final", "answer": f"Failed to connect to the AI model. Make sure Ollama is running. Error: {e}"}
 
     raw_text = response.json().get("message", {}).get("content", "")

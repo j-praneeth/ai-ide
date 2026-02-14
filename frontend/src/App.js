@@ -17,6 +17,8 @@ import ChatPanel from './components/ChatPanel';
 import StatusBar from './components/StatusBar';
 import CommandPalette from './components/CommandPalette';
 import OpenFolderDialog from './components/OpenFolderDialog';
+import MobileCompanionPopup from './components/MobileCompanionPopup';
+import { VscDeviceMobile } from 'react-icons/vsc';
 
 // Language detection by file extension
 function getLanguage(filename) {
@@ -116,6 +118,7 @@ function App() {
   const [sidebarPanel, setSidebarPanel] = useState('explorer');
   const [showTerminal, setShowTerminal] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [showMobileCompanionPopup, setShowMobileCompanionPopup] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(250);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
@@ -141,15 +144,22 @@ function App() {
   const startHeightRef = useRef(0);
   const menuRef = useRef(null);
 
-  // Load file tree
+  const [showHiddenFiles, setShowHiddenFiles] = useState(() => {
+    try {
+      const s = localStorage.getItem('nebula_ide_settings');
+      return s ? (JSON.parse(s).showHiddenFiles === true) : false;
+    } catch { return false; }
+  });
+
+  // Load file tree (optionally include hidden files)
   const loadTree = useCallback(async () => {
     try {
-      const res = await axios.get(`${API}/files/tree`);
+      const res = await axios.get(`${API}/files/tree`, { params: { show_hidden: showHiddenFiles } });
       setTree(res.data);
     } catch (err) {
       console.error('Failed to load file tree:', err);
     }
-  }, []);
+  }, [showHiddenFiles]);
 
   // Load workspace info and file tree on startup
   useEffect(() => {
@@ -812,6 +822,13 @@ function App() {
                 <line x1="10.5" y1="2" x2="10.5" y2="14" stroke="currentColor" strokeWidth="1.2" />
               </svg>
             </button>
+            <button
+              className="layout-toggle-btn"
+              title="Connect Mobile"
+              onClick={() => setShowMobileCompanionPopup(prev => !prev)}
+            >
+              <VscDeviceMobile size={16} />
+            </button>
           </div>
         </div>
       </div>
@@ -835,6 +852,19 @@ function App() {
                 openFile={openFile}
                 selectedFile={activeFile}
                 onRefresh={loadTree}
+                showHiddenFiles={showHiddenFiles}
+                onToggleShowHidden={() => {
+                  setShowHiddenFiles(prev => {
+                    const next = !prev;
+                    try {
+                      const s = localStorage.getItem('nebula_ide_settings');
+                      const o = s ? JSON.parse(s) : {};
+                      o.showHiddenFiles = next;
+                      localStorage.setItem('nebula_ide_settings', JSON.stringify(o));
+                    } catch (_) {}
+                    return next;
+                  });
+                }}
                 triggerNewFile={showNewFilePrompt}
                 onNewFileDone={() => setShowNewFilePrompt(false)}
                 onOpenFolder={() => setShowOpenFolder(true)}
@@ -965,6 +995,11 @@ function App() {
         onClose={() => setShowOpenFolder(false)}
         onOpen={handleOpenFolder}
       />
+
+      {/* Mobile Companion popup (title bar icon) */}
+      {showMobileCompanionPopup && (
+        <MobileCompanionPopup onClose={() => setShowMobileCompanionPopup(false)} />
+      )}
     </div>
   );
 }

@@ -503,6 +503,37 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
     }
   }, [visible]);
 
+  // Sync with server chat history so messages sent from mobile appear on desktop
+  const fetchAndMergeServerHistory = useCallback(async () => {
+    if (!visible || loading) return;
+    try {
+      const res = await fetch(`${API}/ai/chat/history`);
+      if (!res.ok) return;
+      const { history } = await res.json();
+      if (!Array.isArray(history) || history.length === 0) return;
+      const mapped = history.map(({ role, content }) => ({ role, text: content || '' }));
+      setMessages(prev => {
+        if (!activeSessionId) return mapped;
+        if (mapped.length >= prev.length) return mapped;
+        return prev;
+      });
+    } catch (e) {
+      // ignore
+    }
+  }, [visible, loading, activeSessionId]);
+
+  useEffect(() => {
+    if (!visible) return;
+    fetchAndMergeServerHistory();
+  }, [visible, fetchAndMergeServerHistory]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const onFocus = () => fetchAndMergeServerHistory();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [visible, fetchAndMergeServerHistory]);
+
   // Auto-save current conversation to active session
   useEffect(() => {
     if (!activeSessionId) return;

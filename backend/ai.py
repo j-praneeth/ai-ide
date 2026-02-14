@@ -2,7 +2,7 @@ import logging
 import traceback
 import requests
 import json as json_module
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 router = APIRouter()
@@ -48,6 +48,27 @@ def get_current_model():
         return {"model": None, "error": str(e)}
 
 
+# Stored API key for external providers (OpenAI, Anthropic, etc.) — set via Settings "Connect"
+_api_key_store: dict = {}
+
+
+@router.post("/set-api-key")
+async def set_api_key(request: Request):
+    """Store API key for the given provider. Called when user clicks Connect in Settings."""
+    global _api_key_store
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            key = (body.get("api_key") or "").strip()
+            provider = (body.get("provider") or "ollama").strip().lower()
+            if key:
+                _api_key_store[provider] = key
+        return {"status": "ok", "message": "API key saved"}
+    except Exception as e:
+        logger.exception("set-api-key failed: %s", e)
+        return {"status": "error", "message": str(e)}
+
+
 @router.post("/model/set")
 def set_current_model(model: str):
     """Set the model used by the planner. Query param: model=MODEL_NAME."""
@@ -85,6 +106,12 @@ def get_models():
         return {"models": [], "error": str(e)}
 
 
+@router.get("/chat/history")
+def chat_history():
+    """Return current conversation history (for desktop/mobile sync)."""
+    return {"history": list(CONVERSATION_HISTORY)}
+
+
 @router.post("/chat/clear")
 def chat_clear():
     """Clear conversation history."""
@@ -117,6 +144,9 @@ def chat_stream(prompt: str, mode: str = "agent"):
         try:
             from agent.orchestrator import run_agent_stream
             CONVERSATION_HISTORY.append({"role": "user", "content": prompt})
+
+            # Emit user message to mobile so chat stays in sync on both desktop and mobile
+            _emit_agent_event({"type": "chat_message", "role": "user", "content": prompt})
 
             # Pass conversation history (excluding the just-added message) for context
             history_for_agent = list(CONVERSATION_HISTORY[:-1]) if len(CONVERSATION_HISTORY) > 1 else []
