@@ -52,17 +52,37 @@ def get_current_model():
 _api_key_store: dict = {}
 
 
+def _sync_api_key_to_agent(provider: str, key: str) -> None:
+    """Sync stored key to agent module so planner can use it for chat."""
+    try:
+        from agent.api_keys import set_key
+        set_key(provider, key)
+    except Exception:
+        pass
+
+
+def store_api_key(provider: str, key: str) -> None:
+    """Store API key for a provider (used by route and by main.py explicit route)."""
+    global _api_key_store
+    provider = (provider or "ollama").strip().lower()
+    key = (key or "").strip()
+    if key:
+        _api_key_store[provider] = key
+    else:
+        _api_key_store.pop(provider, None)
+    _sync_api_key_to_agent(provider, key)
+
+
 @router.post("/set-api-key")
 async def set_api_key(request: Request):
     """Store API key for the given provider. Called when user clicks Connect in Settings."""
-    global _api_key_store
     try:
         body = await request.json()
         if isinstance(body, dict):
-            key = (body.get("api_key") or "").strip()
-            provider = (body.get("provider") or "ollama").strip().lower()
-            if key:
-                _api_key_store[provider] = key
+            store_api_key(
+                body.get("provider") or "ollama",
+                body.get("api_key") or "",
+            )
         return {"status": "ok", "message": "API key saved"}
     except Exception as e:
         logger.exception("set-api-key failed: %s", e)
@@ -84,26 +104,27 @@ def set_current_model(model: str):
         return {"status": "error", "message": str(e)}
 
 
+# Kimi (NVIDIA) model id — key from env only, never exposed to frontend
+KIMI_MODEL_ID = "moonshotai/kimi-k2.5"
+
+
 @router.get("/models")
 def get_models():
-    """Return list of available Ollama models."""
+    """Return list of available models: Ollama models plus Kimi K2.5 (NVIDIA)."""
+    models = []
     try:
         r = requests.get(OLLAMA_TAGS_URL, timeout=5)
         r.raise_for_status()
         data = r.json()
-        models = data.get("models", [])
-        return {
-            "models": [
-                {"name": m.get("name"), "modified": m.get("modified")}
-                for m in models
-            ]
-        }
+        for m in data.get("models", []):
+            models.append({"name": m.get("name"), "modified": m.get("modified")})
     except requests.RequestException as e:
         logger.exception("Ollama /api/tags request failed: %s", e)
-        return {"models": [], "error": str(e)}
     except Exception as e:
         logger.exception("Error fetching Ollama models: %s", e)
-        return {"models": [], "error": str(e)}
+    # Add Kimi K2.5 (API key from server env only)
+    models.append({"name": KIMI_MODEL_ID, "modified": None, "provider": "kimi"})
+    return {"models": models}
 
 
 @router.get("/chat/history")
@@ -120,13 +141,34 @@ def chat_clear():
     return {"status": "cleared"}
 
 
+def _is_simple_greeting(prompt: str) -> bool:
+    """True if the prompt is just a greeting/small talk (no codebase search or tools needed)."""
+    if not prompt or not isinstance(prompt, str):
+        return False
+    text = prompt.strip()
+    # If there's context (e.g. [Current file: ...]), use only the last part after double newline
+    if "\n\n" in text:
+        parts = text.split("\n\n")
+        text = parts[-1].strip() if parts else text
+    text_lower = text.lower()
+    if len(text_lower) > 80:
+        return False
+    greetings = (
+        "hello", "hi", "hey", "howdy", "hi there", "hello there",
+        "good morning", "good afternoon", "good evening", "gm", "greetings",
+        "what's up", "whats up", "sup", "yo ", "yo\n",
+    )
+    return text_lower in greetings or any(text_lower.rstrip(".!?") == g for g in greetings)
+
+
 @router.get("/chat/stream")
-def chat_stream(prompt: str, mode: str = "agent"):
+def chat_stream(prompt: str, mode: str = "agent", model: str = None):
     """SSE streaming endpoint for real-time agent steps.
     
     Args:
         prompt: User's prompt/query
         mode: "agent" (can make changes) or "chat" (read-only, information only)
+        model: Optional model id (e.g. moonshotai/kimi-k2.5). If provided, use it for this request.
     """
     if not agent_available:
         def fallback():
@@ -136,6 +178,13 @@ def chat_stream(prompt: str, mode: str = "agent"):
     # Validate mode
     if mode not in ["agent", "chat"]:
         mode = "agent"
+
+    # Use model from request so frontend always controls which model (Kimi/OpenAI/Ollama) is used
+    if model and isinstance(model, str) and model.strip():
+        try:
+            set_planner_model(model.strip())
+        except Exception as e:
+            logger.exception("Error setting model for request: %s", e)
 
     import file_manager
     set_project_root(file_manager.PROJECT_ROOT)
@@ -147,6 +196,21 @@ def chat_stream(prompt: str, mode: str = "agent"):
 
             # Emit user message to mobile so chat stays in sync on both desktop and mobile
             _emit_agent_event({"type": "chat_message", "role": "user", "content": prompt})
+
+            # Simple greetings get a direct reply (no codebase search, no tools)
+            if _is_simple_greeting(prompt):
+                try:
+                    from agent.planner import simple_chat
+                    reply = simple_chat(prompt)
+                    event = {"type": "done", "answer": reply or "Hello! How can I help you today?"}
+                    yield f"data: {json_module.dumps(event)}\n\n"
+                    _emit_agent_event(event)
+                    CONVERSATION_HISTORY.append({"role": "assistant", "content": event["answer"]})
+                    if len(CONVERSATION_HISTORY) > MAX_HISTORY_MESSAGES:
+                        CONVERSATION_HISTORY[:] = CONVERSATION_HISTORY[-MAX_HISTORY_MESSAGES:]
+                except Exception as e:
+                    yield f"data: {json_module.dumps({'type': 'done', 'answer': f'Hello! (Model error: {e})'})}\n\n"
+                return
 
             # Pass conversation history (excluding the just-added message) for context
             history_for_agent = list(CONVERSATION_HISTORY[:-1]) if len(CONVERSATION_HISTORY) > 1 else []

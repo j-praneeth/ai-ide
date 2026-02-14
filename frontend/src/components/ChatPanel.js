@@ -19,6 +19,7 @@ import {
   VscBook,
   VscAdd,
   VscHistory,
+  VscDebugStop,
 } from 'react-icons/vsc';
 import axios from 'axios';
 import { API_URL as API } from '../config';
@@ -480,6 +481,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
   // liveThinkingExpanded removed — tool steps are always visible in Cursor style
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+  const abortControllerRef = useRef(null);
 
   const [sessions, setSessions] = useState(() => loadSessionsFromStorage());
   const [activeSessionId, setActiveSessionId] = useState(null);
@@ -501,6 +503,30 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
     if (visible && inputRef.current) {
       inputRef.current.focus();
     }
+  }, [visible]);
+
+  // When chat panel opens, sync selected AI model to backend (Kimi/OpenAI etc.) so backend uses it
+  useEffect(() => {
+    if (!visible) return;
+    try {
+      const raw = localStorage.getItem('nebula_ide_settings');
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if ((s.aiModelSource ?? 'local') !== 'providers') return;
+      const provider = (s.aiApiKeyProvider ?? 'ollama').toLowerCase();
+      const providerToModel = {
+        kimi: 'moonshotai/kimi-k2.5',
+        openai: 'openai/gpt-4',
+        anthropic: 'anthropic/claude-3-sonnet-20240229',
+        google: 'google/gemini-pro',
+        groq: 'groq/llama-3-70b',
+        together: 'together/llama-3-70b',
+      };
+      const modelId = providerToModel[provider];
+      if (modelId) {
+        fetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' }).catch(() => {});
+      }
+    } catch (_) {}
   }, [visible]);
 
   // Sync with server chat history so messages sent from mobile appear on desktop
@@ -601,9 +627,17 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
     }
   }, [activeSessionId]);
 
+  const stopGeneration = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+  }, []);
+
   // Core send function (SSE streaming)
   const sendPrompt = useCallback(async (promptText, messagesList) => {
     setLoading(true);
+    abortControllerRef.current = new AbortController();
+    const signal = abortControllerRef.current.signal;
     setThinkingSteps([]);
     setThinkingTexts([]);
     setTodoList([]);
@@ -630,8 +664,30 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
       prompt = contextParts.join('\n') + '\n\n' + prompt;
     }
 
+    const modelParam = (() => {
+      try {
+        const raw = localStorage.getItem('nebula_ide_settings');
+        if (!raw) return '';
+        const s = JSON.parse(raw);
+        if ((s.aiModelSource ?? 'local') !== 'providers') return '';
+        const provider = (s.aiApiKeyProvider ?? 'ollama').toLowerCase();
+        const providerToModel = {
+          kimi: 'moonshotai/kimi-k2.5',
+          openai: 'openai/gpt-4',
+          anthropic: 'anthropic/claude-3-sonnet-20240229',
+          google: 'google/gemini-pro',
+          groq: 'groq/llama-3-70b',
+          together: 'together/llama-3-70b',
+        };
+        return providerToModel[provider] || '';
+      } catch (_) { return ''; }
+    })();
+    const streamUrl = modelParam
+      ? `${API}/ai/chat/stream?prompt=${encodeURIComponent(prompt)}&mode=${mode}&model=${encodeURIComponent(modelParam)}`
+      : `${API}/ai/chat/stream?prompt=${encodeURIComponent(prompt)}&mode=${mode}`;
+
     try {
-      const response = await fetch(`${API}/ai/chat/stream?prompt=${encodeURIComponent(prompt)}&mode=${mode}`);
+      const response = await fetch(streamUrl, { signal });
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -711,12 +767,16 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
         todoCompletedIndices: finalTodoCompleted,
       }]);
     } catch (err) {
-      setMessages([...messagesList, {
-        role: 'assistant',
-        text: `Error: ${err.message}. Make sure the backend server is running.`,
-        steps: [],
-        thinkingTexts: [],
-      }]);
+      if (err.name === 'AbortError') {
+        // User clicked Stop; do not add an error message
+      } else {
+        setMessages([...messagesList, {
+          role: 'assistant',
+          text: `Error: ${err.message}. Make sure the backend server is running.`,
+          steps: [],
+          thinkingTexts: [],
+        }]);
+      }
     }
 
     setLoading(false);
@@ -981,7 +1041,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
                   }}
                 />
 
-                {/* Loading indicator */}
+                {/* Loading indicator + Stop */}
                 <div className="chat-loading">
                   <div className="chat-loading-dots">
                     <span></span><span></span><span></span>
@@ -989,6 +1049,15 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
                   <span className="chat-loading-text">
                     {thinkingSteps.filter(s => s.type === 'step').length === 0 ? 'Thinking...' : 'Working...'}
                   </span>
+                  <button
+                    type="button"
+                    className="chat-stop-btn"
+                    onClick={stopGeneration}
+                    title="Stop generating"
+                  >
+                    <VscDebugStop size={14} />
+                    <span>Stop</span>
+                  </button>
                 </div>
               </div>
             </div>

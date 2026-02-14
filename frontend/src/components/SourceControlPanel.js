@@ -15,6 +15,10 @@ import {
   VscSync,
   VscClose,
   VscDiscard,
+  VscArrowDown,
+  VscArrowUp,
+  VscCloud,
+  VscTarget,
 } from 'react-icons/vsc';
 import axios from 'axios';
 import { API_URL as API } from '../config';
@@ -80,6 +84,42 @@ function getFileInfo(fullPath) {
   return { name, dir };
 }
 
+function parseGraphLines(lines) {
+  const entries = [];
+  for (const line of lines) {
+    const match = line.match(/^([*\s|/\\]+)\s*([a-f0-9]{7,})\s+(.+)$/);
+    if (!match) continue;
+    const [, , hash, rest] = match;
+    let message = rest;
+    let branchName = '';
+    let remoteRef = '';
+    // Refs can be at end: "msg (HEAD -> x, origin/y)" or after hash: "(HEAD -> x, origin/y) msg"
+    const refParenMatch = rest.match(/\(([^)]+)\)/);
+    if (refParenMatch) {
+      const refsStr = refParenMatch[1];
+      if (refsStr.includes('HEAD ->') || refsStr.includes('origin/') || refsStr.includes('upstream/')) {
+        message = rest.replace(/\s*\([^)]+\)\s*/, ' ').trim();
+        const refs = refsStr.split(/,\s*/);
+        for (const r of refs) {
+          if (r.startsWith('HEAD -> ')) {
+            branchName = r.replace(/^HEAD -> \s*/, '').trim();
+          } else if (r.includes('/') && (r.startsWith('origin/') || r.startsWith('upstream/'))) {
+            remoteRef = r.trim();
+          }
+        }
+      }
+    }
+    entries.push({
+      hash,
+      message: message.trim(),
+      isHead: entries.length === 0,
+      branchName,
+      remoteRef,
+    });
+  }
+  return entries;
+}
+
 function FileIcon({ status }) {
   if (status === 'A' || status === 'untracked') return <VscDiffAdded size={14} style={{ color: '#73c991', flexShrink: 0 }} />;
   if (status === 'D') return <VscDiffRemoved size={14} style={{ color: '#f87171', flexShrink: 0 }} />;
@@ -137,8 +177,27 @@ export default function SourceControlPanel({ onOpenFile }) {
   const [error, setError] = useState(null);
   const [commitMessage, setCommitMessage] = useState('');
   const [committing, setCommitting] = useState(false);
-  const [sectionsCollapsed, setSectionsCollapsed] = useState({ staged: false, changes: false });
+  const [sectionsCollapsed, setSectionsCollapsed] = useState({ changesSection: false, agentReview: true, staged: false, changes: false, graph: false });
   const [viewingDiff, setViewingDiff] = useState(null); // { path, isStaged }
+  const [graphLines, setGraphLines] = useState([]);
+  const [graphEntries, setGraphEntries] = useState([]); // parsed { message, isHead, branchName, remoteRef }
+  const [graphLoading, setGraphLoading] = useState(false);
+
+  const fetchGraph = useCallback(async () => {
+    setGraphLoading(true);
+    try {
+      const res = await runCommand('git log --oneline --graph --decorate -30');
+      const lines = (res.output || '').trim().split('\n').filter(Boolean);
+      setGraphLines(lines);
+      const entries = parseGraphLines(lines);
+      setGraphEntries(entries);
+    } catch (_) {
+      setGraphLines([]);
+      setGraphEntries([]);
+    } finally {
+      setGraphLoading(false);
+    }
+  }, []);
 
   const fetchStatus = useCallback(async () => {
     setError(null);
@@ -175,14 +234,21 @@ export default function SourceControlPanel({ onOpenFile }) {
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
+  const hasRepo = !error && statusOutput !== null;
+  const { staged = [], unstaged = [] } = hasRepo ? parsePorcelain(statusOutput) : {};
+
+  useEffect(() => {
+    if (hasRepo && sectionsCollapsed.graph === false && graphLines.length === 0 && !graphLoading) {
+      fetchGraph();
+    }
+  }, [hasRepo, sectionsCollapsed.graph, graphLines.length, graphLoading, fetchGraph]);
+
   useEffect(() => {
     if (!statusOutput && error) return;
     const id = setInterval(fetchStatus, 8000);
     return () => clearInterval(id);
   }, [fetchStatus, statusOutput, error]);
 
-  const hasRepo = !error && statusOutput !== null;
-  const { staged = [], unstaged = [] } = hasRepo ? parsePorcelain(statusOutput) : {};
   const hasStaged = staged.length > 0;
   const canCommit = hasStaged && commitMessage.trim();
 
@@ -278,7 +344,17 @@ export default function SourceControlPanel({ onOpenFile }) {
           </button>
         </div>
       ) : (
-        <>
+        <div className="scm-panel-body">
+          {/* CHANGES section first (match reference image) */}
+          <div className="scm-section scm-section-changes">
+            <div className="scm-section-header" onClick={() => toggleSection('changesSection')}>
+              <span className="scm-section-toggle">
+                {sectionsCollapsed.changesSection ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}
+              </span>
+              <span className="scm-section-title">Changes</span>
+            </div>
+            {!sectionsCollapsed.changesSection && (
+              <div className="scm-panel-main">
           {/* Repository row */}
           <div className="scm-repo-row">
             <VscGitMerge size={14} className="scm-repo-icon" />
@@ -299,7 +375,7 @@ export default function SourceControlPanel({ onOpenFile }) {
             <div className="scm-commit-input-wrapper">
               <input
                 className="scm-commit-input"
-                placeholder="Message (⌘⏎ to commit)"
+                placeholder={branch ? `Message (⌘↵ to commit on '${branch}')` : "Message (⌘↵ to commit)"}
                 value={commitMessage}
                 onChange={e => setCommitMessage(e.target.value)}
                 onKeyDown={e => {
@@ -350,8 +426,8 @@ export default function SourceControlPanel({ onOpenFile }) {
             </div>
           )}
 
-          {/* Changes (unstaged) */}
-          <div className="scm-section">
+          {/* Changes (unstaged) list */}
+          <div className="scm-section scm-subsection">
             <div className="scm-section-header" onClick={() => toggleSection('changes')}>
               <span className="scm-section-toggle">
                 {sectionsCollapsed.changes ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}
@@ -395,7 +471,89 @@ export default function SourceControlPanel({ onOpenFile }) {
               </div>
             )}
           </div>
-        </>
+              </div>
+            )}
+          </div>
+
+          {/* AGENT REVIEW - collapsed */}
+          <div className="scm-section">
+            <div className="scm-section-header" onClick={() => toggleSection('agentReview')}>
+              <span className="scm-section-toggle">
+                {sectionsCollapsed.agentReview ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}
+              </span>
+              <span className="scm-section-title">Agent Review</span>
+            </div>
+          </div>
+
+          {/* Graph section - at bottom, fills remaining space */}
+          <div className="scm-graph-section-wrap">
+            <div className="scm-section scm-section-graph">
+              <div className="scm-section-header" onClick={() => { toggleSection('graph'); if (!sectionsCollapsed.graph && graphLines.length === 0) fetchGraph(); }}>
+                <span className="scm-section-toggle">
+                  {sectionsCollapsed.graph ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}
+                </span>
+                <span className="scm-section-title">Graph</span>
+                <div className="scm-graph-toolbar">
+                  <span className="scm-graph-toolbar-auto">Auto</span>
+                  <button className="scm-icon-btn" title="Branch" type="button"><VscGitMerge size={14} /></button>
+                  <button className="scm-icon-btn" title="Fetch" type="button"><VscTarget size={14} /></button>
+                  <button className="scm-icon-btn" title="Pull" type="button"><VscArrowDown size={14} /></button>
+                  <button className="scm-icon-btn" title="Pull (rebase)" type="button"><VscArrowDown size={14} /></button>
+                  <button className="scm-icon-btn" title="Push" type="button"><VscArrowUp size={14} /></button>
+                  <button className="scm-icon-btn" title="Refresh graph" type="button" onClick={(e) => { e.stopPropagation(); fetchGraph(); }} disabled={graphLoading}>
+                    <VscRefresh size={14} />
+                  </button>
+                </div>
+              </div>
+              {!sectionsCollapsed.graph && (
+                <div className="scm-graph-container">
+                  {graphLoading ? (
+                    <div className="scm-graph-loading">Loading...</div>
+                  ) : graphEntries.length > 0 ? (
+                    <div className="scm-graph-list">
+                      {graphEntries.map((entry, i) => (
+                        <div key={`${entry.hash}-${i}`} className="scm-graph-row scm-graph-row-has-tooltip">
+                          <div className="scm-graph-tooltip">
+                            <div className="scm-graph-tooltip-hash">{entry.hash}</div>
+                            <div className="scm-graph-tooltip-msg">{entry.message}</div>
+                          </div>
+                          <div className="scm-graph-line-col">
+                            {i < graphEntries.length - 1 && <span className="scm-graph-vline" />}
+                            <span className={`scm-graph-dot ${entry.isHead ? 'empty' : ''}`} />
+                          </div>
+                          <span className="scm-graph-commit-msg">
+                            {entry.message.length > 42 ? entry.message.slice(0, 42) + '...' : entry.message}
+                          </span>
+                          <div className="scm-graph-pills">
+                            {entry.branchName && (
+                              <span className="scm-graph-pill branch">
+                                <VscTarget size={12} />
+                                {entry.branchName}
+                              </span>
+                            )}
+                            {entry.branchName && (
+                              <span className="scm-graph-pill cloud-icon" title="Remote tracking">
+                                <VscCloud size={14} />
+                              </span>
+                            )}
+                            {entry.remoteRef && (
+                              <span className="scm-graph-pill remote">
+                                <VscCloud size={12} />
+                                {entry.remoteRef}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="scm-no-changes">No commits</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,3 +1,4 @@
+import os
 import requests
 import json
 import re
@@ -7,8 +8,126 @@ from .indexer import search_codebase
 logger = logging.getLogger(__name__)
 
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
+NVIDIA_CHAT_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+KIMI_MODEL_ID = "moonshotai/kimi-k2.5"
 _DEFAULT_MODEL = "qwen2.5-coder:7b"
 _current_model = _DEFAULT_MODEL
+
+
+def _is_kimi_model(model_name):
+    """True if the selected model is Kimi (NVIDIA API)."""
+    if not model_name:
+        return False
+    n = model_name.strip().lower()
+    return n == KIMI_MODEL_ID or n.startswith("moonshotai/kimi") or n == "kimi-k2.5"
+
+
+def _call_nvidia_chat(messages, model, timeout=180):
+    """Call NVIDIA API for Kimi. Uses API key from Settings (Connect) or else NVIDIA_API_KEY from env."""
+    from .api_keys import get_key
+    api_key = get_key("kimi") or os.environ.get("NVIDIA_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "No API key for Kimi. In Settings, select Model providers → Kimi (K2.5), enter your NVIDIA API key, and click Connect. "
+            "Or set NVIDIA_API_KEY in your server environment."
+        )
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": 16384,
+        "temperature": 0.2,
+        "stream": False,
+        "chat_template_kwargs": {"thinking": True},
+    }
+    resp = requests.post(NVIDIA_CHAT_URL, headers=headers, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    choices = data.get("choices") or []
+    if not choices:
+        raise ValueError("NVIDIA API returned no choices")
+    msg = choices[0].get("message") or {}
+    return (msg.get("content") or "").strip()
+
+
+def _is_openai_model(model_name):
+    """True if the selected model is an OpenAI provider model (e.g. openai/gpt-4)."""
+    if not model_name:
+        return False
+    return model_name.strip().lower().startswith("openai/")
+
+
+def _is_ollama_model(model_name):
+    """True if the model should be sent to local Ollama (no provider prefix or ollama/)."""
+    if not model_name:
+        return True
+    n = model_name.strip().lower()
+    if n.startswith("openai/") or n.startswith("anthropic/") or n.startswith("google/") or n.startswith("groq/") or n.startswith("together/"):
+        return False
+    if _is_kimi_model(model_name):
+        return False
+    return True
+
+
+def _call_openai_chat(messages, model, timeout=180):
+    """Call OpenAI API. Uses API key from Settings > Connect (stored in agent.api_keys)."""
+    from .api_keys import get_key
+    api_key = get_key("openai")
+    if not api_key:
+        raise RuntimeError("OpenAI API key is not set. In Settings, select Model providers, choose OpenAI, enter your API key, and click Connect.")
+    model_id = model.split("/", 1)[-1] if "/" in model else model  # e.g. openai/gpt-4 -> gpt-4
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model_id,
+        "messages": messages,
+        "max_tokens": 16384,
+        "temperature": 0.2,
+    }
+    resp = requests.post(OPENAI_CHAT_URL, headers=headers, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    choices = data.get("choices") or []
+    if not choices:
+        raise ValueError("OpenAI API returned no choices")
+    msg = choices[0].get("message") or {}
+    return (msg.get("content") or "").strip()
+
+
+# Timeout for external APIs (NVIDIA, OpenAI) - they can be slow; use longer than Ollama
+SIMPLE_CHAT_EXTERNAL_TIMEOUT = 120
+
+def simple_chat(user_message: str, timeout=30) -> str:
+    """One-shot chat for greetings/small talk. Returns plain text (no agent/tools)."""
+    model = get_model()
+    messages = [
+        {"role": "system", "content": "You are a friendly coding assistant in Nebula IDE. Reply in one short, friendly sentence. No code, no tools, no lists."},
+        {"role": "user", "content": (user_message or "").strip() or "Hello"},
+    ]
+    try:
+        if _is_kimi_model(model):
+            return _call_nvidia_chat(messages, model, timeout=SIMPLE_CHAT_EXTERNAL_TIMEOUT)
+        if _is_openai_model(model):
+            return _call_openai_chat(messages, model, timeout=SIMPLE_CHAT_EXTERNAL_TIMEOUT)
+        if _is_ollama_model(model):
+            r = requests.post(
+                OLLAMA_CHAT_URL,
+                json={"model": model, "messages": messages, "stream": False},
+                timeout=timeout,
+            )
+            r.raise_for_status()
+            return (r.json().get("message", {}).get("content", "") or "").strip()
+    except Exception as e:
+        logger.exception("simple_chat failed: %s", e)
+        raise
+    return "Hello! How can I help you today?"
 
 
 def get_model():
@@ -492,30 +611,43 @@ File tree:
     logger.info("Planner sending %d messages (%d chars) to %s via chat API",
                 len(messages), sum(len(m["content"]) for m in messages), model)
 
-    # Longer timeout for first token / slow models (e.g. 180s). Read timeout is the main issue.
     _timeout = 180
+    raw_text = ""
     try:
-        response = requests.post(
-            OLLAMA_CHAT_URL,
-            json={
-                "model": model,
-                "messages": messages,
-                "stream": False,
-            },
-            timeout=_timeout,
-        )
-        response.raise_for_status()
+        if _is_kimi_model(model):
+            raw_text = _call_nvidia_chat(messages, model, timeout=_timeout)
+        elif _is_openai_model(model):
+            raw_text = _call_openai_chat(messages, model, timeout=_timeout)
+        elif _is_ollama_model(model):
+            response = requests.post(
+                OLLAMA_CHAT_URL,
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                },
+                timeout=_timeout,
+            )
+            response.raise_for_status()
+            raw_text = response.json().get("message", {}).get("content", "")
+        else:
+            return {"action": "final", "answer": f"Provider for model '{model}' is not yet supported for the agent. Use OpenAI (Settings > Connect), Kimi (NVIDIA_API_KEY), or a local Ollama model."}
     except requests.exceptions.Timeout as e:
-        logger.error("Ollama request timed out after %ss: %s", _timeout, e)
-        return {"action": "final", "answer": "The AI model took too long to respond. Make sure Ollama is running and the model is loaded (e.g. run `ollama run <model>` once). You can try a smaller model or try again."}
+        logger.error("Chat request timed out after %ss: %s", _timeout, e)
+        return {"action": "final", "answer": "The AI model took too long to respond. Try again or use a different model."}
     except requests.RequestException as e:
-        logger.error("Ollama request failed: %s", e)
+        logger.error("Chat request failed: %s", e)
         err_msg = str(e)
+        if _is_kimi_model(model):
+            return {"action": "final", "answer": f"NVIDIA/Kimi API error. Ensure NVIDIA_API_KEY is set in the server environment. Error: {err_msg[:200]}"}
+        if _is_openai_model(model):
+            return {"action": "final", "answer": f"OpenAI API error. Check your API key in Settings and try again. Error: {err_msg[:200]}"}
         if "timed out" in err_msg.lower() or "timeout" in err_msg.lower():
             return {"action": "final", "answer": "The AI model timed out. Ensure Ollama is running and the model is loaded. Try again or use a smaller model."}
         return {"action": "final", "answer": f"Failed to connect to the AI model. Make sure Ollama is running. Error: {e}"}
-
-    raw_text = response.json().get("message", {}).get("content", "")
+    except (RuntimeError, ValueError) as e:
+        logger.error("Kimi/NVIDIA/OpenAI error: %s", e)
+        return {"action": "final", "answer": str(e)}
     logger.info("Planner raw response: %s", raw_text[:500])
 
     # CRITICAL: First check if raw_text contains a JSON tool call that should be executed

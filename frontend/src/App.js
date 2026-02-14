@@ -19,6 +19,7 @@ import CommandPalette from './components/CommandPalette';
 import OpenFolderDialog from './components/OpenFolderDialog';
 import MobileCompanionPopup from './components/MobileCompanionPopup';
 import { VscDeviceMobile } from 'react-icons/vsc';
+import { listDirFromHandle, getHandleForPath, getFileContentFromHandle, writeFileToHandle } from './lib/webFs';
 
 // Language detection by file extension
 function getLanguage(filename) {
@@ -127,6 +128,11 @@ function App() {
   const [showNewFilePrompt, setShowNewFilePrompt] = useState(false);
   const [showOpenFolder, setShowOpenFolder] = useState(false);
   const [projectName, setProjectName] = useState('Nebula');
+  const [webFolderHandle, setWebFolderHandle] = useState(null);
+  const [sidebarWidth, setSidebarWidth] = useState(270);
+  const [chatWidth, setChatWidth] = useState(390);
+  const sidebarResizingRef = useRef(false);
+  const chatResizingRef = useRef(false);
   const [ideSettings, setIdeSettings] = useState(() => {
     // Load saved settings on mount
     try {
@@ -151,15 +157,20 @@ function App() {
     } catch { return false; }
   });
 
-  // Load file tree (optionally include hidden files)
+  // Load file tree (optionally include hidden files); from backend or from web folder handle
   const loadTree = useCallback(async () => {
     try {
-      const res = await axios.get(`${API}/files/tree`, { params: { show_hidden: showHiddenFiles } });
-      setTree(res.data);
+      if (webFolderHandle) {
+        const nodes = await listDirFromHandle(webFolderHandle, '', showHiddenFiles);
+        setTree(nodes);
+      } else {
+        const res = await axios.get(`${API}/files/tree`, { params: { show_hidden: showHiddenFiles } });
+        setTree(res.data);
+      }
     } catch (err) {
       console.error('Failed to load file tree:', err);
     }
-  }, [showHiddenFiles]);
+  }, [showHiddenFiles, webFolderHandle]);
 
   // Load workspace info and file tree on startup
   useEffect(() => {
@@ -172,15 +183,53 @@ function App() {
     }).catch(() => {});
   }, [loadTree]);
 
-  // Open a file
+  // Sync selected AI model to backend on app load (so Kimi/OpenAI is used after refresh or server restart)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('nebula_ide_settings');
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      const source = s.aiModelSource ?? 'local';
+      const provider = (s.aiApiKeyProvider ?? 'ollama').toLowerCase();
+      if (source !== 'providers') return;
+      const providerToModel = {
+        kimi: 'moonshotai/kimi-k2.5',
+        openai: 'openai/gpt-4',
+        anthropic: 'anthropic/claude-3-sonnet-20240229',
+        google: 'google/gemini-pro',
+        groq: 'groq/llama-3-70b',
+        together: 'together/llama-3-70b',
+      };
+      const modelId = providerToModel[provider];
+      if (!modelId) return;
+      fetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' })
+        .then(r => r.json().catch(() => ({})))
+        .catch(() => {});
+    } catch (_) {}
+  }, []);
+
+  // Apply resizable sidebar and chat widths
+  useEffect(() => {
+    document.documentElement.style.setProperty('--sidebar-width', `${sidebarWidth}px`);
+  }, [sidebarWidth]);
+  useEffect(() => {
+    document.documentElement.style.setProperty('--chat-width', `${chatWidth}px`);
+  }, [chatWidth]);
+
+  // Open a file (from backend or from web folder handle)
   const openFile = useCallback(async (path) => {
     if (openFiles.includes(path)) {
       setActiveFile(path);
       return;
     }
     try {
-      const res = await axios.get(`${API}/files/read`, { params: { path } });
-      const content = res.data.content;
+      let content;
+      if (webFolderHandle) {
+        content = await getFileContentFromHandle(webFolderHandle, path);
+      } else {
+        const res = await axios.get(`${API}/files/read`, { params: { path } });
+        content = res.data.content;
+      }
       setFileContents(prev => ({ ...prev, [path]: content }));
       setOriginalContents(prev => ({ ...prev, [path]: content }));
       setOpenFiles(prev => [...prev, path]);
@@ -188,7 +237,7 @@ function App() {
     } catch (err) {
       console.error('Failed to open file:', err);
     }
-  }, [openFiles]);
+  }, [openFiles, webFolderHandle]);
 
   // Close a file
   const closeFile = useCallback((path) => {
@@ -215,28 +264,36 @@ function App() {
     setModifiedFiles(new Set());
   }, []);
 
-  // Save the current file
+  // Save the current file (to backend or to web folder handle)
   const saveFile = useCallback(async () => {
     if (!activeFile || !fileContents[activeFile]) return;
     try {
-      await axios.post(`${API}/files/write`, null, {
-        params: { path: activeFile, content: fileContents[activeFile] }
-      });
+      if (webFolderHandle) {
+        await writeFileToHandle(webFolderHandle, activeFile, fileContents[activeFile]);
+      } else {
+        await axios.post(`${API}/files/write`, null, {
+          params: { path: activeFile, content: fileContents[activeFile] }
+        });
+      }
       setOriginalContents(prev => ({ ...prev, [activeFile]: fileContents[activeFile] }));
       setModifiedFiles(prev => { const next = new Set(prev); next.delete(activeFile); return next; });
     } catch (err) {
       console.error('Failed to save file:', err);
     }
-  }, [activeFile, fileContents]);
+  }, [activeFile, fileContents, webFolderHandle]);
 
   // Save all files
   const saveAllFiles = useCallback(async () => {
     const promises = [...modifiedFiles].map(async (path) => {
       if (fileContents[path]) {
         try {
-          await axios.post(`${API}/files/write`, null, {
-            params: { path, content: fileContents[path] }
-          });
+          if (webFolderHandle) {
+            await writeFileToHandle(webFolderHandle, path, fileContents[path]);
+          } else {
+            await axios.post(`${API}/files/write`, null, {
+              params: { path, content: fileContents[path] }
+            });
+          }
           return path;
         } catch (err) {
           console.error(`Failed to save ${path}:`, err);
@@ -252,7 +309,7 @@ function App() {
       }
     });
     setModifiedFiles(new Set());
-  }, [modifiedFiles, fileContents]);
+  }, [modifiedFiles, fileContents, webFolderHandle]);
 
   // Handle editor content change
   const handleEditorChange = useCallback((value) => {
@@ -617,6 +674,52 @@ function App() {
     document.addEventListener('mouseup', handleMouseUp);
   }, [terminalHeight]);
 
+  // Left sidebar resize
+  const handleSidebarResizeStart = useCallback((e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const handleMouseMove = (ev) => {
+      const delta = ev.clientX - startX;
+      setSidebarWidth(Math.max(180, Math.min(500, startW + delta)));
+    };
+    const handleMouseUp = () => {
+      sidebarResizingRef.current = false;
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    sidebarResizingRef.current = true;
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [sidebarWidth]);
+
+  // Right (chat) panel resize
+  const handleChatResizeStart = useCallback((e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = chatWidth;
+    const handleMouseMove = (ev) => {
+      const delta = startX - ev.clientX;
+      setChatWidth(Math.max(280, Math.min(600, startW + delta)));
+    };
+    const handleMouseUp = () => {
+      chatResizingRef.current = false;
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    chatResizingRef.current = true;
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [chatWidth]);
+
   // Handle settings change — apply to editor in real-time
   const handleSettingsChange = useCallback((settings) => {
     setIdeSettings(settings);
@@ -635,21 +738,29 @@ function App() {
     }
   }, []);
 
-  // Handle open folder
-  const handleOpenFolder = useCallback((folderPath, folderName) => {
-    // Close all current files
+  // Handle open folder (path/name from Electron; or null, name, handle from web picker)
+  const handleOpenFolder = useCallback((folderPath, folderName, handle = null) => {
     setOpenFiles([]);
     setActiveFile(null);
     setFileContents({});
     setOriginalContents({});
     setModifiedFiles(new Set());
-    // Update project name
     setProjectName(folderName || 'Nebula');
-    // Reload the tree
-    loadTree();
-    // Reset sidebar to explorer
+    setWebFolderHandle(handle || null);
+    if (handle) {
+      listDirFromHandle(handle, '', showHiddenFiles).then(setTree).catch(console.error);
+    } else {
+      loadTree();
+    }
     setSidebarPanel('explorer');
-  }, [loadTree]);
+  }, [loadTree, showHiddenFiles]);
+
+  // Load children for a folder (used when web folder handle is set)
+  const loadChildrenFromHandle = useCallback(async (path) => {
+    if (!webFolderHandle) return [];
+    const h = await getHandleForPath(webFolderHandle, path);
+    return listDirFromHandle(h, path, showHiddenFiles);
+  }, [webFolderHandle, showHiddenFiles]);
 
   // Render breadcrumbs
   const renderBreadcrumbs = () => {
@@ -837,6 +948,7 @@ function App() {
       <div className="ide-body">
         {/* Sidebar — includes horizontal activity bar at top */}
         {sidebarPanel && (
+          <>
           <div className="sidebar">
             {/* Horizontal Activity Bar (Cursor-style) */}
             <ActivityBar
@@ -852,6 +964,7 @@ function App() {
                 openFile={openFile}
                 selectedFile={activeFile}
                 onRefresh={loadTree}
+                onLoadChildren={webFolderHandle ? loadChildrenFromHandle : undefined}
                 showHiddenFiles={showHiddenFiles}
                 onToggleShowHidden={() => {
                   setShowHiddenFiles(prev => {
@@ -883,6 +996,8 @@ function App() {
               <SettingsPanel onSettingsChange={handleSettingsChange} />
             )}
           </div>
+          <div className="sidebar-resizer" onMouseDown={handleSidebarResizeStart} title="Drag to resize" />
+          </>
         )}
 
         {/* Main Editor Area */}
@@ -962,6 +1077,9 @@ function App() {
             )}
           </div>
 
+          {showChat && (
+            <div className="sidebar-resizer" onMouseDown={handleChatResizeStart} title="Drag to resize" />
+          )}
           {/* AI Chat Panel */}
           <ChatPanel
             visible={showChat}

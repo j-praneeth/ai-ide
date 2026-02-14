@@ -144,7 +144,7 @@ function TreeNode({ node, basePath, depth, openFile, selectedFile, expandedFolde
   );
 }
 
-export default function FileExplorer({ tree, openFile, selectedFile, onRefresh, showHiddenFiles, onToggleShowHidden, triggerNewFile, onNewFileDone, onOpenFolder }) {
+export default function FileExplorer({ tree, openFile, selectedFile, onRefresh, showHiddenFiles, onToggleShowHidden, triggerNewFile, onNewFileDone, onOpenFolder, onLoadChildren }) {
   const [expandedFolders, setExpandedFolders] = useState(new Set());
   const [lazyChildren, setLazyChildren] = useState({});
   const [showNewFileInput, setShowNewFileInput] = useState(false);
@@ -237,18 +237,22 @@ export default function FileExplorer({ tree, openFile, selectedFile, onRefresh, 
       } else {
         next.add(path);
         if (!lazyChildren[path]) {
-          axios.get(`${API}/files/tree-children`, { params: { path, show_hidden: showHiddenFiles } })
-            .then(res => {
-              if (Array.isArray(res.data)) {
-                setLazyChildren(prev => ({ ...prev, [path]: res.data }));
-              }
-            })
-            .catch(() => {});
+          if (onLoadChildren) {
+            onLoadChildren(path).then(data => {
+              if (Array.isArray(data)) setLazyChildren(prev => ({ ...prev, [path]: data }));
+            }).catch(() => {});
+          } else {
+            axios.get(`${API}/files/tree-children`, { params: { path, show_hidden: showHiddenFiles } })
+              .then(res => {
+                if (Array.isArray(res.data)) setLazyChildren(prev => ({ ...prev, [path]: res.data }));
+              })
+              .catch(() => {});
+          }
         }
       }
       return next;
     });
-  }, [lazyChildren, showHiddenFiles]);
+  }, [lazyChildren, showHiddenFiles, onLoadChildren]);
 
   const handleContextMenu = useCallback((e, path, type) => {
     setContextMenu({ x: e.clientX, y: e.clientY, path, type });

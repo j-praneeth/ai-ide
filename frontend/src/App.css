@@ -670,8 +670,22 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--bg-sidebar, var(--bg-deep));
+}
+
+.scm-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.scm-panel-main {
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.04));
 }
 
 .scm-panel-header {
@@ -847,6 +861,18 @@
   border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.04));
 }
 
+.scm-section-changes .scm-panel-main {
+  padding: 0;
+}
+
+.scm-section.scm-subsection {
+  border-bottom: none;
+}
+
+.scm-section.scm-subsection .scm-section-header {
+  padding: 4px 12px 4px 28px;
+}
+
 .scm-section-header {
   display: flex;
   align-items: center;
@@ -899,6 +925,197 @@
 
 .scm-section-header:hover .scm-file-action.stage-all {
   opacity: 1;
+}
+
+/* Graph section at bottom - fills remaining space */
+.scm-graph-section-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.scm-section.scm-section-graph {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-bottom: none;
+}
+
+.scm-section.scm-section-graph .scm-section-header {
+  flex-shrink: 0;
+}
+
+.scm-graph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.scm-graph-toolbar-auto {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-right: 6px;
+}
+
+.scm-graph-container {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 12px 12px 28px;
+  overflow-y: auto;
+}
+
+.scm-graph-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.scm-graph-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  padding: 2px 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.scm-graph-row-has-tooltip {
+  position: relative;
+}
+
+.scm-graph-tooltip {
+  position: absolute;
+  left: 24px;
+  bottom: 100%;
+  margin-bottom: 4px;
+  padding: 8px 10px;
+  background: var(--bg-elevated, #2d2d2d);
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-radius: 6px;
+  font-size: 11px;
+  max-width: 320px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  z-index: 100;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.15s, visibility 0.15s;
+  white-space: normal;
+}
+
+.scm-graph-row-has-tooltip:hover .scm-graph-tooltip {
+  visibility: visible;
+  opacity: 1;
+}
+
+.scm-graph-tooltip-hash {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.scm-graph-tooltip-msg {
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.scm-graph-line-col {
+  position: relative;
+  width: 16px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scm-graph-vline {
+  position: absolute;
+  left: 7px;
+  top: 14px;
+  bottom: -2px;
+  width: 2px;
+  background: #4a9eff;
+  border-radius: 1px;
+}
+
+.scm-graph-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #4a9eff;
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+.scm-graph-dot.empty {
+  background: transparent;
+  border: 2px solid #4a9eff;
+  box-sizing: border-box;
+}
+
+.scm-graph-commit-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.scm-graph-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.scm-graph-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.scm-graph-pill.branch {
+  background: rgba(74, 158, 255, 0.25);
+  color: #4a9eff;
+}
+
+.scm-graph-pill.remote {
+  background: rgba(204, 120, 50, 0.3);
+  color: #cc7832;
+}
+
+.scm-graph-pill.cloud-icon {
+  padding: 2px 4px;
+  background: transparent;
+  color: #b392f0;
+}
+
+.scm-graph-pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre;
+}
+
+.scm-graph-line {
+  white-space: pre;
+}
+
+.scm-graph-loading {
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* File list */
@@ -1823,6 +2040,27 @@
   font-size: var(--font-size-sm);
   color: var(--text-muted);
   font-style: italic;
+}
+
+.chat-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.chat-stop-btn:hover {
+  background: rgba(248, 113, 113, 0.2);
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.4);
 }
 
 /* ── Spinner (settings, etc.) ── */

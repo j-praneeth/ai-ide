@@ -49,6 +49,7 @@ const SETTINGS_GROUPS = [
 
 const AI_PROVIDERS = [
   { id: 'ollama', label: 'Ollama (local)' },
+  { id: 'kimi', label: 'Kimi (K2.5)' },
   { id: 'openai', label: 'OpenAI' },
   { id: 'anthropic', label: 'Anthropic (Claude)' },
   { id: 'google', label: 'Google (Gemini)' },
@@ -57,12 +58,27 @@ const AI_PROVIDERS = [
   { id: 'other', label: 'Other' },
 ];
 
+const USE_ENV_KEY_PROVIDERS = new Set([]);
+
+// Map provider id to backend model id (used when "Model providers" is selected and user connects)
+const PROVIDER_TO_MODEL_ID = {
+  kimi: 'moonshotai/kimi-k2.5',
+  openai: 'openai/gpt-4',
+  anthropic: 'anthropic/claude-3-sonnet-20240229',
+  google: 'google/gemini-pro',
+  groq: 'groq/llama-3-70b',
+  together: 'together/llama-3-70b',
+  other: 'other/default',
+  ollama: null, // local Ollama uses the model dropdown
+};
+
 function getDefaults() {
   const v = {};
   SETTINGS_GROUPS.forEach(g => {
     g.settings.forEach(s => { if (s.type !== 'aiModelDropdown') v[s.key] = s.value; });
   });
   v.aiApiKeyProvider = v.aiApiKeyProvider ?? 'ollama';
+  v.aiModelSource = v.aiModelSource ?? 'local';
   return v;
 }
 
@@ -155,11 +171,13 @@ function SettingRow({ setting, value, onChange }) {
   );
 }
 
-function AIModelRow({ models, loading, currentModel, feedback, onRefresh, onSelect }) {
+function AIModelRow({ models, loading, currentModel, feedback, onRefresh, onSelect, hidden }) {
   const [selectValue, setSelectValue] = useState(currentModel || '');
   const [setting, setSetting] = useState(false);
 
   useEffect(() => { setSelectValue(currentModel || ''); }, [currentModel]);
+
+  if (hidden) return null;
 
   const handleChange = async (e) => {
     const name = e.target.value;
@@ -228,6 +246,8 @@ export default function SettingsPanel({ onSettingsChange }) {
   const [modelsLoading, setModelsLoading] = useState(true);
   const [currentModel, setCurrentModel] = useState(null);
   const [modelFeedback, setModelFeedback] = useState(null);
+  const [connectingApiKey, setConnectingApiKey] = useState(false);
+  const [apiKeyConnectedForProvider, setApiKeyConnectedForProvider] = useState(null);
 
   const fetchModels = useCallback(async () => {
     setModelsLoading(true);
@@ -262,23 +282,33 @@ export default function SettingsPanel({ onSettingsChange }) {
 
   useEffect(() => { fetchModels(); fetchCurrentModel(); }, [fetchModels, fetchCurrentModel]);
 
+  // When "Model providers" + Kimi (or other env-key provider) is selected, ensure backend uses that model
+  useEffect(() => {
+    const source = values.aiModelSource ?? 'local';
+    const provider = (values.aiApiKeyProvider ?? 'ollama').toLowerCase();
+    if (source !== 'providers' || !USE_ENV_KEY_PROVIDERS.has(provider)) return;
+    const modelId = PROVIDER_TO_MODEL_ID[provider];
+    if (!modelId) return;
+    fetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' })
+      .then(r => r.json().catch(() => ({})))
+      .then(data => { if (data.status === 'ok') setCurrentModel(modelId); })
+      .catch(() => {});
+  }, [values.aiModelSource, values.aiApiKeyProvider]);
+
   const refreshModels = useCallback(() => { fetchModels(); fetchCurrentModel(); }, [fetchModels, fetchCurrentModel]);
 
   const update = useCallback((key, value) => {
     setValues(prev => {
       const next = { ...prev, [key]: value };
       saveSettings(next);
-      // Notify parent about settings change
-      if (onSettingsChange) onSettingsChange(next);
       return next;
     });
-  }, [onSettingsChange]);
+  }, []);
 
-  // Notify parent on mount with initial settings
+  // Notify parent when settings change (never call onSettingsChange from inside setState updater)
   useEffect(() => {
     if (onSettingsChange) onSettingsChange(values);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [values, onSettingsChange]);
 
   const filteredGroups = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -315,70 +345,150 @@ export default function SettingsPanel({ onSettingsChange }) {
                 <AIModelRow key={setting.key} models={models} loading={modelsLoading}
                   currentModel={currentModel} feedback={modelFeedback}
                   onRefresh={refreshModels} onSelect={handleModelFeedback}
+                  hidden={values.aiModelSource === 'providers'}
                 />
               ) : (
                 <SettingRow key={setting.key} setting={setting} value={values[setting.key]} onChange={v => update(setting.key, v)} />
               )
             )}
             {group.id === 'ai' && (
-              <div style={{ marginTop: 16 }}>
-                <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 500, color: 'var(--text-primary)', marginBottom: 6 }}>API key by provider</div>
-                <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
-                  Select a provider, enter its API key, then click Connect to save for that provider.
+              <>
+                <div style={{ marginTop: 16, marginBottom: 12 }}>
+                  <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 500, color: 'var(--text-primary)', marginBottom: 8 }}>Use model from</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 'var(--font-size-sm)' }}>
+                      <input
+                        type="radio"
+                        name="aiModelSource"
+                        checked={(values.aiModelSource ?? 'local') === 'local'}
+                        onChange={() => update('aiModelSource', 'local')}
+                      />
+                      <span>Local model (Ollama)</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 'var(--font-size-sm)' }}>
+                      <input
+                        type="radio"
+                        name="aiModelSource"
+                        checked={(values.aiModelSource ?? 'local') === 'providers'}
+                        onChange={() => update('aiModelSource', 'providers')}
+                      />
+                      <span>Model providers (OpenAI, Kimi, etc.)</span>
+                    </label>
+                  </div>
                 </div>
-                <select
-                  value={values.aiApiKeyProvider ?? 'ollama'}
-                  onChange={e => update('aiApiKeyProvider', e.target.value)}
-                  style={{ ...controlStyle, width: '100%', marginBottom: 8 }}
-                >
-                  {AI_PROVIDERS.map(p => (
-                    <option key={p.id} value={p.id}>{p.label}</option>
-                  ))}
-                </select>
-                <input
-                  type="password"
-                  placeholder={`Enter API key for ${AI_PROVIDERS.find(p => p.id === (values.aiApiKeyProvider ?? 'ollama'))?.label ?? 'provider'}`}
-                  value={values.aiApiKey ?? ''}
-                  onChange={e => update('aiApiKey', e.target.value)}
-                  style={{ ...controlStyle, width: '100%', marginBottom: 8 }}
-                />
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const key = values.aiApiKey?.trim();
-                    const provider = (values.aiApiKeyProvider ?? 'ollama').toLowerCase();
-                    if (!key) return;
-                    try {
-                      const res = await fetch(`${API}/ai/set-api-key`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ api_key: key, provider }),
-                      });
-                      const data = await res.json().catch(() => ({}));
-                      if (data.status === 'ok') {
-                        setModelFeedback({ type: 'success', message: `API key saved for ${AI_PROVIDERS.find(p => p.id === provider)?.label ?? provider}` });
-                      } else {
-                        setModelFeedback({ type: 'error', message: data.message || 'Failed to save' });
-                      }
-                      setTimeout(() => setModelFeedback(null), 3000);
-                    } catch (_) {
-                      setModelFeedback({ type: 'error', message: 'Failed to save' });
-                      setTimeout(() => setModelFeedback(null), 3000);
-                    }
-                  }}
-                  style={{
-                    ...controlStyle,
-                    width: '100%',
-                    background: 'var(--accent)',
-                    color: '#0D0D12',
-                    fontWeight: 600,
-                    border: 'none',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Connect
-                </button>
-              </div>
+                {(values.aiModelSource ?? 'local') === 'local' && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 6 }}>Select an Ollama model below. It will be used for chat and agent.</div>
+                  </div>
+                )}
+                {(values.aiModelSource ?? 'local') === 'providers' && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 500, color: 'var(--text-primary)', marginBottom: 6 }}>API key by provider</div>
+                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
+                      Select a provider, enter its API key, then click Connect. The connected provider will be used for chat and agent.
+                    </div>
+                    <select
+                      value={values.aiApiKeyProvider ?? 'ollama'}
+                      onChange={async (e) => {
+                        const provider = (e.target.value || 'ollama').toLowerCase();
+                        setApiKeyConnectedForProvider(null);
+                        update('aiApiKeyProvider', e.target.value);
+                        if (USE_ENV_KEY_PROVIDERS.has(provider)) {
+                          const modelId = PROVIDER_TO_MODEL_ID[provider];
+                          if (modelId) {
+                            try {
+                              const setRes = await fetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' });
+                              const setData = await setRes.json().catch(() => ({}));
+                              if (setData.status === 'ok') {
+                                setCurrentModel(modelId);
+                                setModelFeedback({ type: 'success', message: `Using ${AI_PROVIDERS.find(p => p.id === provider)?.label ?? provider}` });
+                                setTimeout(() => setModelFeedback(null), 3000);
+                              }
+                            } catch (_) {}
+                          }
+                        }
+                      }}
+                      style={{ ...controlStyle, width: '100%', marginBottom: 8 }}
+                    >
+                      {AI_PROVIDERS.map(p => (
+                        <option key={p.id} value={p.id}>{p.label}</option>
+                      ))}
+                    </select>
+                    {USE_ENV_KEY_PROVIDERS.has((values.aiApiKeyProvider ?? 'ollama').toLowerCase()) ? (
+                      <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', padding: '10px 12px', background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
+                        API key is configured via server environment (NVIDIA_API_KEY). It is not displayed or editable.
+                      </div>
+                    ) : (
+                      <>
+                        <input
+                          type="password"
+                          placeholder={`Enter API key for ${AI_PROVIDERS.find(p => p.id === (values.aiApiKeyProvider ?? 'ollama'))?.label ?? 'provider'}`}
+                          value={values.aiApiKey ?? ''}
+                          onChange={e => {
+                            if (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase())) setApiKeyConnectedForProvider(null);
+                            update('aiApiKey', e.target.value);
+                          }}
+                          style={{ ...controlStyle, width: '100%', marginBottom: 8 }}
+                        />
+                        <button
+                          type="button"
+                          disabled={connectingApiKey}
+                          onClick={async () => {
+                            const key = values.aiApiKey?.trim();
+                            const provider = (values.aiApiKeyProvider ?? 'ollama').toLowerCase();
+                            if (!key && !USE_ENV_KEY_PROVIDERS.has(provider)) return;
+                            setConnectingApiKey(true);
+                            try {
+                              const res = await fetch(`${API}/ai/set-api-key`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ api_key: key || '', provider }),
+                              });
+                              const data = await res.json().catch(() => ({}));
+                              if (data.status === 'ok') {
+                                setApiKeyConnectedForProvider(provider);
+                                const modelId = PROVIDER_TO_MODEL_ID[provider];
+                                if (modelId) {
+                                  const setRes = await fetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' });
+                                  const setData = await setRes.json().catch(() => ({}));
+                                  if (setData.status === 'ok') {
+                                    setCurrentModel(modelId);
+                                    setModelFeedback({ type: 'success', message: `Using ${AI_PROVIDERS.find(p => p.id === provider)?.label ?? provider}` });
+                                  } else {
+                                    setModelFeedback({ type: 'success', message: `API key saved for ${AI_PROVIDERS.find(p => p.id === provider)?.label ?? provider}` });
+                                  }
+                                } else {
+                                  setModelFeedback({ type: 'success', message: `API key saved for ${AI_PROVIDERS.find(p => p.id === provider)?.label ?? provider}` });
+                                }
+                              } else {
+                                setModelFeedback({ type: 'error', message: data.message || 'Failed to save' });
+                              }
+                              setTimeout(() => setModelFeedback(null), 3000);
+                            } catch (_) {
+                              setModelFeedback({ type: 'error', message: 'Failed to save' });
+                              setTimeout(() => setModelFeedback(null), 3000);
+                            } finally {
+                              setConnectingApiKey(false);
+                            }
+                          }}
+                          style={{
+                            ...controlStyle,
+                            width: '100%',
+                            background: (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase())) ? 'var(--accent-muted, rgba(0, 122, 204, 0.2))' : connectingApiKey ? 'var(--bg-elevated)' : 'var(--accent)',
+                            color: (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase())) ? 'var(--accent)' : connectingApiKey ? 'var(--text-muted)' : '#0D0D12',
+                            fontWeight: 600,
+                            border: (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase())) ? '1px solid var(--accent)' : 'none',
+                            cursor: connectingApiKey ? 'wait' : (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase())) ? 'default' : 'pointer',
+                            opacity: connectingApiKey ? 0.9 : 1,
+                          }}
+                        >
+                          {connectingApiKey ? 'Connecting...' : (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase()) ? 'Connected' : 'Connect')}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
         ))}
