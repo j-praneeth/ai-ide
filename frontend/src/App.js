@@ -13,7 +13,6 @@ import ExtensionsPanel from './components/ExtensionsPanel';
 import SettingsPanel from './components/SettingsPanel';
 import EditorTabs from './components/EditorTabs';
 import TerminalPanel from './components/TerminalPanel';
-import ChatPanel from './components/ChatPanel';
 import StatusBar from './components/StatusBar';
 import CommandPalette from './components/CommandPalette';
 import OpenFolderDialog from './components/OpenFolderDialog';
@@ -118,7 +117,6 @@ function App() {
   // UI state
   const [sidebarPanel, setSidebarPanel] = useState('explorer');
   const [showTerminal, setShowTerminal] = useState(false);
-  const [showChat, setShowChat] = useState(false);
   const [showMobileCompanionPopup, setShowMobileCompanionPopup] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(250);
@@ -130,9 +128,7 @@ function App() {
   const [projectName, setProjectName] = useState('Nebula');
   const [webFolderHandle, setWebFolderHandle] = useState(null);
   const [sidebarWidth, setSidebarWidth] = useState(270);
-  const [chatWidth, setChatWidth] = useState(390);
   const sidebarResizingRef = useRef(false);
-  const chatResizingRef = useRef(false);
   const [ideSettings, setIdeSettings] = useState(() => {
     // Load saved settings on mount
     try {
@@ -189,8 +185,8 @@ function App() {
       const raw = localStorage.getItem('nebula_ide_settings');
       if (!raw) return;
       const s = JSON.parse(raw);
-      const source = s.aiModelSource ?? 'local';
-      const provider = (s.aiApiKeyProvider ?? 'ollama').toLowerCase();
+      const source = s.aiModelSource ?? 'providers';
+      const provider = (s.aiApiKeyProvider ?? 'kimi').toLowerCase();
       if (source !== 'providers') return;
       const providerToModel = {
         kimi: 'moonshotai/kimi-k2.5',
@@ -212,10 +208,6 @@ function App() {
   useEffect(() => {
     document.documentElement.style.setProperty('--sidebar-width', `${sidebarWidth}px`);
   }, [sidebarWidth]);
-  useEffect(() => {
-    document.documentElement.style.setProperty('--chat-width', `${chatWidth}px`);
-  }, [chatWidth]);
-
   // Open a file (from backend or from web folder handle)
   const openFile = useCallback(async (path) => {
     if (openFiles.includes(path)) {
@@ -476,9 +468,6 @@ function App() {
       case 'view.terminal':
         setShowTerminal(prev => !prev);
         break;
-      case 'view.chat':
-        setShowChat(prev => !prev);
-        break;
       case 'view.sidebar':
         setSidebarPanel(prev => prev ? null : 'explorer');
         break;
@@ -573,11 +562,6 @@ function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === '`') {
         e.preventDefault();
         setShowTerminal(prev => !prev);
-      }
-      // Cmd/Ctrl + L - Toggle Chat
-      if ((e.metaKey || e.ctrlKey) && e.key === 'l') {
-        e.preventDefault();
-        setShowChat(prev => !prev);
       }
       // Cmd/Ctrl + S - Save
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 's') {
@@ -696,29 +680,6 @@ function App() {
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
   }, [sidebarWidth]);
-
-  // Right (chat) panel resize
-  const handleChatResizeStart = useCallback((e) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = chatWidth;
-    const handleMouseMove = (ev) => {
-      const delta = startX - ev.clientX;
-      setChatWidth(Math.max(280, Math.min(600, startW + delta)));
-    };
-    const handleMouseUp = () => {
-      chatResizingRef.current = false;
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-    chatResizingRef.current = true;
-    document.body.style.cursor = 'ew-resize';
-    document.body.style.userSelect = 'none';
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-  }, [chatWidth]);
 
   // Handle settings change — apply to editor in real-time
   const handleSettingsChange = useCallback((settings) => {
@@ -924,16 +885,6 @@ function App() {
               </svg>
             </button>
             <button
-              className={`layout-toggle-btn ${showChat ? 'active' : ''}`}
-              title="Toggle AI Assistant (⌘L)"
-              onClick={() => setShowChat(prev => !prev)}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <rect x="1" y="2" width="14" height="12" rx="1" stroke="currentColor" strokeWidth="1.2" />
-                <line x1="10.5" y1="2" x2="10.5" y2="14" stroke="currentColor" strokeWidth="1.2" />
-              </svg>
-            </button>
-            <button
               className="layout-toggle-btn"
               title="Connect Mobile"
               onClick={() => setShowMobileCompanionPopup(prev => !prev)}
@@ -954,8 +905,6 @@ function App() {
             <ActivityBar
               activePanel={sidebarPanel}
               onPanelChange={setSidebarPanel}
-              chatOpen={showChat}
-              onToggleChat={() => setShowChat(prev => !prev)}
             />
             {/* Panel Content */}
             {sidebarPanel === 'explorer' && (
@@ -1077,16 +1026,6 @@ function App() {
             )}
           </div>
 
-          {showChat && (
-            <div className="sidebar-resizer" onMouseDown={handleChatResizeStart} title="Drag to resize" />
-          )}
-          {/* AI Chat Panel */}
-          <ChatPanel
-            visible={showChat}
-            onClose={() => setShowChat(false)}
-            currentFile={activeFile}
-            currentContent={activeFile ? fileContents[activeFile] : null}
-          />
         </div>
       </div>
 

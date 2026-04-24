@@ -505,30 +505,6 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
     }
   }, [visible]);
 
-  // When chat panel opens, sync selected AI model to backend (Kimi/OpenAI etc.) so backend uses it
-  useEffect(() => {
-    if (!visible) return;
-    try {
-      const raw = localStorage.getItem('nebula_ide_settings');
-      if (!raw) return;
-      const s = JSON.parse(raw);
-      if ((s.aiModelSource ?? 'local') !== 'providers') return;
-      const provider = (s.aiApiKeyProvider ?? 'ollama').toLowerCase();
-      const providerToModel = {
-        kimi: 'moonshotai/kimi-k2.5',
-        openai: 'openai/gpt-4',
-        anthropic: 'anthropic/claude-3-sonnet-20240229',
-        google: 'google/gemini-pro',
-        groq: 'groq/llama-3-70b',
-        together: 'together/llama-3-70b',
-      };
-      const modelId = providerToModel[provider];
-      if (modelId) {
-        fetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' }).catch(() => {});
-      }
-    } catch (_) {}
-  }, [visible]);
-
   // Sync with server chat history so messages sent from mobile appear on desktop
   const fetchAndMergeServerHistory = useCallback(async () => {
     if (!visible || loading) return;
@@ -669,8 +645,8 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
         const raw = localStorage.getItem('nebula_ide_settings');
         if (!raw) return '';
         const s = JSON.parse(raw);
-        if ((s.aiModelSource ?? 'local') !== 'providers') return '';
-        const provider = (s.aiApiKeyProvider ?? 'ollama').toLowerCase();
+        if ((s.aiModelSource ?? 'providers') !== 'providers') return '';
+        const provider = (s.aiApiKeyProvider ?? 'kimi').toLowerCase();
         const providerToModel = {
           kimi: 'moonshotai/kimi-k2.5',
           openai: 'openai/gpt-4',

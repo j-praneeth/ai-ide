@@ -63,8 +63,11 @@ case "$TARGET" in
         if [[ "$(uname -s)" == "Darwin" ]]; then
             echo "Note: Cross-building from macOS. Backend will use Python source + auto-setup."
             echo "      For a native PyInstaller .exe, build on Windows with: scripts\\build-backend.bat"
+            # Skip native module rebuild (node-gyp cannot cross-compile; Windows .exe will bundle without rebuilt native deps)
+            npx electron-builder --win --config.npmRebuild=false
+        else
+            npx electron-builder --win
         fi
-        npx electron-builder --win
         echo ""
         echo "✓ Windows build complete!"
         echo "  Output: release/*.exe"

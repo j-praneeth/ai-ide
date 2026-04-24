@@ -48,7 +48,6 @@ const SETTINGS_GROUPS = [
 ];
 
 const AI_PROVIDERS = [
-  { id: 'ollama', label: 'Ollama (local)' },
   { id: 'kimi', label: 'Kimi (K2.5)' },
   { id: 'openai', label: 'OpenAI' },
   { id: 'anthropic', label: 'Anthropic (Claude)' },
@@ -69,7 +68,6 @@ const PROVIDER_TO_MODEL_ID = {
   groq: 'groq/llama-3-70b',
   together: 'together/llama-3-70b',
   other: 'other/default',
-  ollama: null, // local Ollama uses the model dropdown
 };
 
 function getDefaults() {
@@ -77,8 +75,8 @@ function getDefaults() {
   SETTINGS_GROUPS.forEach(g => {
     g.settings.forEach(s => { if (s.type !== 'aiModelDropdown') v[s.key] = s.value; });
   });
-  v.aiApiKeyProvider = v.aiApiKeyProvider ?? 'ollama';
-  v.aiModelSource = v.aiModelSource ?? 'local';
+  v.aiApiKeyProvider = v.aiApiKeyProvider ?? 'kimi';
+  v.aiModelSource = v.aiModelSource ?? 'providers';
   return v;
 }
 
@@ -284,9 +282,8 @@ export default function SettingsPanel({ onSettingsChange }) {
 
   // When "Model providers" + Kimi (or other env-key provider) is selected, ensure backend uses that model
   useEffect(() => {
-    const source = values.aiModelSource ?? 'local';
-    const provider = (values.aiApiKeyProvider ?? 'ollama').toLowerCase();
-    if (source !== 'providers' || !USE_ENV_KEY_PROVIDERS.has(provider)) return;
+    const provider = (values.aiApiKeyProvider ?? 'kimi').toLowerCase();
+    if (values.aiModelSource !== 'providers' || !USE_ENV_KEY_PROVIDERS.has(provider)) return;
     const modelId = PROVIDER_TO_MODEL_ID[provider];
     if (!modelId) return;
     fetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' })
@@ -360,37 +357,23 @@ export default function SettingsPanel({ onSettingsChange }) {
                       <input
                         type="radio"
                         name="aiModelSource"
-                        checked={(values.aiModelSource ?? 'local') === 'local'}
-                        onChange={() => update('aiModelSource', 'local')}
-                      />
-                      <span>Local model (Ollama)</span>
-                    </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 'var(--font-size-sm)' }}>
-                      <input
-                        type="radio"
-                        name="aiModelSource"
-                        checked={(values.aiModelSource ?? 'local') === 'providers'}
+                        checked={(values.aiModelSource ?? 'providers') === 'providers'}
                         onChange={() => update('aiModelSource', 'providers')}
                       />
                       <span>Model providers (OpenAI, Kimi, etc.)</span>
                     </label>
                   </div>
                 </div>
-                {(values.aiModelSource ?? 'local') === 'local' && (
-                  <div style={{ marginBottom: 16 }}>
-                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 6 }}>Select an Ollama model below. It will be used for chat and agent.</div>
-                  </div>
-                )}
-                {(values.aiModelSource ?? 'local') === 'providers' && (
+                {(values.aiModelSource ?? 'providers') === 'providers' && (
                   <div style={{ marginTop: 8 }}>
                     <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 500, color: 'var(--text-primary)', marginBottom: 6 }}>API key by provider</div>
                     <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 8 }}>
                       Select a provider, enter its API key, then click Connect. The connected provider will be used for chat and agent.
                     </div>
                     <select
-                      value={values.aiApiKeyProvider ?? 'ollama'}
+                      value={values.aiApiKeyProvider ?? 'kimi'}
                       onChange={async (e) => {
-                        const provider = (e.target.value || 'ollama').toLowerCase();
+                        const provider = (e.target.value || 'kimi').toLowerCase();
                         setApiKeyConnectedForProvider(null);
                         update('aiApiKeyProvider', e.target.value);
                         if (USE_ENV_KEY_PROVIDERS.has(provider)) {
@@ -414,7 +397,7 @@ export default function SettingsPanel({ onSettingsChange }) {
                         <option key={p.id} value={p.id}>{p.label}</option>
                       ))}
                     </select>
-                    {USE_ENV_KEY_PROVIDERS.has((values.aiApiKeyProvider ?? 'ollama').toLowerCase()) ? (
+                    {USE_ENV_KEY_PROVIDERS.has((values.aiApiKeyProvider ?? 'kimi').toLowerCase()) ? (
                       <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', padding: '10px 12px', background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
                         API key is configured via server environment (NVIDIA_API_KEY). It is not displayed or editable.
                       </div>
@@ -422,10 +405,10 @@ export default function SettingsPanel({ onSettingsChange }) {
                       <>
                         <input
                           type="password"
-                          placeholder={`Enter API key for ${AI_PROVIDERS.find(p => p.id === (values.aiApiKeyProvider ?? 'ollama'))?.label ?? 'provider'}`}
+                          placeholder={`Enter API key for ${AI_PROVIDERS.find(p => p.id === (values.aiApiKeyProvider ?? 'kimi'))?.label ?? 'provider'}`}
                           value={values.aiApiKey ?? ''}
                           onChange={e => {
-                            if (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase())) setApiKeyConnectedForProvider(null);
+                            if (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'kimi').toLowerCase())) setApiKeyConnectedForProvider(null);
                             update('aiApiKey', e.target.value);
                           }}
                           style={{ ...controlStyle, width: '100%', marginBottom: 8 }}
@@ -435,7 +418,7 @@ export default function SettingsPanel({ onSettingsChange }) {
                           disabled={connectingApiKey}
                           onClick={async () => {
                             const key = values.aiApiKey?.trim();
-                            const provider = (values.aiApiKeyProvider ?? 'ollama').toLowerCase();
+                            const provider = (values.aiApiKeyProvider ?? 'kimi').toLowerCase();
                             if (!key && !USE_ENV_KEY_PROVIDERS.has(provider)) return;
                             setConnectingApiKey(true);
                             try {
@@ -474,15 +457,15 @@ export default function SettingsPanel({ onSettingsChange }) {
                           style={{
                             ...controlStyle,
                             width: '100%',
-                            background: (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase())) ? 'var(--accent-muted, rgba(0, 122, 204, 0.2))' : connectingApiKey ? 'var(--bg-elevated)' : 'var(--accent)',
-                            color: (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase())) ? 'var(--accent)' : connectingApiKey ? 'var(--text-muted)' : '#0D0D12',
+                            background: (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'kimi').toLowerCase())) ? 'var(--accent-muted, rgba(0, 122, 204, 0.2))' : connectingApiKey ? 'var(--bg-elevated)' : 'var(--accent)',
+                            color: (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'kimi').toLowerCase())) ? 'var(--accent)' : connectingApiKey ? 'var(--text-muted)' : '#0D0D12',
                             fontWeight: 600,
-                            border: (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase())) ? '1px solid var(--accent)' : 'none',
-                            cursor: connectingApiKey ? 'wait' : (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase())) ? 'default' : 'pointer',
+                            border: (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'kimi').toLowerCase())) ? '1px solid var(--accent)' : 'none',
+                            cursor: connectingApiKey ? 'wait' : (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'kimi').toLowerCase())) ? 'default' : 'pointer',
                             opacity: connectingApiKey ? 0.9 : 1,
                           }}
                         >
-                          {connectingApiKey ? 'Connecting...' : (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'ollama').toLowerCase()) ? 'Connected' : 'Connect')}
+                          {connectingApiKey ? 'Connecting...' : (apiKeyConnectedForProvider === ((values.aiApiKeyProvider ?? 'kimi').toLowerCase()) ? 'Connected' : 'Connect')}
                         </button>
                       </>
                     )}
@@ -500,4 +483,3 @@ export default function SettingsPanel({ onSettingsChange }) {
     </div>
   );
 }
-
