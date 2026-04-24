@@ -6,7 +6,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from file_manager import router as file_router, set_project_root_path
-from terminal import router as terminal_router
+from terminal import router as terminal_router, cli_status, cli_websocket
 from ai import router as ai_router
 from mobile_bridge import router as mobile_router, set_backend_port, relay_qr
 
@@ -38,6 +38,11 @@ def _chat_history():
 
 # Ensure GET /ai/chat/history is always available (avoids 404 if router prefix/mount differs)
 app.add_api_route("/ai/chat/history", _chat_history, methods=["GET"])
+
+# Ensure GET /terminal/cli/status is always available even if router registration
+# differs across run modes.
+app.add_api_route("/terminal/cli/status", cli_status, methods=["GET"])
+app.add_api_websocket_route("/terminal/ws/cli", cli_websocket)
 
 
 async def _set_api_key(request: Request):

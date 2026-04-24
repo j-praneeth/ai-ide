@@ -5,12 +5,15 @@ const net = require('net');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
+const pty = require('node-pty');
 
 // Keep a global reference of the window object
 let mainWindow = null;
 let backendProcess = null;
 let backendPort = null;
 let splashWindow = null;
+let cliSessionCounter = 0;
+const cliSessions = new Map();
 
 // Determine if we're in development or production
 const isDev = process.env.ELECTRON_DEV === 'true' || !app.isPackaged;
@@ -18,6 +21,10 @@ const isDev = process.env.ELECTRON_DEV === 'true' || !app.isPackaged;
 // Paths
 const userDataPath = app.getPath('userData');
 const embeddedPythonDir = path.join(userDataPath, 'python');
+const CLI_SPECS = [
+  { label: 'Claude CLI', command: 'claude', packageName: '@anthropic-ai/claude-code' },
+  { label: 'Codex CLI', command: 'codex', packageName: '@openai/codex' },
+];
 
 // ─── Utility: Find a free port ──────────────────────────────────
 
@@ -30,6 +37,210 @@ function findFreePort() {
     });
     server.on('error', reject);
   });
+}
+
+function getPathKey(env = process.env) {
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path');
+  return pathKey || 'PATH';
+}
+
+function prependToPath(dir, env = process.env) {
+  if (!dir) return;
+  const pathKey = getPathKey(env);
+  const current = env[pathKey] || '';
+  const parts = current.split(path.delimiter).filter(Boolean);
+  if (!parts.includes(dir)) {
+    env[pathKey] = [dir, ...parts].join(path.delimiter);
+  }
+}
+
+function getNpmCommand() {
+  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+}
+
+function runFile(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(command, args, { ...options, windowsHide: true }, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+    return child;
+  });
+}
+
+function getNpmGlobalBinDir() {
+  try {
+    const npmCommand = getNpmCommand();
+    const prefix = execSync(`"${npmCommand}" config get prefix`, {
+      encoding: 'utf-8',
+      timeout: 10000,
+      windowsHide: true,
+    }).trim();
+
+    if (!prefix) return null;
+    return process.platform === 'win32' ? prefix : path.join(prefix, 'bin');
+  } catch (_) {
+    return null;
+  }
+}
+
+function commandExists(command) {
+  try {
+    if (process.platform === 'win32') {
+      execSync(`where ${command}`, {
+        stdio: 'pipe',
+        timeout: 5000,
+        windowsHide: true,
+        env: { ...process.env },
+      });
+    } else {
+      execSync(`command -v ${command}`, {
+        stdio: 'pipe',
+        timeout: 5000,
+        windowsHide: true,
+        env: { ...process.env },
+      });
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function resolveCommandPath(command) {
+  try {
+    if (process.platform === 'win32') {
+      const output = execSync(`where ${command}`, {
+        stdio: 'pipe',
+        timeout: 5000,
+        windowsHide: true,
+        env: { ...process.env },
+        encoding: 'utf-8',
+      }).trim();
+      return output.split(/\r?\n/).find(Boolean) || null;
+    }
+
+    const output = execSync(`command -v ${command}`, {
+      stdio: 'pipe',
+      timeout: 5000,
+      windowsHide: true,
+      env: { ...process.env },
+      encoding: 'utf-8',
+    }).trim();
+    return output || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function findGitBash() {
+  if (process.platform !== 'win32') return null;
+
+  const candidates = [
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'usr', 'bin', 'bash.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+function getCliLaunchConfig(tool) {
+  const spec = CLI_SPECS.find((item) => item.command === tool) || CLI_SPECS[0];
+  const commandPath = resolveCommandPath(spec.command);
+  const npmBin = getNpmGlobalBinDir();
+  if (npmBin) {
+    prependToPath(npmBin, process.env);
+  }
+
+  if (!commandPath && !commandExists(spec.command)) {
+    return {
+      installed: false,
+      label: spec.label,
+      packageName: spec.packageName,
+      shellLabel: process.platform === 'win32' ? 'powershell' : 'shell',
+    };
+  }
+
+  if (process.platform === 'win32' && tool === 'claude') {
+    const gitBash = findGitBash();
+    if (gitBash) {
+      return {
+        installed: true,
+        label: spec.label,
+        shellLabel: 'git-bash',
+        file: gitBash,
+        args: ['-lc', 'claude'],
+      };
+    }
+  }
+
+  return {
+    installed: true,
+    label: spec.label,
+    shellLabel: process.platform === 'win32' ? 'powershell' : 'shell',
+    file: commandPath || spec.command,
+    args: [],
+  };
+}
+
+function closeCliSession(sessionId) {
+  const session = cliSessions.get(sessionId);
+  if (!session) return;
+
+  try {
+    session.ptyProcess.kill();
+  } catch (_) {}
+  cliSessions.delete(sessionId);
+}
+
+async function ensureCliToolsInstalled() {
+  updateSplash('Checking Claude and Codex CLI tools...');
+  const npmBin = getNpmGlobalBinDir();
+  if (npmBin) {
+    prependToPath(npmBin, process.env);
+  }
+
+  let npmAvailable = true;
+  try {
+    await runFile(getNpmCommand(), ['--version'], { timeout: 10000, env: { ...process.env } });
+  } catch (_) {
+    npmAvailable = false;
+  }
+
+  for (const cli of CLI_SPECS) {
+    if (commandExists(cli.command)) {
+      console.log(`${cli.label} already installed`);
+      continue;
+    }
+
+    if (!npmAvailable) {
+      console.warn(`Skipping ${cli.label} install because npm is unavailable`);
+      continue;
+    }
+
+    updateSplash(`Installing ${cli.label}...`);
+    console.log(`Installing ${cli.label} using ${cli.packageName}`);
+    try {
+      await runFile(getNpmCommand(), ['install', '-g', cli.packageName], {
+        timeout: 300000,
+        env: { ...process.env },
+      });
+    } catch (err) {
+      console.error(`Failed to install ${cli.label}:`, err.stderr || err.message);
+      continue;
+    }
+
+    const refreshedBin = getNpmGlobalBinDir();
+    if (refreshedBin) {
+      prependToPath(refreshedBin, process.env);
+    }
+  }
 }
 
 // ─── Splash Screen (shows during setup) ─────────────────────────
@@ -506,12 +717,84 @@ ipcMain.handle('open-folder-dialog', async () => {
   return null;
 });
 
+ipcMain.handle('cli:start', (event, tool = 'claude') => {
+  const launch = getCliLaunchConfig(tool);
+
+  if (!launch.installed) {
+    return {
+      ok: false,
+      installed: false,
+      message: `${launch.label} is not installed. Run: npm install -g ${launch.packageName}`,
+      shell: launch.shellLabel,
+    };
+  }
+
+  const sessionId = `cli-${++cliSessionCounter}`;
+  const env = { ...process.env, TERM: 'xterm-256color' };
+  const ptyProcess = pty.spawn(launch.file, launch.args, {
+    name: 'xterm-color',
+    cols: 120,
+    rows: 32,
+    cwd: app.getPath('home'),
+    env,
+  });
+
+  cliSessions.set(sessionId, {
+    ptyProcess,
+    sender: event.sender,
+  });
+
+  ptyProcess.onData((data) => {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('cli:data', { sessionId, data });
+    }
+  });
+
+  ptyProcess.onExit((exitEvent) => {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('cli:exit', { sessionId, ...exitEvent });
+    }
+    cliSessions.delete(sessionId);
+  });
+
+  return {
+    ok: true,
+    installed: true,
+    sessionId,
+    shell: launch.shellLabel,
+  };
+});
+
+ipcMain.handle('cli:write', (event, sessionId, data) => {
+  const session = cliSessions.get(sessionId);
+  if (!session) return { ok: false };
+  session.ptyProcess.write(data);
+  return { ok: true };
+});
+
+ipcMain.handle('cli:resize', (event, sessionId, cols, rows) => {
+  const session = cliSessions.get(sessionId);
+  if (!session) return { ok: false };
+  try {
+    session.ptyProcess.resize(Math.max(20, cols || 80), Math.max(10, rows || 24));
+  } catch (_) {}
+  return { ok: true };
+});
+
+ipcMain.handle('cli:close', (event, sessionId) => {
+  closeCliSession(sessionId);
+  return { ok: true };
+});
+
 // ─── App Lifecycle ──────────────────────────────────────────────
 
 app.whenReady().then(async () => {
   try {
     // Show splash screen
     createSplashWindow('Starting IDE...');
+
+    // Ensure the CLI tools exist before the backend/terminal sessions use them.
+    await ensureCliToolsInstalled();
 
     // Find a free port
     backendPort = await findFreePort();
@@ -566,6 +849,9 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  for (const sessionId of cliSessions.keys()) {
+    closeCliSession(sessionId);
+  }
   stopScreenStream();
   stopBackend();
   if (process.platform !== 'darwin') {
@@ -574,11 +860,17 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  for (const sessionId of cliSessions.keys()) {
+    closeCliSession(sessionId);
+  }
   stopScreenStream();
   stopBackend();
 });
 
 app.on('will-quit', () => {
+  for (const sessionId of cliSessions.keys()) {
+    closeCliSession(sessionId);
+  }
   stopScreenStream();
   stopBackend();
 });

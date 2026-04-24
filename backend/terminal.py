@@ -1,9 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+import asyncio
 import subprocess
 import os
 import platform
 import getpass
 import re
+import shutil
 
 router = APIRouter()
 
@@ -57,6 +59,26 @@ BLOCKED_PATTERNS_WINDOWS = [
 ]
 
 BLOCKED_PATTERNS = BLOCKED_PATTERNS_WINDOWS if IS_WINDOWS else BLOCKED_PATTERNS_UNIX
+CLI_SPECS = {
+    "claude": {
+        "label": "Claude CLI",
+        "command": "claude",
+        "package_name": "@anthropic-ai/claude-code",
+    },
+    "codex": {
+        "label": "Codex CLI",
+        "command": "codex",
+        "package_name": "@openai/codex",
+    },
+}
+
+
+def _quote_for_powershell(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _quote_for_bash(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
 def _get_hostname():
@@ -167,7 +189,115 @@ def _build_env():
     env = {**os.environ}
     if not IS_WINDOWS:
         env["TERM"] = "xterm-256color"
+    npm_bin = _get_npm_global_bin_dir()
+    if npm_bin:
+        path_key = next((k for k in env.keys() if k.lower() == "path"), "PATH")
+        current = env.get(path_key, "")
+        parts = [p for p in current.split(os.pathsep) if p]
+        if npm_bin not in parts:
+            env[path_key] = os.pathsep.join([npm_bin, *parts])
     return env
+
+
+def _get_npm_global_bin_dir():
+    """Return the npm global bin dir if npm is available."""
+    npm_cmd = "npm.cmd" if IS_WINDOWS else "npm"
+    try:
+        result = subprocess.run(
+            [npm_cmd, "config", "get", "prefix"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ},
+            shell=False,
+        )
+        prefix = (result.stdout or "").strip()
+        if not prefix:
+            return None
+        return prefix if IS_WINDOWS else os.path.join(prefix, "bin")
+    except Exception:
+        return None
+
+
+def _find_git_bash():
+    """Best-effort lookup for Git Bash on Windows."""
+    if not IS_WINDOWS:
+        return None
+
+    candidates = [
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "usr", "bin", "bash.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+        shutil.which("bash"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _get_cli_status(tool: str):
+    spec = CLI_SPECS.get(tool, CLI_SPECS["claude"])
+    env = _build_env()
+    command_path = shutil.which(spec["command"], path=env.get(next((k for k in env.keys() if k.lower() == "path"), "PATH")))
+    installed = command_path is not None
+
+    preferred_shell = _get_shell_name()
+    shell_path = None
+    notes = []
+
+    if IS_WINDOWS and tool == "claude":
+        bash_path = _find_git_bash()
+        if bash_path:
+            preferred_shell = "git-bash"
+            shell_path = bash_path
+        else:
+            preferred_shell = "powershell"
+            notes.append("Claude Code on Windows works best with Git Bash or WSL.")
+    elif IS_WINDOWS:
+        preferred_shell = "powershell"
+    else:
+        shell_path = os.environ.get("SHELL", "/bin/bash")
+
+    if not installed:
+        notes.append(f"{spec['label']} was not found on PATH.")
+        notes.append(f"Install command: npm install -g {spec['package_name']}")
+
+    return {
+        "tool": tool,
+        "label": spec["label"],
+        "command": spec["command"],
+        "package_name": spec["package_name"],
+        "installed": installed,
+        "command_path": command_path,
+        "preferred_shell": preferred_shell,
+        "shell_path": shell_path,
+        "notes": notes,
+    }
+
+
+def _build_cli_shell_command(tool: str, status: dict):
+    """Build a shell command that launches the actual CLI and keeps the shell open."""
+    spec = CLI_SPECS.get(tool, CLI_SPECS["claude"])
+    command_path = status.get("command_path") or spec["command"]
+
+    if IS_WINDOWS:
+        if tool == "claude" and status.get("shell_path"):
+            cli_cmd = _quote_for_bash(command_path)
+            return [status["shell_path"], "--login", "-i", "-c", f"{cli_cmd}; exec bash -i"]
+
+        cli_cmd = f"& {_quote_for_powershell(command_path)}"
+        return ["powershell.exe", "-NoExit", "-NoProfile", "-Command", cli_cmd]
+
+    shell_path = os.environ.get("SHELL", "/bin/bash")
+    cli_cmd = _quote_for_bash(command_path)
+    return [shell_path, "-i", "-c", f"{cli_cmd}; exec {shell_path} -i"]
+
+
+@router.get("/cli/status")
+def cli_status(tool: str = "claude"):
+    """Return install/shell status for the requested CLI tool."""
+    return _get_cli_status(tool)
 
 
 @router.post("/run")
@@ -297,3 +427,71 @@ def get_terminal_info(session: str = "default"):
         "prompt_char": _get_prompt_char(),
         "platform": platform.system().lower(),
     }
+
+@router.websocket("/ws/cli")
+async def cli_websocket(websocket: WebSocket, tool: str = "claude"):
+    await websocket.accept()
+
+    status = _get_cli_status(tool)
+    env = _build_env()
+    cmd = _build_cli_shell_command(tool, status)
+
+    # Try to spawn the process
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            shell=False, # We don't need shell=True since we are spawning the shell itself
+            bufsize=0,
+            env=env,
+            cwd=str(file_manager.PROJECT_ROOT)
+        )
+    except Exception as e:
+        await websocket.send_text(f"Failed to start terminal shell: {e}\r\n")
+        await websocket.close()
+        return
+
+    if not status["installed"]:
+        await websocket.send_text(
+            f"\r\n{status['label']} is not installed.\r\n"
+            f"Run: npm install -g {status['package_name']}\r\n\r\n"
+        )
+        for note in status["notes"]:
+            await websocket.send_text(f"{note}\r\n")
+        await websocket.close()
+        return
+
+    # Background task to read stdout and send to websocket
+    async def read_stdout():
+        try:
+            while True:
+                # Read 1 byte at a time to immediately flush to UI
+                # (since it's not a true PTY, we need byte-level reading to catch prompts)
+                data = await asyncio.to_thread(process.stdout.read, 1024)
+                if not data:
+                    break
+                await websocket.send_text(data.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
+        finally:
+            if process.poll() is None:
+                process.terminate()
+
+    read_task = asyncio.create_task(read_stdout())
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if process.poll() is not None:
+                break
+            if process.stdin:
+                process.stdin.write(data.encode("utf-8"))
+                process.stdin.flush()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        read_task.cancel()

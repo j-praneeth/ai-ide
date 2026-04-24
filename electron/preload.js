@@ -21,6 +21,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Open a native folder picker dialog
   openFolderDialog: () => ipcRenderer.invoke('open-folder-dialog'),
 
+  // Right-side CLI PTY integration
+  startCliSession: (tool) => ipcRenderer.invoke('cli:start', tool),
+  writeCliSession: (sessionId, data) => ipcRenderer.invoke('cli:write', sessionId, data),
+  resizeCliSession: (sessionId, cols, rows) => ipcRenderer.invoke('cli:resize', sessionId, cols, rows),
+  closeCliSession: (sessionId) => ipcRenderer.invoke('cli:close', sessionId),
+  onCliData: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('cli:data', wrapped);
+    return () => ipcRenderer.removeListener('cli:data', wrapped);
+  },
+  onCliExit: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('cli:exit', wrapped);
+    return () => ipcRenderer.removeListener('cli:exit', wrapped);
+  },
+
   // Check if running in Electron
   isElectron: true,
 });

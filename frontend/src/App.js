@@ -17,7 +17,8 @@ import StatusBar from './components/StatusBar';
 import CommandPalette from './components/CommandPalette';
 import OpenFolderDialog from './components/OpenFolderDialog';
 import MobileCompanionPopup from './components/MobileCompanionPopup';
-import { VscDeviceMobile } from 'react-icons/vsc';
+import CliPanel from './components/CliPanel';
+import { VscDeviceMobile, VscTerminal } from 'react-icons/vsc';
 import { listDirFromHandle, getHandleForPath, getFileContentFromHandle, writeFileToHandle } from './lib/webFs';
 
 // Language detection by file extension
@@ -117,6 +118,8 @@ function App() {
   // UI state
   const [sidebarPanel, setSidebarPanel] = useState('explorer');
   const [showTerminal, setShowTerminal] = useState(false);
+  const [showRightPanel, setShowRightPanel] = useState(true);
+  const [rightPanelWidth, setRightPanelWidth] = useState(300);
   const [showMobileCompanionPopup, setShowMobileCompanionPopup] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(250);
@@ -129,6 +132,7 @@ function App() {
   const [webFolderHandle, setWebFolderHandle] = useState(null);
   const [sidebarWidth, setSidebarWidth] = useState(270);
   const sidebarResizingRef = useRef(false);
+  const rightPanelResizingRef = useRef(false);
   const [ideSettings, setIdeSettings] = useState(() => {
     // Load saved settings on mount
     try {
@@ -681,6 +685,28 @@ function App() {
     document.addEventListener('mouseup', handleMouseUp);
   }, [sidebarWidth]);
 
+  const handleRightPanelResizeStart = useCallback((e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = rightPanelWidth;
+    const handleMouseMove = (ev) => {
+      const delta = startX - ev.clientX;
+      setRightPanelWidth(Math.max(260, Math.min(560, startW + delta)));
+    };
+    const handleMouseUp = () => {
+      rightPanelResizingRef.current = false;
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    rightPanelResizingRef.current = true;
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [rightPanelWidth]);
+
   // Handle settings change — apply to editor in real-time
   const handleSettingsChange = useCallback((settings) => {
     setIdeSettings(settings);
@@ -885,6 +911,13 @@ function App() {
               </svg>
             </button>
             <button
+              className={`layout-toggle-btn ${showRightPanel ? 'active' : ''}`}
+              title="Toggle Right Panel"
+              onClick={() => setShowRightPanel(prev => !prev)}
+            >
+              <VscTerminal size={16} />
+            </button>
+            <button
               className="layout-toggle-btn"
               title="Connect Mobile"
               onClick={() => setShowMobileCompanionPopup(prev => !prev)}
@@ -1027,6 +1060,21 @@ function App() {
           </div>
 
         </div>
+        
+        {/* Right Panel */}
+        {showRightPanel && (
+          <>
+            <div
+              className="sidebar-resizer"
+              style={{ cursor: 'ew-resize', width: '4px', background: 'transparent' }}
+              onMouseDown={handleRightPanelResizeStart}
+              title="Drag to resize"
+            />
+            <div className="sidebar" style={{ borderLeft: '1px solid var(--border)', borderRight: 'none', width: `${rightPanelWidth}px` }}>
+              <CliPanel visible={showRightPanel} />
+            </div>
+          </>
+        )}
       </div>
 
       {/* Status Bar */}
