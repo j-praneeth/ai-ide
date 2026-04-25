@@ -1,8 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   VscDiffAdded,
   VscDiffModified,
   VscDiffRemoved,
+  VscDiffRenamed,
+  VscFile,
+  VscGitCommit,
+  VscHistory,
   VscRefresh,
   VscAdd,
   VscRemove,
@@ -19,6 +23,7 @@ import {
   VscArrowUp,
   VscCloud,
   VscTarget,
+  VscSparkle,
 } from 'react-icons/vsc';
 import axios from 'axios';
 import { API_URL as API } from '../config';
@@ -84,16 +89,31 @@ function getFileInfo(fullPath) {
   return { name, dir };
 }
 
+const GRAPH_COLORS = [
+  '#3b82f6', // blue (primary)
+  '#60a5fa', // light blue
+  '#2563eb', // dark blue
+  '#9333ea', // purple
+  '#ec4899', // pink
+  '#f59e0b', // amber
+  '#10b981', // green
+];
+
 function parseGraphLines(lines) {
   const entries = [];
+  // Track active columns across lines to maintain consistent colors
+  // This is a simplified column tracker
+  let activeColumns = [];
+
   for (const line of lines) {
     const match = line.match(/^([*\s|/\\]+)\s*([a-f0-9]{7,})\s+(.+)$/);
     if (!match) continue;
-    const [, , hash, rest] = match;
+    const [, graphSymbols, hash, rest] = match;
     let message = rest;
     let branchName = '';
     let remoteRef = '';
-    // Refs can be at end: "msg (HEAD -> x, origin/y)" or after hash: "(HEAD -> x, origin/y) msg"
+    
+    // Refs parsing
     const refParenMatch = rest.match(/\(([^)]+)\)/);
     if (refParenMatch) {
       const refsStr = refParenMatch[1];
@@ -109,12 +129,23 @@ function parseGraphLines(lines) {
         }
       }
     }
+
+    // Advanced symbol analysis for rendering
+    // Each character position is a column
+    const symbols = graphSymbols.split('');
+    const colInfo = symbols.map((char, idx) => {
+      if (char === ' ') return null;
+      return { char, col: idx };
+    }).filter(Boolean);
+
     entries.push({
       hash,
       message: message.trim(),
       isHead: entries.length === 0,
       branchName,
       remoteRef,
+      graphSymbols: graphSymbols.trimEnd(),
+      colInfo,
     });
   }
   return entries;
@@ -169,19 +200,107 @@ function DiffViewer({ path, isStaged, onClose }) {
   );
 }
 
+function GitGraphSVG({ colInfo, isLast, nextColInfo }) {
+  const colWidth = 14;
+  const height = 24;
+  const dotRadius = 3;
+  const strokeWidth = 2;
+  
+  const maxCol = Math.max(
+    ...colInfo.map(c => c.col),
+    ...(nextColInfo ? nextColInfo.map(c => c.col) : [])
+  );
+  const width = (maxCol + 1) * colWidth + 8;
+
+  return (
+    <svg width={width} height={height} className="scm-graph-svg" style={{ overflow: 'visible', flexShrink: 0 }}>
+      {colInfo.map((c, i) => {
+        const color = GRAPH_COLORS[c.col % GRAPH_COLORS.length];
+        const x = c.col * colWidth + 10;
+        const centerY = height / 2;
+
+        const elements = [];
+
+        // 1. Connection from top
+        elements.push(
+          <line key={`top-${i}`} x1={x} y1={0} x2={x} y2={centerY} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+        );
+
+        // 2. Connection to next row
+        if (!isLast && nextColInfo) {
+          const nextSame = nextColInfo.find(nc => nc.col === c.col);
+          const nextLeft = nextColInfo.find(nc => nc.col === c.col - 1 && (nc.char === '/' || nc.char === '*'));
+          const nextRight = nextColInfo.find(nc => nc.col === c.col + 1 && (nc.char === '\\' || nc.char === '*'));
+
+          if (nextSame) {
+            elements.push(
+              <line key={`bot-s-${i}`} x1={x} y1={centerY} x2={x} y2={height} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+            );
+          }
+          if (nextLeft) {
+            const tx = (c.col - 1) * colWidth + 10;
+            elements.push(
+              <path key={`bot-l-${i}`} d={`M ${x} ${centerY} L ${tx} ${height}`} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+            );
+          }
+          if (nextRight) {
+            const tx = (c.col + 1) * colWidth + 10;
+            elements.push(
+              <path key={`bot-r-${i}`} d={`M ${x} ${centerY} L ${tx} ${height}`} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+            );
+          }
+        } else if (!isLast) {
+          elements.push(
+            <line key={`bot-d-${i}`} x1={x} y1={centerY} x2={x} y2={height} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
+          );
+        }
+
+        // 3. Commit dot
+        if (c.char === '*') {
+          elements.push(
+            <g key={`dot-g-${i}`}>
+              <circle 
+                cx={x} cy={centerY} r={dotRadius} 
+                fill={color} 
+              />
+              <circle 
+                cx={x} cy={centerY} r={dotRadius / 1.8} 
+                fill="white" 
+                opacity="0.8"
+              />
+            </g>
+          );
+        }
+
+        return <React.Fragment key={i}>{elements}</React.Fragment>;
+      })}
+    </svg>
+  );
+}
+
 export default function SourceControlPanel({ onOpenFile }) {
   const [branch, setBranch] = useState('');
   const [repoName, setRepoName] = useState('');
   const [statusOutput, setStatusOutput] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [showMoreActions, setShowMoreActions] = useState(false);
   const [commitMessage, setCommitMessage] = useState('');
   const [committing, setCommitting] = useState(false);
   const [sectionsCollapsed, setSectionsCollapsed] = useState({ changesSection: false, agentReview: true, staged: false, changes: false, graph: false });
   const [viewingDiff, setViewingDiff] = useState(null); // { path, isStaged }
   const [graphLines, setGraphLines] = useState([]);
   const [graphEntries, setGraphEntries] = useState([]); // parsed { message, isHead, branchName, remoteRef }
+  const [selectedCommit, setSelectedCommit] = useState(null);
+  const [commitDetails, setCommitDetails] = useState(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [panelHeights, setPanelHeights] = useState({
+    changes: 300,
+    agentReview: 150,
+    graph: 400
+  });
+
+  const isResizing = useRef(null);
 
   const fetchGraph = useCallback(async () => {
     setGraphLoading(true);
@@ -261,6 +380,10 @@ export default function SourceControlPanel({ onOpenFile }) {
   const handleStageAll = async () => {
     try { await runCommand('git add -A'); await fetchStatus(); } catch (e) { setError(e.message); }
   };
+  const handleDiscardAll = async () => {
+    if (!window.confirm('Discard all changes?')) return;
+    try { await runCommand('git checkout .'); await fetchStatus(); } catch (e) { setError(e.message); }
+  };
   const handleDiscard = async (path) => {
     if (!window.confirm(`Discard changes in ${path}?`)) return;
     try { await runCommand(`git checkout -- ${JSON.stringify(path)}`); await fetchStatus(); } catch (e) { setError(e.message); }
@@ -278,6 +401,131 @@ export default function SourceControlPanel({ onOpenFile }) {
   };
   const handleRefresh = () => { setLoading(true); fetchStatus().then(() => setLoading(false)); };
   const toggleSection = (key) => { setSectionsCollapsed(prev => ({ ...prev, [key]: !prev[key] })); };
+
+  const handlePush = async () => {
+    setLoading(true);
+    try {
+      await runCommand('git push');
+      await fetchStatus();
+    } catch (err) { setError(err.output ?? err.message); }
+    setLoading(false);
+  };
+
+  const handleUndoCommit = async () => {
+    setLoading(true);
+    try {
+      await runCommand('git reset --soft HEAD~1');
+      await fetchStatus();
+    } catch (err) { setError(err.output ?? err.message); }
+    setLoading(false);
+  };
+
+  const handlePull = async () => {
+    setLoading(true);
+    try {
+      await runCommand('git pull');
+      await fetchStatus();
+    } catch (err) { setError(err.output ?? err.message); }
+    setLoading(false);
+  };
+
+  const handleFetch = async () => {
+    setLoading(true);
+    try {
+      await runCommand('git fetch');
+      await fetchStatus();
+    } catch (err) { setError(err.output ?? err.message); }
+    setLoading(false);
+  };
+
+  const handleSync = async () => {
+    setLoading(true);
+    try {
+      await runCommand('git pull');
+      await runCommand('git push');
+      await fetchStatus();
+    } catch (err) { setError(err.output ?? err.message); }
+    setLoading(false);
+  };
+
+  const handleStash = async () => {
+    setLoading(true);
+    try {
+      await runCommand('git stash');
+      await fetchStatus();
+    } catch (err) { setError(err.output ?? err.message); }
+    setLoading(false);
+  };
+
+  const handleStashPop = async () => {
+    setLoading(true);
+    try {
+      await runCommand('git stash pop');
+      await fetchStatus();
+    } catch (err) { setError(err.output ?? err.message); }
+    setLoading(false);
+  };
+
+  const handleResizeStart = (e, panel) => {
+    e.preventDefault();
+    isResizing.current = {
+      panel,
+      startY: e.clientY,
+      startHeight: panelHeights[panel]
+    };
+    document.addEventListener('mousemove', handleResizeMove);
+    document.addEventListener('mouseup', handleResizeEnd);
+    document.body.style.cursor = 'ns-resize';
+  };
+
+  const handleResizeMove = (e) => {
+    if (!isResizing.current) return;
+    const { panel, startY, startHeight } = isResizing.current;
+    const delta = e.clientY - startY;
+    const newHeight = Math.max(100, startHeight + delta);
+    setPanelHeights(prev => ({ ...prev, [panel]: newHeight }));
+  };
+
+  const handleResizeEnd = () => {
+    isResizing.current = null;
+    document.removeEventListener('mousemove', handleResizeMove);
+    document.removeEventListener('mouseup', handleResizeEnd);
+    document.body.style.cursor = 'default';
+  };
+
+  const handleCommitClick = async (hash) => {
+    if (selectedCommit === hash) {
+      setSelectedCommit(null);
+      setCommitDetails(null);
+      return;
+    }
+    setSelectedCommit(hash);
+    setCommitDetails(null);
+    try {
+      // Get full details: %H (hash), %an (author), %ae (email), %ad (date), %s (subject), %b (body)
+      const res = await runCommand(`git show --quiet --format="%H%n%an%n%ae%n%ad%n%s%n%b" ${hash}`);
+      if (res.exit_code === 0) {
+        const lines = res.output.split('\n');
+        const details = {
+          hash: lines[0],
+          author: lines[1],
+          email: lines[2],
+          date: lines[3],
+          subject: lines[4],
+          body: lines.slice(5).join('\n').trim(),
+        };
+        // Get changed files
+        const filesRes = await runCommand(`git show --pretty="" --name-status ${hash}`);
+        if (filesRes.exit_code === 0) {
+          details.files = filesRes.output.trim().split('\n').map(line => {
+            const [status, path] = line.split(/\s+/);
+            return { status, path };
+          });
+        }
+        setCommitDetails(details);
+      }
+    } catch (err) { console.error(err); }
+  };
 
   if (loading && !statusOutput && !error) {
     return (
@@ -315,13 +563,16 @@ export default function SourceControlPanel({ onOpenFile }) {
     <div className="scm-panel">
       {/* Header */}
       <div className="scm-panel-header">
-        <span className="scm-panel-title">SOURCE CONTROL</span>
-        <div className="scm-panel-actions">
-          <button className="scm-icon-btn" title="Refresh" onClick={handleRefresh} disabled={loading}>
-            <VscRefresh size={14} />
+        <span className="scm-panel-title">Source Control</span>
+        <div className="scm-panel-actions" style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+          <button className="scm-icon-btn" title="View History" onClick={() => toggleSection('historySection')}>
+            <VscHistory size={16} />
           </button>
-          <button className="scm-icon-btn" title="More Actions">
-            <VscEllipsis size={14} />
+          <button className="scm-icon-btn" title="Refresh" onClick={handleRefresh}>
+            <VscRefresh size={16} />
+          </button>
+          <button className="scm-icon-btn" title="More Actions...">
+            <VscEllipsis size={16} />
           </button>
         </div>
       </div>
@@ -345,148 +596,126 @@ export default function SourceControlPanel({ onOpenFile }) {
         </div>
       ) : (
         <div className="scm-panel-body">
-          {/* CHANGES section first (match reference image) */}
-          <div className="scm-section scm-section-changes">
-            <div className="scm-section-header" onClick={() => toggleSection('changesSection')}>
-              <span className="scm-section-toggle">
-                {sectionsCollapsed.changesSection ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}
-              </span>
-              <span className="scm-section-title">Changes</span>
-            </div>
-            {!sectionsCollapsed.changesSection && (
-              <div className="scm-panel-main">
-          {/* Repository row */}
-          <div className="scm-repo-row">
-            <VscGitMerge size={14} className="scm-repo-icon" />
-            <span className="scm-repo-name">{repoName || 'Repository'}</span>
-            <span className="scm-branch-name">{branch || 'HEAD'}</span>
-            <div className="scm-repo-actions">
-              <button className="scm-icon-btn" title="Sync Changes" onClick={handleRefresh}>
-                <VscSync size={13} />
-              </button>
-              <button className="scm-icon-btn" title="Refresh">
-                <VscRefresh size={13} />
-              </button>
-            </div>
-          </div>
-
-          {/* Commit message + button */}
-          <div className="scm-commit-section">
-            <div className="scm-commit-input-wrapper">
-              <input
-                className="scm-commit-input"
-                placeholder={branch ? `Message (⌘↵ to commit on '${branch}')` : "Message (⌘↵ to commit)"}
-                value={commitMessage}
-                onChange={e => setCommitMessage(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleCommit();
-                }}
-              />
-            </div>
-            <button
-              className={`scm-commit-btn ${canCommit ? 'active' : ''}`}
-              onClick={handleCommit}
-              disabled={!canCommit || committing}
-            >
-              <VscCheck size={14} />
-              <span>Commit</span>
-            </button>
-          </div>
-
-          {/* Staged Changes */}
-          {hasStaged && (
-            <div className="scm-section">
-              <div className="scm-section-header" onClick={() => toggleSection('staged')}>
-                <span className="scm-section-toggle">
-                  {sectionsCollapsed.staged ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}
-                </span>
-                <span className="scm-section-title">Staged Changes</span>
-                <span className="scm-section-count">{staged.length}</span>
+          {/* Main SCM Content (Repository, Commit, Changes) */}
+          <div className="scm-panel-main" style={{ height: sectionsCollapsed.changesSection ? 'auto' : panelHeights.changes }}>
+            {/* Commit section redesigned */}
+            <div className="scm-commit-section">
+              <div className="scm-commit-input-container">
+                <input
+                  className="scm-commit-input"
+                  placeholder={`Message (Ctrl+Enter to commit on "${branch || 'main'}")`}
+                  value={commitMessage}
+                  onChange={(e) => setCommitMessage(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                      handleCommit();
+                    }
+                  }}
+                />
+                <div className="scm-commit-sparkle" title="AI Commit Message">
+                  <VscSparkle size={14} />
+                </div>
               </div>
-              {!sectionsCollapsed.staged && (
-                <div className="scm-file-list">
-                  {staged.map(({ path, status }) => {
-                    const { name, dir } = getFileInfo(path);
-                    return (
-                      <div key={`s-${path}`} className="scm-file-row"
-                        onClick={() => { if (onOpenFile) onOpenFile(path); }}
-                        onDoubleClick={() => setViewingDiff({ path, isStaged: true })}>
-                        <FileIcon status={status} />
-                        <span className="scm-file-name">{name}</span>
-                        <span className="scm-file-dir">{dir}</span>
-                        <StatusBadge status={status} />
-                        <button className="scm-file-action" title="Unstage" onClick={(e) => { e.stopPropagation(); handleUnstage(path); }}>
-                          <VscRemove size={14} />
-                        </button>
-                      </div>
-                    );
-                  })}
+              
+              <div className="scm-commit-btn-split">
+                <button 
+                  className="scm-commit-btn-main" 
+                  onClick={handleCommit}
+                  disabled={!canCommit || committing}
+                >
+                  <VscCheck size={16} />
+                  <span>{committing ? 'Committing...' : 'Commit'}</span>
+                </button>
+                <button className="scm-commit-btn-arrow">
+                  <VscChevronDown size={14} />
+                </button>
+              </div>
+            </div>
+
+            {/* Changes sections */}
+            <div className="scm-changes-list">
+              {hasRepo && staged.length > 0 && (
+                <div className="scm-section scm-subsection">
+                  <div className="scm-section-header" onClick={() => toggleSection('staged')}>
+                    <div className="scm-section-toggle">
+                      {sectionsCollapsed.staged ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}
+                    </div>
+                    <span className="scm-section-title">Staged</span>
+                    <span className="scm-section-count">{staged.length}</span>
+                  </div>
+                  {!sectionsCollapsed.staged && (
+                    <div className="scm-file-list">
+                     {staged.map((file) => {
+                       const { name, dir } = getFileInfo(file.path);
+                       const ext = name.split('.').pop()?.toUpperCase() || '';
+                       return (
+                         <div key={file.path} className="scm-file-row" onClick={() => setViewingDiff({ path: file.path, isStaged: true })}>
+                           <div className="scm-file-type-icon">{ext === 'JS' || ext === 'TS' ? ext : <VscFile size={14} />}</div>
+                           <span className="scm-file-name">{name}</span>
+                           <span className="scm-file-dir">{dir}</span>
+                           <span className="scm-file-status">{file.status}</span>
+                           <button className="scm-file-action" onClick={(e) => { e.stopPropagation(); handleUnstage(file.path); }}>
+                             <VscRemove size={14} />
+                           </button>
+                         </div>
+                       );
+                     })}
+                   </div>
+                  )}
+                </div>
+              )}
+
+              {hasRepo && unstaged.length > 0 && (
+                <div className="scm-section scm-subsection">
+                  <div className="scm-section-header" onClick={() => toggleSection('changes')}>
+                    <div className="scm-section-toggle">
+                      {sectionsCollapsed.changes ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}
+                    </div>
+                    <span className="scm-section-title">Changes</span>
+                    <span className="scm-section-count">{unstaged.length}</span>
+                  </div>
+                  {!sectionsCollapsed.changes && (
+                    <div className="scm-file-list">
+                      {unstaged.map((file) => {
+                        const { name, dir } = getFileInfo(file.path);
+                        const ext = name.split('.').pop()?.toUpperCase() || '';
+                        return (
+                          <div key={file.path} className="scm-file-row" onClick={() => setViewingDiff({ path: file.path, isStaged: false })}>
+                            <div className="scm-file-type-icon">{ext === 'JS' || ext === 'TS' ? ext : <VscFile size={14} />}</div>
+                            <span className="scm-file-name">{name}</span>
+                            <span className="scm-file-dir">{dir}</span>
+                            <span className="scm-file-status">{file.status === 'untracked' ? 'U' : file.status}</span>
+                            <div className="scm-file-actions">
+                              <button className="scm-file-action" title="Discard Changes" onClick={(e) => { e.stopPropagation(); handleDiscard(file.path); }}>
+                                <VscDiscard size={14} />
+                              </button>
+                              <button className="scm-file-action" title="Stage Changes" onClick={(e) => { e.stopPropagation(); handleStage(file.path); }}>
+                                <VscAdd size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          )}
-
-          {/* Changes (unstaged) list */}
-          <div className="scm-section scm-subsection">
-            <div className="scm-section-header" onClick={() => toggleSection('changes')}>
-              <span className="scm-section-toggle">
-                {sectionsCollapsed.changes ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}
-              </span>
-              <span className="scm-section-title">Changes</span>
-              <span className="scm-section-count">{unstaged.length}</span>
-              {unstaged.length > 0 && (
-                <button className="scm-file-action stage-all" title="Stage All Changes" onClick={(e) => { e.stopPropagation(); handleStageAll(); }}>
-                  <VscAdd size={14} />
-                </button>
-              )}
-            </div>
-            {!sectionsCollapsed.changes && (
-              <div className="scm-file-list">
-                {unstaged.map(({ path, status }) => {
-                  const { name, dir } = getFileInfo(path);
-                  return (
-                    <div key={`u-${path}`} className="scm-file-row"
-                      onClick={() => { if (onOpenFile) onOpenFile(path); }}
-                      onDoubleClick={() => setViewingDiff({ path, isStaged: false })}>
-                      <FileIcon status={status} />
-                      <span className="scm-file-name">{name}</span>
-                      <span className="scm-file-dir">{dir}</span>
-                      <StatusBadge status={status} />
-                      <div className="scm-file-actions-group">
-                        {status !== 'untracked' && (
-                          <button className="scm-file-action" title="Discard Changes" onClick={(e) => { e.stopPropagation(); handleDiscard(path); }}>
-                            <VscDiscard size={14} />
-                          </button>
-                        )}
-                        <button className="scm-file-action" title="Stage" onClick={(e) => { e.stopPropagation(); handleStage(path); }}>
-                          <VscAdd size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-                {unstaged.length === 0 && !hasStaged && (
-                  <div className="scm-no-changes">No changes</div>
-                )}
-              </div>
-            )}
-          </div>
-              </div>
-            )}
           </div>
 
-          {/* AGENT REVIEW - collapsed */}
-          <div className="scm-section">
+          {/* AGENT REVIEW */}
+          <div className="scm-section" style={{ height: sectionsCollapsed.agentReview ? 'auto' : panelHeights.agentReview }}>
             <div className="scm-section-header" onClick={() => toggleSection('agentReview')}>
               <span className="scm-section-toggle">
                 {sectionsCollapsed.agentReview ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}
               </span>
               <span className="scm-section-title">Agent Review</span>
             </div>
+            {!sectionsCollapsed.agentReview && <div className="scm-resize-handle" onMouseDown={(e) => handleResizeStart(e, 'agentReview')} />}
           </div>
 
-          {/* Graph section - at bottom, fills remaining space */}
-          <div className="scm-graph-section-wrap">
+          {/* Graph section */}
+          <div className="scm-graph-section-wrap" style={{ height: sectionsCollapsed.graph ? 'auto' : panelHeights.graph }}>
             <div className="scm-section scm-section-graph">
               <div className="scm-section-header" onClick={() => { toggleSection('graph'); if (!sectionsCollapsed.graph && graphLines.length === 0) fetchGraph(); }}>
                 <span className="scm-section-toggle">
@@ -495,14 +724,9 @@ export default function SourceControlPanel({ onOpenFile }) {
                 <span className="scm-section-title">Graph</span>
                 <div className="scm-graph-toolbar">
                   <span className="scm-graph-toolbar-auto">Auto</span>
-                  <button className="scm-icon-btn" title="Branch" type="button"><VscGitMerge size={14} /></button>
-                  <button className="scm-icon-btn" title="Fetch" type="button"><VscTarget size={14} /></button>
-                  <button className="scm-icon-btn" title="Pull" type="button"><VscArrowDown size={14} /></button>
-                  <button className="scm-icon-btn" title="Pull (rebase)" type="button"><VscArrowDown size={14} /></button>
-                  <button className="scm-icon-btn" title="Push" type="button"><VscArrowUp size={14} /></button>
-                  <button className="scm-icon-btn" title="Refresh graph" type="button" onClick={(e) => { e.stopPropagation(); fetchGraph(); }} disabled={graphLoading}>
-                    <VscRefresh size={14} />
-                  </button>
+                  <button className="scm-icon-btn" title="Push" type="button" onClick={handlePush}><VscArrowUp size={14} /></button>
+                  <button className="scm-icon-btn" title="Fetch" type="button" onClick={handleFetch}><VscTarget size={14} /></button>
+                  <button className="scm-icon-btn" title="Pull" type="button" onClick={handlePull}><VscArrowDown size={14} /></button>
                 </div>
               </div>
               {!sectionsCollapsed.graph && (
@@ -512,38 +736,53 @@ export default function SourceControlPanel({ onOpenFile }) {
                   ) : graphEntries.length > 0 ? (
                     <div className="scm-graph-list">
                       {graphEntries.map((entry, i) => (
-                        <div key={`${entry.hash}-${i}`} className="scm-graph-row scm-graph-row-has-tooltip">
-                          <div className="scm-graph-tooltip">
-                            <div className="scm-graph-tooltip-hash">{entry.hash}</div>
-                            <div className="scm-graph-tooltip-msg">{entry.message}</div>
+                        <React.Fragment key={`${entry.hash}-${i}`}>
+                          <div
+                            className={`scm-graph-row ${selectedCommit === entry.hash ? 'selected' : ''}`}
+                            onClick={() => handleCommitClick(entry.hash)}
+                          >
+                            <GitGraphSVG
+                              colInfo={entry.colInfo}
+                              isLast={i === graphEntries.length - 1}
+                              nextColInfo={graphEntries[i + 1]?.colInfo}
+                            />
+                            <span className="scm-graph-commit-msg">{entry.message}</span>
+                            <div className="scm-graph-pills">
+                              {entry.branchName && (
+                                <span className="scm-graph-pill branch">
+                                  <VscGitMerge size={10} />
+                                  {entry.branchName}
+                                </span>
+                              )}
+                              {entry.remoteRef && (
+                                <span className="scm-graph-pill remote">
+                                  <VscCloud size={10} />
+                                  {entry.remoteRef}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                          <div className="scm-graph-line-col">
-                            {i < graphEntries.length - 1 && <span className="scm-graph-vline" />}
-                            <span className={`scm-graph-dot ${entry.isHead ? 'empty' : ''}`} />
-                          </div>
-                          <span className="scm-graph-commit-msg">
-                            {entry.message.length > 42 ? entry.message.slice(0, 42) + '...' : entry.message}
-                          </span>
-                          <div className="scm-graph-pills">
-                            {entry.branchName && (
-                              <span className="scm-graph-pill branch">
-                                <VscTarget size={12} />
-                                {entry.branchName}
-                              </span>
-                            )}
-                            {entry.branchName && (
-                              <span className="scm-graph-pill cloud-icon" title="Remote tracking">
-                                <VscCloud size={14} />
-                              </span>
-                            )}
-                            {entry.remoteRef && (
-                              <span className="scm-graph-pill remote">
-                                <VscCloud size={12} />
-                                {entry.remoteRef}
-                              </span>
-                            )}
-                          </div>
-                        </div>
+                          {selectedCommit === entry.hash && commitDetails && (
+                            <div className="scm-commit-details">
+                              <div className="scm-commit-details-header">
+                                <strong>{commitDetails.author}</strong>
+                                <span className="scm-commit-details-date">{commitDetails.date}</span>
+                              </div>
+                              <div className="scm-commit-details-body">
+                                {commitDetails.subject}
+                                {commitDetails.body && <div className="scm-commit-details-full">{commitDetails.body}</div>}
+                              </div>
+                              <div className="scm-commit-details-files">
+                                {commitDetails.files?.map(file => (
+                                  <div key={file.path} className="scm-commit-details-file">
+                                    <span className={`scm-status-icon ${file.status}`}>{file.status}</span>
+                                    <span className="scm-file-path">{file.path}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </React.Fragment>
                       ))}
                     </div>
                   ) : (
@@ -551,6 +790,7 @@ export default function SourceControlPanel({ onOpenFile }) {
                   )}
                 </div>
               )}
+              {!sectionsCollapsed.graph && <div className="scm-resize-handle top" onMouseDown={(e) => handleResizeStart(e, 'graph')} />}
             </div>
           </div>
         </div>

@@ -5,6 +5,7 @@ import {
   VscWarning,
   VscBell,
   VscCheck,
+  VscTrash,
 } from 'react-icons/vsc';
 import axios from 'axios';
 import { API_URL as API } from '../config';
@@ -124,6 +125,46 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
     setSwitching(null);
   };
 
+  const handleCreateBranch = async () => {
+    if (!filter) return;
+    setSwitching(filter);
+    try {
+      const res = await axios.post(`${API}/terminal/run`, null, {
+        params: { command: `git checkout -b ${filter}` }
+      });
+      if (res.data.exit_code === 0) {
+        if (onSwitch) onSwitch(filter);
+        onClose();
+      }
+    } catch (_) {}
+    setSwitching(null);
+  };
+
+  const handleDeleteBranch = async (e, branchName) => {
+    e.stopPropagation();
+    if (!window.confirm(`Are you sure you want to delete branch '${branchName}'?`)) return;
+    try {
+      await axios.post(`${API}/terminal/run`, null, {
+        params: { command: `git branch -D ${branchName}` }
+      });
+      // Refresh list
+      const res = await axios.post(`${API}/terminal/run`, null, {
+        params: { command: 'git branch -a --no-color' }
+      });
+      const output = (res.data.output || '').trim();
+      if (res.data.exit_code === 0 && output) {
+        const parsed = output.split('\n').map(line => {
+          const isCurrent = line.startsWith('*');
+          const name = line.replace(/^\*?\s+/, '').trim();
+          const isRemote = name.startsWith('remotes/');
+          const displayName = isRemote ? name.replace('remotes/', '') : name;
+          return { name, displayName, isCurrent, isRemote };
+        }).filter(b => b.name && !b.name.includes('HEAD'));
+        setBranches(parsed);
+      }
+    } catch (_) {}
+  };
+
   return (
     <div className="branch-picker" ref={pickerRef}>
       <div className="branch-picker-header">
@@ -145,7 +186,11 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
           <div className="branch-picker-empty">Loading branches...</div>
         ) : filtered.length === 0 ? (
           <div className="branch-picker-empty">
-            {filter ? 'No matching branches' : 'No branches found'}
+            {filter ? (
+              <button className="branch-picker-create" onClick={handleCreateBranch}>
+                <span>Create branch <strong>{filter}</strong>...</span>
+              </button>
+            ) : 'No branches found'}
           </div>
         ) : (
           filtered.map(b => (
@@ -160,6 +205,11 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
                 {b.displayName}
               </span>
               {b.isCurrent && <VscCheck size={14} className="branch-picker-check" />}
+              {!b.isCurrent && !b.isRemote && (
+                <button className="branch-picker-delete" title="Delete Branch" onClick={(e) => handleDeleteBranch(e, b.name)}>
+                  <VscTrash size={14} />
+                </button>
+              )}
               {switching === b.displayName && <span className="branch-picker-switching">...</span>}
             </button>
           ))
