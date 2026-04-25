@@ -4,6 +4,14 @@ import json
 import re
 import logging
 from .indexer import search_codebase
+from .skills_registry import get_all_skills, select_skills, render_skills_prompt
+from .token_optimizer import (
+    build_token_report,
+    compress_context_steps,
+    compress_file_tree,
+    get_planner_max_tokens,
+    truncate_history_messages,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +48,7 @@ def _call_nvidia_chat(messages, model, timeout=180):
     payload = {
         "model": model,
         "messages": messages,
-        "max_tokens": 16384,
+        "max_tokens": get_planner_max_tokens(),
         "temperature": 0.2,
         "stream": False,
         "chat_template_kwargs": {"thinking": True},
@@ -52,7 +60,9 @@ def _call_nvidia_chat(messages, model, timeout=180):
     if not choices:
         raise ValueError("NVIDIA API returned no choices")
     msg = choices[0].get("message") or {}
-    return (msg.get("content") or "").strip()
+    text = (msg.get("content") or "").strip()
+    usage = data.get("usage") or {}
+    return text, usage
 
 
 def _is_openai_model(model_name):
@@ -88,7 +98,7 @@ def _call_openai_chat(messages, model, timeout=180):
     payload = {
         "model": model_id,
         "messages": messages,
-        "max_tokens": 16384,
+        "max_tokens": get_planner_max_tokens(),
         "temperature": 0.2,
     }
     resp = requests.post(OPENAI_CHAT_URL, headers=headers, json=payload, timeout=timeout)
@@ -98,7 +108,9 @@ def _call_openai_chat(messages, model, timeout=180):
     if not choices:
         raise ValueError("OpenAI API returned no choices")
     msg = choices[0].get("message") or {}
-    return (msg.get("content") or "").strip()
+    text = (msg.get("content") or "").strip()
+    usage = data.get("usage") or {}
+    return text, usage
 
 
 # Timeout for external APIs (NVIDIA, OpenAI) - they can be slow; use longer than Ollama
@@ -113,9 +125,11 @@ def simple_chat(user_message: str, timeout=30) -> str:
     ]
     try:
         if _is_kimi_model(model):
-            return _call_nvidia_chat(messages, model, timeout=SIMPLE_CHAT_EXTERNAL_TIMEOUT)
+            text, _usage = _call_nvidia_chat(messages, model, timeout=SIMPLE_CHAT_EXTERNAL_TIMEOUT)
+            return text
         if _is_openai_model(model):
-            return _call_openai_chat(messages, model, timeout=SIMPLE_CHAT_EXTERNAL_TIMEOUT)
+            text, _usage = _call_openai_chat(messages, model, timeout=SIMPLE_CHAT_EXTERNAL_TIMEOUT)
+            return text
         if _is_ollama_model(model):
             r = requests.post(
                 OLLAMA_CHAT_URL,
@@ -406,6 +420,19 @@ def _fix_json_newlines(text):
     return ''.join(result)
 
 
+# Skills-driven prompt used for actual planning calls (kept compact to reduce tokens).
+BASE_SYSTEM_PROMPT = (
+    "You are an AI coding assistant operating in Nebula IDE.\n"
+    "You are an agent: keep going until the task is fully resolved.\n\n"
+    "CRITICAL RESPONSE FORMAT:\n"
+    "- Output exactly ONE JSON object and nothing else.\n"
+    "- No markdown, no prose, no code blocks.\n"
+    "- Tool call: {\"action\":\"TOOL\",\"input\":{...}}\n"
+    "- Todo: {\"action\":\"todo\",\"input\":{\"steps\":[...]}}\n"
+    "- Final: {\"action\":\"final\",\"answer\":\"...\"} (only when done)\n"
+)
+
+
 def extract_json(text):
     """Extract the first JSON object from text, handling various LLM output quirks."""
     text = text.strip()
@@ -528,7 +555,11 @@ def plan(user_prompt, context="", conversation_history=None, mode="agent"):
     try:
         from .tools import get_project_root, get_project_file_tree
         root = str(get_project_root())
-        file_tree = get_project_file_tree()
+        # Avoid repeating a large file tree on every planner call (agent loops call plan many times).
+        # Include a smaller tree only on the first step (when there is no tool context yet),
+        # or when the user is asking architectural/overview questions.
+        include_tree = not bool(context and str(context).strip())
+        file_tree = get_project_file_tree(max_files=120) if include_tree else "(omitted)"
     except Exception:
         root = None
         file_tree = "(unavailable)"
@@ -546,7 +577,8 @@ def plan(user_prompt, context="", conversation_history=None, mode="agent"):
         "how to", "tell me", "list the", "what happens", "walk me through",
         "high level", "documentation",
     ])
-    if not is_pure_action or is_info:
+    # Semantic search can be expensive and token-heavy. Only do it on the first planner call for this prompt.
+    if (not is_pure_action or is_info) and not (context and str(context).strip()):
         try:
             semantic_results = search_codebase(user_prompt, root=root)
             # Provide more context for info queries
@@ -560,7 +592,7 @@ def plan(user_prompt, context="", conversation_history=None, mode="agent"):
 ---
 Project root: {root or '(no project open)'}
 File tree:
-{file_tree}
+{compress_file_tree(file_tree, max_lines=120)}
 ---
 """
     if semantic_context:
@@ -585,26 +617,42 @@ File tree:
             "When the user asks you to fix, edit, create, or modify something, DO IT by calling the appropriate tools.\n"
         )
     
-    # Build messages for Ollama Chat API
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT + mode_instructions + project_section},
+    # Skills: select only what is relevant for this request to reduce repeated prompt tokens.
+    selected_skills = select_skills(user_prompt, mode=mode)
+    skills_prompt = render_skills_prompt(selected_skills)
+    active_system_prompt = BASE_SYSTEM_PROMPT + ("\n\n" + skills_prompt if skills_prompt else "")
+
+    all_skills_prompt = render_skills_prompt(get_all_skills())
+    baseline_system_prompt = BASE_SYSTEM_PROMPT + ("\n\n" + all_skills_prompt if all_skills_prompt else "")
+
+    # Baseline messages (pre-optimization) - used for token savings reporting.
+    baseline_messages = [
+        {"role": "system", "content": baseline_system_prompt + mode_instructions + project_section},
     ]
 
-    # Add conversation history for context
-    if conversation_history and len(conversation_history) > 0:
-        recent = conversation_history[-16:]  # Last 16 messages
-        max_content_len = 800 if is_info else 400
-        for msg in recent:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if len(content) > max_content_len:
-                content = content[:max_content_len] + "..."
-            messages.append({"role": role, "content": content})
+    # Optimize history + tool context before sending.
+    optimized_history, history_meta = truncate_history_messages(
+        conversation_history,
+        max_messages=16,
+        max_chars_user=800 if is_info else 500,
+        max_chars_assistant=600 if is_info else 400,
+    )
+
+    optimized_context, context_meta = compress_context_steps(
+        context or "",
+        keep_last_steps=8,
+        max_chars=12000,
+    )
+
+    messages = [
+        {"role": "system", "content": active_system_prompt + mode_instructions + project_section},
+        *optimized_history,
+    ]
 
     # Build the current user message
     user_content = user_prompt
-    if context:
-        user_content += "\n\n---\nPrevious steps in this task:\n" + context
+    if optimized_context:
+        user_content += "\n\n---\nPrevious steps in this task:\n" + optimized_context
     messages.append({"role": "user", "content": user_content})
 
     model = get_model()
@@ -613,11 +661,12 @@ File tree:
 
     _timeout = 180
     raw_text = ""
+    provider_usage = None
     try:
         if _is_kimi_model(model):
-            raw_text = _call_nvidia_chat(messages, model, timeout=_timeout)
+            raw_text, provider_usage = _call_nvidia_chat(messages, model, timeout=_timeout)
         elif _is_openai_model(model):
-            raw_text = _call_openai_chat(messages, model, timeout=_timeout)
+            raw_text, provider_usage = _call_openai_chat(messages, model, timeout=_timeout)
         elif _is_ollama_model(model):
             response = requests.post(
                 OLLAMA_CHAT_URL,
@@ -629,7 +678,18 @@ File tree:
                 timeout=_timeout,
             )
             response.raise_for_status()
-            raw_text = response.json().get("message", {}).get("content", "")
+            data = response.json()
+            raw_text = data.get("message", {}).get("content", "")
+            # Ollama returns eval counts (not always). Normalize to OpenAI-like keys when present.
+            provider_usage = {
+                "prompt_tokens": data.get("prompt_eval_count"),
+                "completion_tokens": data.get("eval_count"),
+                "total_tokens": (
+                    (data.get("prompt_eval_count") or 0) + (data.get("eval_count") or 0)
+                    if (data.get("prompt_eval_count") is not None or data.get("eval_count") is not None)
+                    else None
+                ),
+            }
         else:
             return {"action": "final", "answer": f"Provider for model '{model}' is not yet supported for the agent. Use OpenAI (Settings > Connect), Kimi (NVIDIA_API_KEY), or a local Ollama model."}
     except requests.exceptions.Timeout as e:
@@ -711,6 +771,29 @@ File tree:
     # Try robust JSON parsing
     result = _parse_json_robust(raw_text)
     if result and isinstance(result, dict):
+        # Attach token optimization + usage metadata for UI and monitoring.
+        try:
+            token_report = build_token_report(
+                messages_before=baseline_messages + (conversation_history or []) + [{"role": "user", "content": user_prompt}],
+                messages_after=messages,
+                context_meta=context_meta,
+                history_meta=history_meta,
+            )
+            result["_meta"] = {
+                "token_optimization": {
+                    "estimated_input_tokens_before": token_report.estimated_input_tokens_before,
+                    "estimated_input_tokens_after": token_report.estimated_input_tokens_after,
+                    "estimated_tokens_saved": token_report.estimated_tokens_saved,
+                    "context_summarized_steps": token_report.context_summarized_steps,
+                    "history_trimmed_messages": token_report.history_trimmed_messages,
+                    "history_truncated_messages": token_report.history_truncated_messages,
+                },
+                "skills": [s.id for s in (selected_skills or [])],
+                "provider_usage": provider_usage,
+                "model": model,
+            }
+        except Exception:
+            pass
         logger.info("Planner parsed action: %s", result.get("action"))
         return result
 

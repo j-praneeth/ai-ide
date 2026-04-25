@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { VscSettingsGear } from 'react-icons/vsc';
 import { API_URL as API } from '../config';
+import { authFetch } from '../lib/auth';
 const SETTINGS_STORAGE_KEY = 'nebula_ide_settings';
 
 const SETTINGS_GROUPS = [
@@ -183,7 +184,7 @@ function AIModelRow({ models, loading, currentModel, feedback, onRefresh, onSele
     setSelectValue(name);
     setSetting(true);
     try {
-      const res = await fetch(`${API}/ai/model/set?model=${encodeURIComponent(name)}`, { method: 'POST' });
+      const res = await authFetch(`${API}/ai/model/set?model=${encodeURIComponent(name)}`, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (data.status === 'ok') onSelect(data.model);
       else onSelect(null, { type: 'error', message: data.message || 'Failed to set model' });
@@ -250,7 +251,7 @@ export default function SettingsPanel({ onSettingsChange }) {
   const fetchModels = useCallback(async () => {
     setModelsLoading(true);
     try {
-      const res = await fetch(`${API}/ai/models`);
+      const res = await authFetch(`${API}/ai/models`);
       const data = await res.json().catch(() => ({}));
       setModels(data.models || []);
     } catch (_) { setModels([]); }
@@ -259,7 +260,7 @@ export default function SettingsPanel({ onSettingsChange }) {
 
   const fetchCurrentModel = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/ai/model/current`);
+      const res = await authFetch(`${API}/ai/model/current`);
       const data = await res.json().catch(() => ({}));
       setCurrentModel(data.model || null);
     } catch (_) { setCurrentModel(null); }
@@ -286,7 +287,7 @@ export default function SettingsPanel({ onSettingsChange }) {
     if (values.aiModelSource !== 'providers' || !USE_ENV_KEY_PROVIDERS.has(provider)) return;
     const modelId = PROVIDER_TO_MODEL_ID[provider];
     if (!modelId) return;
-    fetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' })
+    authFetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' })
       .then(r => r.json().catch(() => ({})))
       .then(data => { if (data.status === 'ok') setCurrentModel(modelId); })
       .catch(() => {});
@@ -380,7 +381,7 @@ export default function SettingsPanel({ onSettingsChange }) {
                           const modelId = PROVIDER_TO_MODEL_ID[provider];
                           if (modelId) {
                             try {
-                              const setRes = await fetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' });
+                              const setRes = await authFetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' });
                               const setData = await setRes.json().catch(() => ({}));
                               if (setData.status === 'ok') {
                                 setCurrentModel(modelId);
@@ -422,7 +423,7 @@ export default function SettingsPanel({ onSettingsChange }) {
                             if (!key && !USE_ENV_KEY_PROVIDERS.has(provider)) return;
                             setConnectingApiKey(true);
                             try {
-                              const res = await fetch(`${API}/ai/set-api-key`, {
+                              const res = await authFetch(`${API}/ai/set-api-key`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ api_key: key || '', provider }),
@@ -432,7 +433,7 @@ export default function SettingsPanel({ onSettingsChange }) {
                                 setApiKeyConnectedForProvider(provider);
                                 const modelId = PROVIDER_TO_MODEL_ID[provider];
                                 if (modelId) {
-                                  const setRes = await fetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' });
+                                  const setRes = await authFetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' });
                                   const setData = await setRes.json().catch(() => ({}));
                                   if (setData.status === 'ok') {
                                     setCurrentModel(modelId);

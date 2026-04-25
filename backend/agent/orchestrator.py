@@ -337,7 +337,7 @@ def run_agent(user_prompt, conversation_history=None, mode="agent"):
     return "Agent reached the maximum step limit. If the task is not fully complete, try breaking it into smaller requests or ask to continue."
 
 
-def run_agent_stream(user_prompt, conversation_history=None, mode="agent"):
+def run_agent_stream(user_prompt, conversation_history=None, mode="agent", session_id: str = "default", user_id: str = None):
     """Generator version of run_agent that yields step events for SSE streaming.
     
     Args:
@@ -381,6 +381,32 @@ def run_agent_stream(user_prompt, conversation_history=None, mode="agent"):
 
         decision = _ensure_decision(decision)
         action = decision.get("action", "")
+        meta = decision.get("_meta")
+        if isinstance(meta, dict):
+            token_opt = meta.get("token_optimization")
+            provider_usage = meta.get("provider_usage")
+            skills = meta.get("skills")
+            model = meta.get("model")
+            if token_opt:
+                yield {"type": "token_report", "report": token_opt, "model": model}
+            if provider_usage:
+                yield {"type": "provider_usage", "usage": provider_usage, "model": model}
+            if skills:
+                yield {"type": "skills_applied", "skills": skills, "model": model}
+            # Persist usage for dashboards (best-effort, never breaks agent loop).
+            try:
+                from usage.tracker import record_usage_event
+                record_usage_event(
+                    user_id=user_id,
+                    session_id=session_id,
+                    model=model,
+                    provider_usage=provider_usage if isinstance(provider_usage, dict) else None,
+                    token_optimization=token_opt if isinstance(token_opt, dict) else None,
+                    skills=skills if isinstance(skills, list) else None,
+                    kind="planner",
+                )
+            except Exception:
+                pass
 
         if action == "final":
             answer = decision.get("answer", "")

@@ -18,8 +18,8 @@ def _emit_agent_event(event: dict):
     except Exception:
         pass
 
-# In-memory conversation history: list of {"role": "user"|"assistant", "content": "..."}
-CONVERSATION_HISTORY: list = []
+# In-memory conversation history (per session): {session_id: [{"role":..,"content":..}, ...]}
+CONVERSATIONS: dict = {}
 MAX_HISTORY_MESSAGES = 50
 
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
@@ -127,18 +127,57 @@ def get_models():
     return {"models": models}
 
 
+@router.get("/skills")
+def list_skills():
+    """Return the Skills.md registry (for UI display and debugging)."""
+    try:
+        from agent.skills_registry import get_all_skills
+        skills = []
+        for s in get_all_skills():
+            skills.append(
+                {
+                    "id": s.id,
+                    "title": s.title,
+                    "applies": s.applies,
+                    "keywords": list(s.keywords),
+                    "description": s.description,
+                }
+            )
+        return {"skills": skills}
+    except Exception as e:
+        return {"skills": [], "error": str(e)}
+
+
+@router.get("/skills/raw")
+def get_skill_raw(skill_id: str = ""):
+    """Return raw content for one skill id (or the whole file if skill_id is empty)."""
+    try:
+        from pathlib import Path
+        skills_path = Path(__file__).resolve().parent.parent / "Skills.md"
+        if not skill_id:
+            return {"content": skills_path.read_text(encoding="utf-8", errors="replace")}
+        from agent.skills_registry import get_all_skills
+        for s in get_all_skills():
+            if s.id == skill_id:
+                return {"id": s.id, "title": s.title, "content": s.content}
+        return {"error": f"Skill not found: {skill_id}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.get("/chat/history")
-def chat_history():
-    """Return current conversation history (for desktop/mobile sync)."""
-    return {"history": list(CONVERSATION_HISTORY)}
+def chat_history(session_id: str = "default"):
+    """Return current conversation history for a session (for desktop/mobile sync)."""
+    sid = (session_id or "default").strip() or "default"
+    return {"session_id": sid, "history": list(CONVERSATIONS.get(sid, []))}
 
 
 @router.post("/chat/clear")
-def chat_clear():
-    """Clear conversation history."""
-    global CONVERSATION_HISTORY
-    CONVERSATION_HISTORY = []
-    return {"status": "cleared"}
+def chat_clear(session_id: str = "default"):
+    """Clear conversation history for a session."""
+    sid = (session_id or "default").strip() or "default"
+    CONVERSATIONS[sid] = []
+    return {"status": "cleared", "session_id": sid}
 
 
 def _is_simple_greeting(prompt: str) -> bool:
@@ -162,7 +201,7 @@ def _is_simple_greeting(prompt: str) -> bool:
 
 
 @router.get("/chat/stream")
-def chat_stream(prompt: str, mode: str = "agent", model: str = None):
+def chat_stream(request: Request, prompt: str, mode: str = "agent", model: str = None, session_id: str = "default"):
     """SSE streaming endpoint for real-time agent steps.
     
     Args:
@@ -189,10 +228,17 @@ def chat_stream(prompt: str, mode: str = "agent", model: str = None):
     import file_manager
     set_project_root(file_manager.PROJECT_ROOT)
 
+    # Identify user for usage tracking (AuthMiddleware stores request.state.user when enabled).
+    req_user = getattr(request.state, "user", None)
+    user_id = getattr(req_user, "id", None)
+
+    sid = (session_id or "default").strip() or "default"
+
     def event_stream():
         try:
             from agent.orchestrator import run_agent_stream
-            CONVERSATION_HISTORY.append({"role": "user", "content": prompt})
+            CONVERSATIONS.setdefault(sid, [])
+            CONVERSATIONS[sid].append({"role": "user", "content": prompt})
 
             # Emit user message to mobile so chat stays in sync on both desktop and mobile
             _emit_agent_event({"type": "chat_message", "role": "user", "content": prompt})
@@ -205,26 +251,26 @@ def chat_stream(prompt: str, mode: str = "agent", model: str = None):
                     event = {"type": "done", "answer": reply or "Hello! How can I help you today?"}
                     yield f"data: {json_module.dumps(event)}\n\n"
                     _emit_agent_event(event)
-                    CONVERSATION_HISTORY.append({"role": "assistant", "content": event["answer"]})
-                    if len(CONVERSATION_HISTORY) > MAX_HISTORY_MESSAGES:
-                        CONVERSATION_HISTORY[:] = CONVERSATION_HISTORY[-MAX_HISTORY_MESSAGES:]
+                    CONVERSATIONS[sid].append({"role": "assistant", "content": event["answer"]})
+                    if len(CONVERSATIONS[sid]) > MAX_HISTORY_MESSAGES:
+                        CONVERSATIONS[sid][:] = CONVERSATIONS[sid][-MAX_HISTORY_MESSAGES:]
                 except Exception as e:
                     yield f"data: {json_module.dumps({'type': 'done', 'answer': f'Hello! (Model error: {e})'})}\n\n"
                 return
 
             # Pass conversation history (excluding the just-added message) for context
-            history_for_agent = list(CONVERSATION_HISTORY[:-1]) if len(CONVERSATION_HISTORY) > 1 else []
+            history_for_agent = list(CONVERSATIONS[sid][:-1]) if len(CONVERSATIONS[sid]) > 1 else []
 
             final_answer = ""
-            for event in run_agent_stream(prompt, conversation_history=history_for_agent, mode=mode):
+            for event in run_agent_stream(prompt, conversation_history=history_for_agent, mode=mode, session_id=sid, user_id=user_id):
                 yield f"data: {json_module.dumps(event)}\n\n"
                 _emit_agent_event(event)
                 if event.get("type") == "done":
                     final_answer = event.get("answer", "")
 
-            CONVERSATION_HISTORY.append({"role": "assistant", "content": final_answer})
-            if len(CONVERSATION_HISTORY) > MAX_HISTORY_MESSAGES:
-                CONVERSATION_HISTORY[:] = CONVERSATION_HISTORY[-MAX_HISTORY_MESSAGES:]
+            CONVERSATIONS[sid].append({"role": "assistant", "content": final_answer})
+            if len(CONVERSATIONS[sid]) > MAX_HISTORY_MESSAGES:
+                CONVERSATIONS[sid][:] = CONVERSATIONS[sid][-MAX_HISTORY_MESSAGES:]
         except Exception as e:
             yield f"data: {json_module.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
@@ -279,7 +325,7 @@ def approve_command(command_id: str, approved: bool = True):
 
 
 @router.post("/chat")
-def chat(prompt: str, mode: str = "agent"):
+def chat(prompt: str, mode: str = "agent", session_id: str = "default"):
     """Chat endpoint for AI assistant.
     
     Args:
@@ -290,24 +336,26 @@ def chat(prompt: str, mode: str = "agent"):
     if mode not in ["agent", "chat"]:
         mode = "agent"
     
+    sid = (session_id or "default").strip() or "default"
     if agent_available:
         try:
             # Sync agent's project root with the file manager's current project root
             import file_manager
             set_project_root(file_manager.PROJECT_ROOT)
 
-            CONVERSATION_HISTORY.append({"role": "user", "content": prompt})
-            history_for_agent = list(CONVERSATION_HISTORY[:-1]) if len(CONVERSATION_HISTORY) > 1 else []
+            CONVERSATIONS.setdefault(sid, [])
+            CONVERSATIONS[sid].append({"role": "user", "content": prompt})
+            history_for_agent = list(CONVERSATIONS[sid][:-1]) if len(CONVERSATIONS[sid]) > 1 else []
             response = run_agent(prompt, conversation_history=history_for_agent, mode=mode)
-            CONVERSATION_HISTORY.append({"role": "assistant", "content": response})
+            CONVERSATIONS[sid].append({"role": "assistant", "content": response})
             # Trim to last N messages
-            if len(CONVERSATION_HISTORY) > MAX_HISTORY_MESSAGES:
-                CONVERSATION_HISTORY[:] = CONVERSATION_HISTORY[-MAX_HISTORY_MESSAGES:]
-            return {"response": response, "history": list(CONVERSATION_HISTORY)}
+            if len(CONVERSATIONS[sid]) > MAX_HISTORY_MESSAGES:
+                CONVERSATIONS[sid][:] = CONVERSATIONS[sid][-MAX_HISTORY_MESSAGES:]
+            return {"response": response, "session_id": sid, "history": list(CONVERSATIONS[sid])}
         except Exception as e:
             traceback.print_exc()
             logger.exception("Agent error: %s", e)
-            return {"response": f"Agent error: {str(e)}. The AI backend may need configuration.", "history": list(CONVERSATION_HISTORY)}
+            return {"response": f"Agent error: {str(e)}. The AI backend may need configuration.", "session_id": sid, "history": list(CONVERSATIONS.get(sid, []))}
     else:
         return {
             "response": (
@@ -318,5 +366,6 @@ def chat(prompt: str, mode: str = "agent"):
                 "4. Restart the backend server\n\n"
                 "The IDE editor, file explorer, terminal, and all other features work without AI."
             ),
-            "history": list(CONVERSATION_HISTORY),
+            "session_id": sid,
+            "history": list(CONVERSATIONS.get(sid, [])),
         }

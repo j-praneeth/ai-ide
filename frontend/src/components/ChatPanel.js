@@ -23,6 +23,7 @@ import {
 } from 'react-icons/vsc';
 import axios from 'axios';
 import { API_URL as API } from '../config';
+import { authFetch } from '../lib/auth';
 const CHAT_SESSIONS_KEY = 'nebula_chat_sessions';
 
 function loadSessionsFromStorage() {
@@ -462,6 +463,18 @@ function ChatMessage({ message, index, isLast, onCopy, onEdit, onResend, loading
               {message.text}
             </ReactMarkdown>
           )}
+          {!isUser && message.tokenReport && (
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+              Estimated tokens saved: <span style={{ color: 'var(--accent)', fontWeight: 800 }}>
+                {Number(message.tokenReport.estimated_tokens_saved || 0).toLocaleString()}
+              </span>
+              {Array.isArray(message.skillsApplied) && message.skillsApplied.length > 0 && (
+                <span style={{ marginLeft: 10 }}>
+                  Skills: {message.skillsApplied.join(', ')}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -509,7 +522,8 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
   const fetchAndMergeServerHistory = useCallback(async () => {
     if (!visible || loading) return;
     try {
-      const res = await fetch(`${API}/ai/chat/history`);
+      const sessionParam = activeSessionId ? `?session_id=${encodeURIComponent(activeSessionId)}` : '';
+      const res = await authFetch(`${API}/ai/chat/history${sessionParam}`);
       if (!res.ok) return;
       const { history } = await res.json();
       if (!Array.isArray(history) || history.length === 0) return;
@@ -610,7 +624,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
   }, []);
 
   // Core send function (SSE streaming)
-  const sendPrompt = useCallback(async (promptText, messagesList) => {
+  const sendPrompt = useCallback(async (promptText, messagesList, sessionIdOverride) => {
     setLoading(true);
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
@@ -658,12 +672,16 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
         return providerToModel[provider] || '';
       } catch (_) { return ''; }
     })();
+    const sid = sessionIdOverride || activeSessionId;
+    const sessionParam = sid ? `&session_id=${encodeURIComponent(sid)}` : '';
     const streamUrl = modelParam
-      ? `${API}/ai/chat/stream?prompt=${encodeURIComponent(prompt)}&mode=${mode}&model=${encodeURIComponent(modelParam)}`
-      : `${API}/ai/chat/stream?prompt=${encodeURIComponent(prompt)}&mode=${mode}`;
+      ? `${API}/ai/chat/stream?prompt=${encodeURIComponent(prompt)}&mode=${mode}&model=${encodeURIComponent(modelParam)}${sessionParam}`
+      : `${API}/ai/chat/stream?prompt=${encodeURIComponent(prompt)}&mode=${mode}${sessionParam}`;
 
     try {
-      const response = await fetch(streamUrl, { signal });
+      let latestTokenReport = null;
+      let latestSkills = null;
+      const response = await authFetch(streamUrl, { signal });
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -684,6 +702,10 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
               if (data.type === 'thinking') {
                 thinkingTextsRef.current = [...thinkingTextsRef.current, data.text];
                 setThinkingTexts(prev => [...prev, data.text]);
+              } else if (data.type === 'token_report') {
+                latestTokenReport = data.report || null;
+              } else if (data.type === 'skills_applied') {
+                latestSkills = data.skills || null;
               } else if (data.type === 'step') {
                 const step = { type: 'step', message: data.message, tool: data.tool };
                 thinkingStepsRef.current = [...thinkingStepsRef.current, step];
@@ -739,6 +761,8 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
         text: finalAnswer,
         steps: [...thinkingStepsRef.current],
         thinkingTexts: [...thinkingTextsRef.current],
+        tokenReport: latestTokenReport || undefined,
+        skillsApplied: latestSkills || undefined,
         todoList: finalTodoList.length ? finalTodoList : undefined,
         todoCompletedIndices: finalTodoCompleted,
       }]);
@@ -760,13 +784,14 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
     setThinkingTexts([]);
     thinkingStepsRef.current = [];
     thinkingTextsRef.current = [];
-  }, [currentFile, currentContent, mode]);
+  }, [currentFile, currentContent, mode, activeSessionId]);
 
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
     const text = input.trim();
 
-    if (!activeSessionId) {
+    let sid = activeSessionId;
+    if (!sid) {
       const newId = createSessionId();
       setSessions(prev => {
         const next = [...prev, { id: newId, title: 'New Chat', messages: [], timestamp: Date.now() }];
@@ -774,6 +799,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
         return next;
       });
       setActiveSessionId(newId);
+      sid = newId;
     }
 
     if (editingIndex !== null) {
@@ -783,13 +809,13 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
       setMessages(newMessages);
       setInput('');
       setEditingIndex(null);
-      await sendPrompt(text, newMessages);
+      await sendPrompt(text, newMessages, sid);
     } else {
       const userMessage = { role: 'user', text };
       const newMessages = [...messages, userMessage];
       setMessages(newMessages);
       setInput('');
-      await sendPrompt(text, newMessages);
+      await sendPrompt(text, newMessages, sid);
     }
   };
 
@@ -837,7 +863,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
     thinkingStepsRef.current = [];
     thinkingTextsRef.current = [];
     try {
-      await axios.post(`${API}/ai/chat/clear`);
+      await axios.post(`${API}/ai/chat/clear`, null, { params: { session_id: activeSessionId || 'default' } });
     } catch (err) {
       // Silently ignore
     }
@@ -845,7 +871,7 @@ export default function ChatPanel({ visible, onClose, currentFile, currentConten
 
   const newChat = () => {
     createNewSession();
-    axios.post(`${API}/ai/chat/clear`).catch(() => {});
+    axios.post(`${API}/ai/chat/clear`, null, { params: { session_id: activeSessionId || 'default' } }).catch(() => {});
   };
 
   const lastUserMsgIndex = (() => {

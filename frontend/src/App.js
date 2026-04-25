@@ -11,6 +11,9 @@ import SearchPanel from './components/SearchPanel';
 import SourceControlPanel from './components/SourceControlPanel';
 import ExtensionsPanel from './components/ExtensionsPanel';
 import SettingsPanel from './components/SettingsPanel';
+import UsagePanel from './components/UsagePanel';
+import ChatPanel from './components/ChatPanel';
+import AdminPanel from './components/AdminPanel';
 import EditorTabs from './components/EditorTabs';
 import TerminalPanel from './components/TerminalPanel';
 import StatusBar from './components/StatusBar';
@@ -18,8 +21,10 @@ import CommandPalette from './components/CommandPalette';
 import OpenFolderDialog from './components/OpenFolderDialog';
 import MobileCompanionPopup from './components/MobileCompanionPopup';
 import CliPanel from './components/CliPanel';
+import AuthGate from './components/AuthGate';
 import { VscDeviceMobile, VscTerminal } from 'react-icons/vsc';
 import { listDirFromHandle, getHandleForPath, getFileContentFromHandle, writeFileToHandle } from './lib/webFs';
+import { authFetch, getAuthUser } from './lib/auth';
 
 // Language detection by file extension
 function getLanguage(filename) {
@@ -183,6 +188,14 @@ function App() {
     }).catch(() => {});
   }, [loadTree]);
 
+  // After login, Super Admin lands on Admin dashboard by default.
+  useEffect(() => {
+    const u = getAuthUser();
+    if (u?.role === 'super_admin') {
+      setSidebarPanel('admin');
+    }
+  }, []);
+
   // Sync selected AI model to backend on app load (so Kimi/OpenAI is used after refresh or server restart)
   useEffect(() => {
     try {
@@ -202,7 +215,7 @@ function App() {
       };
       const modelId = providerToModel[provider];
       if (!modelId) return;
-      fetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' })
+      authFetch(`${API}/ai/model/set?model=${encodeURIComponent(modelId)}`, { method: 'POST' })
         .then(r => r.json().catch(() => ({})))
         .catch(() => {});
     } catch (_) {}
@@ -857,7 +870,8 @@ function App() {
   const platformClass = navigator.platform?.toLowerCase().includes('mac') ? 'platform-darwin' : '';
 
   return (
-    <div className={`ide-container ${platformClass}`}>
+    <AuthGate>
+      <div className={`ide-container ${platformClass}`}>
       {/* Title Bar */}
       <div className="title-bar">
         <div className="title-bar-left">
@@ -976,6 +990,17 @@ function App() {
             )}
             {sidebarPanel === 'settings' && (
               <SettingsPanel onSettingsChange={handleSettingsChange} />
+            )}
+            {sidebarPanel === 'usage' && (
+              <UsagePanel />
+            )}
+            {sidebarPanel === 'chat' && (
+              <ChatPanel
+                visible={true}
+                onClose={() => setSidebarPanel('explorer')}
+                currentFile={activeFile}
+                currentContent={activeFile ? (fileContents[activeFile] || '') : ''}
+              />
             )}
           </div>
           <div className="sidebar-resizer" onMouseDown={handleSidebarResizeStart} title="Drag to resize" />
@@ -1105,7 +1130,8 @@ function App() {
       {showMobileCompanionPopup && (
         <MobileCompanionPopup onClose={() => setShowMobileCompanionPopup(false)} />
       )}
-    </div>
+      </div>
+    </AuthGate>
   );
 }
 
