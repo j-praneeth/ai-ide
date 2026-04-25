@@ -176,6 +176,10 @@ class NebulaWebSocket {
     this.send('prompt', { message });
   }
 
+  sendCliInput(data) {
+    this.send('cli_input', { data });
+  }
+
   sendTerminalCommand(command, session = 'mobile') {
     this.send('terminal_command', { command, session });
   }

@@ -86,12 +86,47 @@
   margin-bottom: 16px;
 }
 
+.mobile-companion-qr-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
 .mobile-companion-qr {
   display: block;
   margin: 0 auto 12px;
   width: 200px;
   height: 200px;
   object-fit: contain;
+}
+
+.mobile-companion-room-code {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.mobile-companion-room-code span {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--brand-primary, #818cf8);
+  letter-spacing: 1px;
+}
+
+.mobile-companion-status {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: var(--bg-hover);
+}
+
+.mobile-companion-status.connecting {
+  color: var(--text-muted);
+}
+
+.mobile-companion-status.connected {
+  color: #10b981;
 }
 
 .mobile-companion-qr-placeholder {

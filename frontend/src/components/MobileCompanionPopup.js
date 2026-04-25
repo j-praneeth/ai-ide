@@ -15,7 +15,7 @@ export default function MobileCompanionPopup({ onClose }) {
       const res = await fetch(`${API}/mobile/relay/status`);
       const data = await res.json();
       setRelayStatus(data);
-      if (data.connected && data.room_code) {
+      if (data.room_code) {
         const relayUrl = (data.relay_url || '').replace(/\/$/, '');
         const payload = JSON.stringify({ mode: 'relay', relay_url: relayUrl, room_code: data.room_code });
         try {
@@ -71,7 +71,7 @@ export default function MobileCompanionPopup({ onClose }) {
     onClose();
   }, [onClose]);
 
-  const isRelayConnected = relayStatus?.connected && relayStatus?.room_code;
+  const hasRoomCode = !!relayStatus?.room_code;
 
   return (
     <div className="mobile-companion-popup-overlay" onClick={handleClose}>
@@ -84,7 +84,7 @@ export default function MobileCompanionPopup({ onClose }) {
         </div>
         {error && <div className="mobile-companion-error">{error}</div>}
         <div className="mobile-companion-content">
-          {!isRelayConnected ? (
+          {!hasRoomCode ? (
             <>
               <p className="mobile-companion-hint">Generate a room code; it will be shown as a QR code for the app to scan.</p>
               <button type="button" className="mobile-companion-btn-primary" onClick={generateRoomCode} disabled={relayConnecting}>
@@ -95,11 +95,19 @@ export default function MobileCompanionPopup({ onClose }) {
             <>
               <p className="mobile-companion-hint">Scan this QR code with the Nebula Companion app</p>
               {(relayQr?.qr_image || relayQr?.qr_data_url) ? (
-                <img
-                  src={relayQr.qr_data_url || `data:image/png;base64,${relayQr.qr_image}`}
-                  alt="QR Code"
-                  className="mobile-companion-qr"
-                />
+                <div className="mobile-companion-qr-container">
+                  <img
+                    src={relayQr.qr_data_url || `data:image/png;base64,${relayQr.qr_image}`}
+                    alt="QR Code"
+                    className="mobile-companion-qr"
+                  />
+                  <div className="mobile-companion-room-code">
+                    Room Code: <span>{relayStatus.room_code}</span>
+                  </div>
+                  <div className={`mobile-companion-status ${relayStatus.connected ? 'connected' : 'connecting'}`}>
+                    {relayStatus.connected ? '● Connected' : '○ Connecting to relay...'}
+                  </div>
+                </div>
               ) : (
                 <div className="mobile-companion-qr-placeholder">Loading QR…</div>
               )}

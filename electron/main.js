@@ -748,6 +748,23 @@ ipcMain.handle('cli:start', (event, tool = 'claude') => {
     if (!event.sender.isDestroyed()) {
       event.sender.send('cli:data', { sessionId, data });
     }
+    // Also relay to backend for mobile companion
+    if (backendPort) {
+      const postData = JSON.stringify({ sessionId, data });
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: backendPort,
+        path: '/terminal/cli/data',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData),
+        },
+      });
+      req.on('error', () => {});
+      req.write(postData);
+      req.end();
+    }
   });
 
   ptyProcess.onExit((exitEvent) => {
@@ -957,6 +974,18 @@ function startRemoteInputPoller() {
 
 function handleRemoteInput(evt) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  // Handle CLI input separately
+  if (evt.type === 'cli_input') {
+    // Write to all active CLI sessions (usually only one)
+    for (const sessionId of cliSessions.keys()) {
+      const session = cliSessions.get(sessionId);
+      if (session && session.ptyProcess) {
+        session.ptyProcess.write(evt.data);
+      }
+    }
+    return;
+  }
 
   if (evt.type === 'click') {
     const bounds = mainWindow.getContentBounds();

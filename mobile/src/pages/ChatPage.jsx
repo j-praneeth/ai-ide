@@ -2,106 +2,50 @@ import { useState, useEffect, useRef } from 'react';
 import nebulaWS from '../services/websocket';
 import './ChatPage.css';
 
+// Simple ANSI stripper to keep the "chat" view clean
+const stripAnsi = (str) => {
+  if (typeof str !== 'string') return str;
+  return str.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
+};
+
 export default function ChatPage({ isVisible }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const [isAgentWorking, setIsAgentWorking] = useState(false);
+  const [isCliActive, setIsCliActive] = useState(false);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
-  // When chat tab is visible, request desktop chat history so system chat shows on mobile
   useEffect(() => {
-    if (isVisible && nebulaWS.connected) {
-      nebulaWS.requestChatHistory();
-    }
-  }, [isVisible]);
+    // Listen for CLI output from desktop
+    const unsubCliData = nebulaWS.on('cli_data', (data) => {
+      setIsCliActive(true);
+      const cleanText = stripAnsi(data.data);
+      if (!cleanText.trim()) return;
 
-  useEffect(() => {
-    const unsubChatMessage = nebulaWS.on('chat_message', (data) => {
-      const role = data.role || 'user';
-      const content = data.content || '';
-      if (!content) return;
       setMessages((prev) => {
-        if (prev.some((m) => m.type === 'thinking' || m.type === 'step')) return prev;
-        return [...prev, { type: role, text: content, timestamp: data.timestamp || Date.now() / 1000 }];
-      });
-    });
-
-    const unsubChatHistory = nebulaWS.on('chat_history', (data) => {
-      const history = data.history || [];
-      if (history.length === 0) return;
-      setMessages((prev) => {
-        // Don't overwrite if agent is currently working (we'd lose in-progress steps)
-        if (prev.some((m) => m.type === 'thinking' || m.type === 'step')) return prev;
-        const asMessages = history.map((m) => ({
-          type: m.role === 'user' ? 'user' : 'assistant',
-          text: m.content || '',
-          timestamp: data.timestamp || Date.now() / 1000,
-        }));
-        return asMessages;
-      });
-    });
-
-    const unsubThinking = nebulaWS.on('thinking', (data) => {
-      setIsAgentWorking(true);
-      setMessages(prev => {
-        // Update or add thinking message
         const last = prev[prev.length - 1];
-        if (last && last.type === 'thinking') {
-          return [...prev.slice(0, -1), { type: 'thinking', text: data.text, timestamp: data.timestamp }];
+        // If last message was assistant/cli, append to it to group output
+        if (last && last.type === 'assistant') {
+          return [...prev.slice(0, -1), { ...last, text: last.text + cleanText }];
         }
-        return [...prev, { type: 'thinking', text: data.text, timestamp: data.timestamp }];
-      });
-    });
-
-    const unsubStep = nebulaWS.on('step', (data) => {
-      setMessages(prev => [...prev, {
-        type: 'step',
-        text: data.message || `Using ${data.tool}...`,
-        tool: data.tool,
-        timestamp: data.timestamp,
-      }]);
-    });
-
-    const unsubResult = nebulaWS.on('tool_result', (data) => {
-      setMessages(prev => [...prev, {
-        type: 'tool_result',
-        text: data.result || '',
-        tool: data.tool,
-        timestamp: data.timestamp,
-      }]);
-    });
-
-    const unsubDone = nebulaWS.on('done', (data) => {
-      setIsAgentWorking(false);
-      setMessages(prev => {
-        // Remove the last thinking message and add the final answer
-        const filtered = prev.filter((m, i) => !(i === prev.length - 1 && m.type === 'thinking'));
-        return [...filtered, {
-          type: 'assistant',
-          text: data.answer || 'Done.',
-          timestamp: data.timestamp,
+        return [...prev, { 
+          type: 'assistant', 
+          text: cleanText, 
+          timestamp: data.timestamp || Date.now() / 1000 
         }];
       });
     });
 
-    const unsubError = nebulaWS.on('agent_error', (data) => {
-      setIsAgentWorking(false);
-      setMessages(prev => [...prev, {
-        type: 'error',
-        text: data.message || 'Agent error occurred.',
-        timestamp: data.timestamp,
-      }]);
+    // Handle initial state/reconnect
+    const unsubConnection = nebulaWS.on('connection', (status) => {
+      if (status.connected) {
+        // Maybe request status or similar?
+      }
     });
 
     return () => {
-      unsubChatMessage();
-      unsubChatHistory();
-      unsubThinking();
-      unsubStep();
-      unsubResult();
-      unsubDone();
-      unsubError();
+      unsubCliData();
+      unsubConnection();
     };
   }, []);
 
@@ -111,7 +55,7 @@ export default function ChatPage({ isVisible }) {
 
   const sendMessage = () => {
     const text = input.trim();
-    if (!text || isAgentWorking) return;
+    if (!text) return;
 
     setMessages(prev => [...prev, {
       type: 'user',
@@ -121,8 +65,8 @@ export default function ChatPage({ isVisible }) {
     setInput('');
 
     try {
-      nebulaWS.sendPrompt(text);
-      setIsAgentWorking(true);
+      // Send as CLI input (with newline)
+      nebulaWS.sendCliInput(text + '\n');
     } catch {
       setMessages(prev => [...prev, {
         type: 'error',
@@ -135,29 +79,23 @@ export default function ChatPage({ isVisible }) {
   return (
     <div className="page chat-page">
       <div className="page-header">
-        <h1>AI Chat</h1>
-        <p>Send prompts to the Nebula AI agent</p>
+        <h1>Claude CLI</h1>
+        <p>Live interaction with the IDE via Claude CLI</p>
       </div>
 
       <div className="chat-messages">
         {messages.length === 0 ? (
           <div className="empty-state">
-            <div className="empty-state-icon">◉</div>
+            <div className="empty-state-icon">✦</div>
             <div className="empty-state-text">
-              Send a prompt to control your IDE remotely.<br />
-              Try: "Create a new component called Header"
+              Waiting for Claude CLI activity...<br />
+              Open the CLI Panel in your Desktop IDE to begin.
             </div>
           </div>
         ) : (
           messages.map((msg, i) => (
             <ChatBubble key={`${msg.timestamp}-${i}`} message={msg} />
           ))
-        )}
-        {isAgentWorking && (
-          <div className="agent-working fade-in">
-            <span className="dot dot-yellow dot-pulse" />
-            Agent is working...
-          </div>
         )}
         <div ref={messagesEndRef} />
       </div>
@@ -168,16 +106,15 @@ export default function ChatPage({ isVisible }) {
             ref={inputRef}
             className="input"
             type="text"
-            placeholder={isAgentWorking ? 'Agent is working...' : 'Send a prompt...'}
+            placeholder="Type message to Claude..."
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && sendMessage()}
-            disabled={isAgentWorking}
           />
           <button
             className="btn btn-primary send-btn"
             onClick={sendMessage}
-            disabled={isAgentWorking || !input.trim()}
+            disabled={!input.trim()}
           >
             ↑
           </button>
@@ -188,7 +125,7 @@ export default function ChatPage({ isVisible }) {
 }
 
 function ChatBubble({ message }) {
-  const { type, text, tool } = message;
+  const { type, text } = message;
 
   if (type === 'user') {
     return (
@@ -198,49 +135,21 @@ function ChatBubble({ message }) {
     );
   }
 
-  if (type === 'assistant') {
-    return (
-      <div className="chat-bubble assistant-bubble fade-in">
-        <div className="bubble-content">{text}</div>
-      </div>
-    );
-  }
-
-  if (type === 'thinking') {
-    return (
-      <div className="chat-bubble thinking-bubble fade-in">
-        <span className="bubble-label">Thinking</span>
-        <div className="bubble-content">{text}</div>
-      </div>
-    );
-  }
-
-  if (type === 'step') {
-    return (
-      <div className="chat-bubble step-bubble fade-in">
-        <span className="bubble-label">▸ {tool || 'Step'}</span>
-        <div className="bubble-content">{text}</div>
-      </div>
-    );
-  }
-
-  if (type === 'tool_result') {
-    return (
-      <div className="chat-bubble result-bubble fade-in">
-        <span className="bubble-label">Result: {tool}</span>
-        <div className="code-block">{text}</div>
-      </div>
-    );
-  }
-
   if (type === 'error') {
     return (
       <div className="chat-bubble error-bubble fade-in">
-        <span className="bubble-label">Error</span>
         <div className="bubble-content">{text}</div>
       </div>
     );
   }
 
-  return null;
+  return (
+    <div className="chat-bubble assistant-bubble fade-in">
+      <div className="bubble-content">
+        <pre style={{ whiteSpace: 'pre-wrap', margin: 0, font: 'inherit' }}>
+          {text}
+        </pre>
+      </div>
+    </div>
+  );
 }

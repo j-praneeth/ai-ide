@@ -387,6 +387,14 @@ async def mobile_websocket(ws: WebSocket, token: str = Query(default="")):
         # Send recent event history so the mobile app has context
         for event in _event_history[-20:]:
             await ws.send_text(json.dumps(event))
+            
+        # Send recent CLI history
+        try:
+            from terminal import _cli_data_history
+            for event in _cli_data_history[-50:]:
+                await ws.send_text(json.dumps(event))
+        except Exception:
+            pass
 
     except Exception:
         pass
@@ -418,6 +426,13 @@ async def _handle_mobile_message(message: dict, ws: WebSocket):
 
     if msg_type == "ping":
         await ws.send_text(json.dumps({"type": "pong", "timestamp": time.time()}))
+
+    elif msg_type == "cli_input":
+        # Mobile sent input for the Claude CLI session
+        _remote_input_queue.append({
+            "type": "cli_input",
+            "data": message.get("data", ""),
+        })
 
     elif msg_type == "prompt":
         # User sent an AI prompt from mobile

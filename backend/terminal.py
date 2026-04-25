@@ -1,4 +1,4 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
 import asyncio
 import subprocess
 import os
@@ -6,8 +6,41 @@ import platform
 import getpass
 import re
 import shutil
+import time
 
 router = APIRouter()
+
+# ── CLI Data Relay (for mobile companion) ─────────────────────────────
+_cli_data_history = []
+MAX_CLI_HISTORY = 100
+
+@router.post("/cli/data")
+async def receive_cli_data(request: Request):
+    """Receive PTY data from Electron and relay to mobile."""
+    try:
+        payload = await request.json()
+        data = payload.get("data", "")
+        if not data:
+            return {"status": "no_data"}
+
+        event = {
+            "type": "cli_data",
+            "data": data,
+            "timestamp": time.time(),
+        }
+
+        # Store in history for new mobile connections
+        _cli_data_history.append(event)
+        if len(_cli_data_history) > MAX_CLI_HISTORY:
+            _cli_data_history.pop(0)
+
+        # Broadcast to mobile
+        from mobile_bridge import broadcast
+        await broadcast(event)
+        
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # ── Mobile bridge event emission ──────────────────────────────────────
 def _emit_terminal_event(command: str, output: str, exit_code: int, cwd: str):

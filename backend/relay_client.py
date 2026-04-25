@@ -60,20 +60,26 @@ _last_screen_frame = {"data": None}
 
 def relay_emit(event: dict):
     """Push an event to be sent through the relay. Thread-safe, non-blocking."""
-    if not _connected or _event_queue is None:
+    global _event_queue, _connected, _loop
+    if not _connected or _event_queue is None or _loop is None:
         return
     event.setdefault("timestamp", time.time())
 
     # For screen frames, store the latest and let sender pick it up
-    # This prevents the queue from filling with stale frames
     if event.get("type") == "screen_frame":
         _last_screen_frame["data"] = event
         return
 
-    try:
-        _event_queue.put_nowait(event)
-    except asyncio.QueueFull:
-        pass  # Drop if queue is full
+    def _put():
+        try:
+            _event_queue.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
+
+    if threading.current_thread() == _thread:
+        _put()
+    else:
+        _loop.call_soon_threadsafe(_put)
 
 
 # ── Relay Connection ──────────────────────────────────────────────────
@@ -130,10 +136,11 @@ async def _connect_and_run():
             async with websockets.connect(
                 ws_url,
                 ssl=ssl_ctx,
-                ping_interval=20,
-                ping_timeout=10,
-                close_timeout=5,
-                open_timeout=15,
+                ping_interval=30,
+                ping_timeout=30,
+                close_timeout=10,
+                open_timeout=20,
+                max_size=10 * 1024 * 1024,  # 10MB limit for screen frames
             ) as ws_conn:
                 _ws = ws_conn
                 _connected = True
@@ -149,6 +156,15 @@ async def _connect_and_run():
                     [sender_task, receiver_task],
                     return_when=asyncio.FIRST_COMPLETED,
                 )
+                
+                # Check why we finished
+                for task in done:
+                    try:
+                        await task
+                    except Exception as task_err:
+                        logger.error("Relay task failed: %s", task_err)
+                        _last_error = str(task_err)
+
                 for task in pending:
                     task.cancel()
 
@@ -173,7 +189,8 @@ async def _sender(ws):
             event = _event_queue.get_nowait()
             try:
                 await ws.send(json.dumps(event))
-            except Exception:
+            except Exception as e:
+                logger.warning("Sender: failed to send event: %s", e)
                 try:
                     _event_queue.put_nowait(event)
                 except asyncio.QueueFull:
@@ -182,13 +199,16 @@ async def _sender(ws):
         except asyncio.QueueEmpty:
             pass
 
-        # Send latest screen frame if available
+        # Send latest screen frame if available (limit to ~10fps to save bandwidth)
         frame = _last_screen_frame.get("data")
         if frame:
             _last_screen_frame["data"] = None  # Consume it
             try:
                 await ws.send(json.dumps(frame))
-            except Exception:
+                # Extra sleep after sending a large frame to allow pings to process
+                await asyncio.sleep(0.1) 
+            except Exception as e:
+                logger.warning("Sender: failed to send screen frame: %s", e)
                 break
 
         # Small sleep to prevent busy loop
@@ -226,6 +246,17 @@ async def _receiver(ws):
 
             elif msg_type == "ping":
                 relay_emit({"type": "pong"})
+
+            elif msg_type == "cli_input":
+                # Mobile sent input for the Claude CLI session
+                try:
+                    from mobile_bridge import _remote_input_queue
+                    _remote_input_queue.append({
+                        "type": "cli_input",
+                        "data": message.get("data", ""),
+                    })
+                except Exception:
+                    pass
 
             elif msg_type in ("mobile_joined", "mobile_left"):
                 global _mobile_count
