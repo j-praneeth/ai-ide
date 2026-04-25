@@ -13,9 +13,11 @@ logger = logging.getLogger("security.middleware")
 
 
 _ALLOWLIST_PREFIXES: tuple[str, ...] = (
+    "/favicon.ico",
     "/health",
     "/auth/status",
     "/auth/login",
+    "/download",
     "/docs",
     "/openapi.json",
     "/mobile",  # mobile companion uses its own session token

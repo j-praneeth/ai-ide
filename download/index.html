@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Download Nebula IDE</title>
+    <link id="downloadStyles" rel="stylesheet" href="/download/static/styles.css" />
+    <script>
+      if (location.protocol === 'file:') {
+        location.replace('http://127.0.0.1:8000/download');
+      }
+    </script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="/" aria-label="Nebula IDE home">
+          <span class="brand-mark">✦</span>
+          <span class="brand-name">nebula</span>
+        </a>
+        <nav class="nav" aria-label="Primary">
+          <a class="nav-link" href="#">Product</a>
+          <a class="nav-link" href="#">Resources</a>
+          <a class="nav-link" href="#">Customers</a>
+          <a class="nav-link" href="#">Pricing</a>
+        </nav>
+        <div class="topbar-actions">
+          <a class="btn btn-ghost" href="#">Sign in</a>
+          <a class="btn btn-solid" href="#">Start for free</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="hero">
+        <div class="hero-inner">
+          <div class="hero-kicker">Desktop &amp; mobile</div>
+          <h1 class="hero-title">Download Nebula.</h1>
+          <div class="hero-subtitle">Available for Windows.</div>
+
+          <div class="hero-cta">
+            <a id="downloadPrimary" class="btn btn-primary is-loading" href="#" aria-busy="true">
+              <span class="btn-label">Finding latest Windows build…</span>
+              <span class="btn-spinner" aria-hidden="true"></span>
+            </a>
+            <div id="downloadMeta" class="hero-meta">Optimized for Windows x64.</div>
+          </div>
+
+          <div class="hero-art" aria-hidden="true">
+            <div class="dock">
+              <div class="dock-item"></div>
+              <div class="dock-item"></div>
+              <div class="dock-app">
+                <div class="dock-app-mark">✦</div>
+              </div>
+              <div class="dock-item"></div>
+              <div class="dock-item"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="table">
+        <div class="table-inner">
+          <div class="row">
+            <div class="row-left">
+              <div class="row-title">Nebula for desktop.</div>
+              <div class="row-desc">Windows.</div>
+            </div>
+            <div class="row-middle">
+              <div class="variant">
+                <div class="variant-name">Windows</div>
+                <div class="variant-meta">x64</div>
+              </div>
+            </div>
+            <div class="row-right">
+              <a id="downloadRow" class="btn btn-row is-loading" href="#" aria-busy="true">
+                <span class="btn-label">Download</span>
+                <span class="btn-spinner" aria-hidden="true"></span>
+              </a>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="row">
+            <div class="row-left">
+              <div class="row-title">Nebula for mobile.</div>
+              <div class="row-desc">iOS and Android.</div>
+            </div>
+            <div class="row-middle">
+              <div class="variant">
+                <div class="variant-name">iOS</div>
+              </div>
+              <div class="variant">
+                <div class="variant-name">Android</div>
+              </div>
+            </div>
+            <div class="row-right row-right-multi">
+              <a class="btn btn-store is-disabled" href="#" aria-disabled="true">App store</a>
+              <a class="btn btn-store is-disabled" href="#" aria-disabled="true">Play store</a>
+            </div>
+          </div>
+
+          <div id="notice" class="notice" role="status" aria-live="polite"></div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      window.NEBULA_DOWNLOAD_CONFIG = {
+        metaEndpoint: "/download/latest/meta",
+        downloadEndpoint: "/download/latest"
+      };
+    </script>
+    <script>
+      (function () {
+        const protocol = location.protocol;
+        const css = document.getElementById('downloadStyles');
+        if (protocol === 'file:') {
+          if (css) css.setAttribute('href', './styles.css');
+          window.NEBULA_DOWNLOAD_CONFIG = {
+            metaEndpoint: "http://127.0.0.1:8000/download/latest/meta",
+            downloadEndpoint: "http://127.0.0.1:8000/download/latest"
+          };
+        }
+        const script = document.createElement('script');
+        script.src = protocol === 'file:' ? './main.js' : '/download/static/main.js';
+        document.body.appendChild(script);
+      })();
+    </script>
+  </body>
+</html>

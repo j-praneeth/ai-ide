@@ -1,6 +1,7 @@
 import sys
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Load environment variables from .env file if it exists
 load_dotenv()
@@ -10,8 +11,9 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # Import routers and other components
@@ -25,6 +27,20 @@ from usage.routes import router as usage_router
 from db.mongo import init_mongo
 
 logger = logging.getLogger("nebula.main")
+
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
+def _get_cors_origins():
+    raw = (os.environ.get("NEBULA_CORS_ORIGINS") or "").strip()
+    if not raw:
+        return list(DEFAULT_CORS_ORIGINS)
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    return parts or list(DEFAULT_CORS_ORIGINS)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,7 +64,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     print(f"DEBUG: Unhandled exception caught in global_exception_handler: {exc}")
     
     origin = request.headers.get("origin")
-    allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8000", "http://127.0.0.1:8000"]
+    allowed_origins = _get_cors_origins()
     
     response_content = {
         "error": "Internal Server Error", 
@@ -109,7 +125,7 @@ app.add_middleware(AuthMiddleware)
 # 3. CORS Middleware (Outer Layer)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_origins=_get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -156,6 +172,78 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DOWNLOAD_SITE_DIR = PROJECT_ROOT / "download"
+BUILD_ARTIFACT_DIRS = [
+    PROJECT_ROOT / "release",
+    PROJECT_ROOT / "dist",
+]
+FIXED_WINDOWS_EXE = PROJECT_ROOT / "release" / "Nebula IDE Setup 1.0.0.exe"
+FAVICON_PATH = PROJECT_ROOT / "frontend" / "public" / "favicon.ico"
+
+def _find_latest_windows_exe():
+    if FIXED_WINDOWS_EXE.exists() and FIXED_WINDOWS_EXE.is_file():
+        return FIXED_WINDOWS_EXE
+
+    newest = None
+    newest_mtime = -1
+
+    for d in BUILD_ARTIFACT_DIRS:
+        if not d.exists() or not d.is_dir():
+            continue
+        for p in d.rglob("*.exe"):
+            try:
+                st = p.stat()
+            except Exception:
+                continue
+            if st.st_mtime > newest_mtime:
+                newest = p
+                newest_mtime = st.st_mtime
+
+    return newest
+
+if DOWNLOAD_SITE_DIR.exists() and DOWNLOAD_SITE_DIR.is_dir():
+    app.mount("/download/static", StaticFiles(directory=str(DOWNLOAD_SITE_DIR), html=False), name="download_static")
+
+@app.get("/download")
+def download_page():
+    index_path = DOWNLOAD_SITE_DIR / "index.html"
+    if not index_path.exists():
+        return JSONResponse(status_code=404, content={"error": "Download page not found"})
+    return FileResponse(str(index_path), media_type="text/html", headers={"Cache-Control": "no-store"})
+
+@app.get("/favicon.ico")
+def favicon():
+    if not FAVICON_PATH.exists():
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    return FileResponse(str(FAVICON_PATH), media_type="image/x-icon", headers={"Cache-Control": "no-store"})
+
+@app.get("/download/latest/meta")
+def download_latest_meta():
+    exe = _find_latest_windows_exe()
+    if not exe:
+        return JSONResponse(status_code=404, content={"found": False, "error": "No Windows .exe build found"})
+    st = exe.stat()
+    return {
+        "found": True,
+        "filename": exe.name,
+        "size": st.st_size,
+        "mtime": int(st.st_mtime),
+        "url": "/download/latest",
+    }
+
+@app.get("/download/latest")
+def download_latest():
+    exe = _find_latest_windows_exe()
+    if not exe:
+        return JSONResponse(status_code=404, content={"error": "No Windows .exe build found"})
+    return FileResponse(
+        str(exe),
+        filename=exe.name,
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-store"},
+    )
 
 def main():
     import uvicorn
