@@ -1,11 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  VscDiffAdded,
-  VscDiffModified,
-  VscDiffRemoved,
-  VscDiffRenamed,
   VscFile,
-  VscGitCommit,
   VscHistory,
   VscRefresh,
   VscAdd,
@@ -16,7 +11,6 @@ import {
   VscChevronRight,
   VscEllipsis,
   VscGitMerge,
-  VscSync,
   VscClose,
   VscDiscard,
   VscArrowDown,
@@ -65,23 +59,6 @@ function parsePorcelain(output) {
   return { staged, unstaged };
 }
 
-function StatusBadge({ status }) {
-  const letter = status === 'untracked' ? 'U'
-    : status === 'A' ? 'A'
-    : status === 'M' ? 'M'
-    : status === 'D' ? 'D'
-    : status === 'R' ? 'R'
-    : status;
-
-  const color = status === 'untracked' ? '#73c991'
-    : status === 'A' ? '#73c991'
-    : status === 'D' ? '#f87171'
-    : (status === 'M' || status === 'R') ? '#e2c08d'
-    : '#999';
-
-  return <span className="scm-status-badge" style={{ color }}>{letter}</span>;
-}
-
 function getFileInfo(fullPath) {
   const parts = fullPath.split('/');
   const name = parts.pop();
@@ -101,9 +78,6 @@ const GRAPH_COLORS = [
 
 function parseGraphLines(lines) {
   const entries = [];
-  // Track active columns across lines to maintain consistent colors
-  // This is a simplified column tracker
-  let activeColumns = [];
 
   for (const line of lines) {
     const match = line.match(/^([*\s|/\\]+)\s*([a-f0-9]{7,})\s+(.+)$/);
@@ -149,13 +123,6 @@ function parseGraphLines(lines) {
     });
   }
   return entries;
-}
-
-function FileIcon({ status }) {
-  if (status === 'A' || status === 'untracked') return <VscDiffAdded size={14} style={{ color: '#73c991', flexShrink: 0 }} />;
-  if (status === 'D') return <VscDiffRemoved size={14} style={{ color: '#f87171', flexShrink: 0 }} />;
-  if (status === 'M' || status === 'R') return <VscDiffModified size={14} style={{ color: '#e2c08d', flexShrink: 0 }} />;
-  return <VscDiffModified size={14} style={{ color: '#999', flexShrink: 0 }} />;
 }
 
 // Inline diff viewer for a file
@@ -280,11 +247,9 @@ function GitGraphSVG({ colInfo, isLast, nextColInfo }) {
 
 export default function SourceControlPanel({ onOpenFile }) {
   const [branch, setBranch] = useState('');
-  const [repoName, setRepoName] = useState('');
   const [statusOutput, setStatusOutput] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [showMoreActions, setShowMoreActions] = useState(false);
   const [commitMessage, setCommitMessage] = useState('');
   const [committing, setCommitting] = useState(false);
   const [sectionsCollapsed, setSectionsCollapsed] = useState({ changesSection: false, agentReview: true, staged: false, changes: false, graph: false });
@@ -321,31 +286,22 @@ export default function SourceControlPanel({ onOpenFile }) {
   const fetchStatus = useCallback(async () => {
     setError(null);
     try {
-      const [statusRes, branchRes, repoRootRes] = await Promise.all([
+      const [statusRes, branchRes] = await Promise.all([
         runCommand('git status --porcelain -uall'),
         runCommand('git branch --show-current'),
-        runCommand('git rev-parse --show-toplevel'),
       ]);
       if (statusRes.exit_code !== 0) {
         setStatusOutput(null);
         setError(statusRes.output || 'Not a git repository');
         setBranch('');
-        setRepoName('');
         return;
       }
       setStatusOutput(statusRes.output);
       setBranch((branchRes.output || '').trim());
-      // Extract folder name from the git root path
-      const rootPath = (repoRootRes.output || '').trim();
-      if (rootPath) {
-        const parts = rootPath.replace(/\\/g, '/').split('/');
-        setRepoName(parts[parts.length - 1] || '');
-      }
     } catch (err) {
       setStatusOutput(null);
       setError(err.message || 'Not a git repository');
       setBranch('');
-      setRepoName('');
     } finally {
       setLoading(false);
     }
@@ -377,13 +333,6 @@ export default function SourceControlPanel({ onOpenFile }) {
   const handleUnstage = async (path) => {
     try { await runCommand(`git reset HEAD ${JSON.stringify(path)}`); await fetchStatus(); } catch (e) { setError(e.message); }
   };
-  const handleStageAll = async () => {
-    try { await runCommand('git add -A'); await fetchStatus(); } catch (e) { setError(e.message); }
-  };
-  const handleDiscardAll = async () => {
-    if (!window.confirm('Discard all changes?')) return;
-    try { await runCommand('git checkout .'); await fetchStatus(); } catch (e) { setError(e.message); }
-  };
   const handleDiscard = async (path) => {
     if (!window.confirm(`Discard changes in ${path}?`)) return;
     try { await runCommand(`git checkout -- ${JSON.stringify(path)}`); await fetchStatus(); } catch (e) { setError(e.message); }
@@ -411,15 +360,6 @@ export default function SourceControlPanel({ onOpenFile }) {
     setLoading(false);
   };
 
-  const handleUndoCommit = async () => {
-    setLoading(true);
-    try {
-      await runCommand('git reset --soft HEAD~1');
-      await fetchStatus();
-    } catch (err) { setError(err.output ?? err.message); }
-    setLoading(false);
-  };
-
   const handlePull = async () => {
     setLoading(true);
     try {
@@ -433,34 +373,6 @@ export default function SourceControlPanel({ onOpenFile }) {
     setLoading(true);
     try {
       await runCommand('git fetch');
-      await fetchStatus();
-    } catch (err) { setError(err.output ?? err.message); }
-    setLoading(false);
-  };
-
-  const handleSync = async () => {
-    setLoading(true);
-    try {
-      await runCommand('git pull');
-      await runCommand('git push');
-      await fetchStatus();
-    } catch (err) { setError(err.output ?? err.message); }
-    setLoading(false);
-  };
-
-  const handleStash = async () => {
-    setLoading(true);
-    try {
-      await runCommand('git stash');
-      await fetchStatus();
-    } catch (err) { setError(err.output ?? err.message); }
-    setLoading(false);
-  };
-
-  const handleStashPop = async () => {
-    setLoading(true);
-    try {
-      await runCommand('git stash pop');
       await fetchStatus();
     } catch (err) { setError(err.output ?? err.message); }
     setLoading(false);

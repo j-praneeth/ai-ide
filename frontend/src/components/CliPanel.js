@@ -121,7 +121,7 @@ export default function CliPanel({ visible }) {
     setTimeout(() => {
       try { fit.fit(); } catch (_) {}
     }, 100);
-  }, [connectCliSession]);
+  }, [connectCliSession, selectedCli]);
 
   useEffect(() => {
     if (visible) {

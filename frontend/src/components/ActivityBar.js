@@ -8,7 +8,6 @@ import {
   VscAccount,
   VscComment,
   VscGraph,
-  VscShield,
 } from 'react-icons/vsc';
 import { getAuthUser, logout } from '../lib/auth';
 
@@ -24,7 +23,6 @@ const ACTIVITY_ITEMS = [
 ];
 
 export default function ActivityBar({ activePanel, onPanelChange, chatOpen, onToggleChat }) {
-  const user = getAuthUser();
   const items = ACTIVITY_ITEMS;
 
   const showAccountMenu = (e) => {

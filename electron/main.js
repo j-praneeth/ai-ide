@@ -21,6 +21,32 @@ const isDev = process.env.ELECTRON_DEV === 'true' || !app.isPackaged;
 // Paths
 const userDataPath = app.getPath('userData');
 const embeddedPythonDir = path.join(userDataPath, 'python');
+
+function loadDotEnvFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const lines = raw.split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = (line || '').trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const idx = trimmed.indexOf('=');
+      if (idx <= 0) continue;
+      const key = trimmed.slice(0, idx).trim();
+      let value = trimmed.slice(idx + 1).trim();
+      if (!key) continue;
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (process.env[key] === undefined) {
+        process.env[key] = value;
+      }
+    }
+  } catch (_) {}
+}
+
+loadDotEnvFile(path.join(__dirname, '..', 'backend', '.env'));
+loadDotEnvFile(path.join(__dirname, '..', 'backend-src', '.env'));
 const CLI_SPECS = [
   { label: 'Claude CLI', command: 'claude', packageName: '@anthropic-ai/claude-code' },
   { label: 'Codex CLI', command: 'codex', packageName: '@openai/codex' },

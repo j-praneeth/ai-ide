@@ -61,7 +61,7 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
     applyAxiosAuthHeader();
   }, []);
 
-  const checkStatus = async () => {
+  useEffect(() => {
     let cancelled = false;
     const params = new URLSearchParams(window.location.search);
     const forceLogin = params.get('login') === 'true';
@@ -71,50 +71,53 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
         console.warn("Auth status check timed out, falling back to offline mode");
         setLoading(false);
       }
-    }, 5000); // 5 second timeout
+    }, 5000);
 
-    try {
-      const res = await fetch(`${AUTH}/auth/status`);
-      clearTimeout(timeout);
-      const data = await res.json().catch(() => ({}));
-      if (cancelled) return;
-      
-      const h = !!data.has_users;
-      const dbOk = data.db_connected !== false;
-      const r = !!data.auth_required || forceLogin || forceRequireAuth;
-      
-      setHasUsers(h);
-      setDbConnected(dbOk);
-      setAuthRequired(r);
-      
-      if (!dbOk && data.error) {
-        setError(data.error);
-      } else {
-        setError('');
-      }
+    const run = async () => {
+      try {
+        const res = await fetch(`${AUTH}/auth/status`);
+        clearTimeout(timeout);
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
 
-      if (h && getAuthToken() && dbOk) {
-        const me = await authFetch(`${AUTH}/auth/me`);
-        const meData = await me.json().catch(() => ({}));
-        if (meData?.user) {
-          setAuthUser(meData.user);
-          setAuthenticated(true);
-          setLoading(false);
-          return;
+        const h = !!data.has_users;
+        const dbOk = data.db_connected !== false;
+        const r = !!data.auth_required || forceLogin || forceRequireAuth;
+
+        setHasUsers(h);
+        setDbConnected(dbOk);
+        setAuthRequired(r);
+
+        if (!dbOk && data.error) {
+          setError(data.error);
+        } else {
+          setError('');
         }
-        setAuthToken('');
-      }
-    } catch (_) {
-      clearTimeout(timeout);
-      setDbConnected(false);
-      setError('Cannot reach backend. Please ensure the server is running.');
-    }
-    setLoading(false);
-    return () => { cancelled = true; };
-  };
 
-  useEffect(() => {
-    checkStatus();
+        if (h && getAuthToken() && dbOk) {
+          const me = await authFetch(`${AUTH}/auth/me`);
+          const meData = await me.json().catch(() => ({}));
+          if (meData?.user) {
+            setAuthUser(meData.user);
+            setAuthenticated(true);
+            setLoading(false);
+            return;
+          }
+          setAuthToken('');
+        }
+      } catch (_) {
+        clearTimeout(timeout);
+        setDbConnected(false);
+        setError('Cannot reach backend. Please ensure the server is running.');
+      }
+      setLoading(false);
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
   }, [forceRequireAuth, retryCount]);
 
   const doLogin = async () => {

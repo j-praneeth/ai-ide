@@ -13,7 +13,6 @@ import ExtensionsPanel from './components/ExtensionsPanel';
 import SettingsPanel from './components/SettingsPanel';
 import UsagePanel from './components/UsagePanel';
 import ChatPanel from './components/ChatPanel';
-import AdminPanel from './components/AdminPanel';
 import EditorTabs from './components/EditorTabs';
 import TerminalPanel from './components/TerminalPanel';
 import StatusBar from './components/StatusBar';

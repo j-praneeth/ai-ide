@@ -7,7 +7,7 @@
  */
 
 // Default fallback URL for development
-const DEFAULT_API_URL = 'http://127.0.0.1:8000';
+const DEFAULT_API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000';
 
 // Electron preload script sets window.NEBULA_API_URL with the dynamic port
 // This may be set synchronously before React loads, or asynchronously after
@@ -17,6 +17,7 @@ function getApiUrl() {
     if (configUrl) return configUrl;
     if (window.NEBULA_API_URL) return window.NEBULA_API_URL;
   }
+  if (process.env.REACT_APP_API_URL) return process.env.REACT_APP_API_URL;
   return DEFAULT_API_URL;
 }
 
@@ -26,6 +27,7 @@ function getAuthUrl() {
     if (configUrl) return configUrl;
     if (window.NEBULA_AUTH_URL) return window.NEBULA_AUTH_URL;
   }
+  if (process.env.REACT_APP_AUTH_URL) return process.env.REACT_APP_AUTH_URL;
   return getApiUrl();
 }
 
