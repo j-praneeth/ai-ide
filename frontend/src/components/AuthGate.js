@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { API_URL as API } from '../config';
+import { AUTH_URL as AUTH } from '../config';
 import { applyAxiosAuthHeader, authFetch, getAuthToken, setAuthToken, setAuthUser } from '../lib/auth';
 
 const overlayStyle = {
@@ -74,7 +74,7 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
     }, 5000); // 5 second timeout
 
     try {
-      const res = await fetch(`${API}/auth/status`);
+      const res = await fetch(`${AUTH}/auth/status`);
       clearTimeout(timeout);
       const data = await res.json().catch(() => ({}));
       if (cancelled) return;
@@ -94,7 +94,7 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
       }
 
       if (h && getAuthToken() && dbOk) {
-        const me = await authFetch(`${API}/auth/me`);
+        const me = await authFetch(`${AUTH}/auth/me`);
         const meData = await me.json().catch(() => ({}));
         if (meData?.user) {
           setAuthUser(meData.user);
@@ -120,7 +120,7 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
   const doLogin = async () => {
     setError('');
     try {
-      const res = await axios.post(`${API}/auth/login`, { email, password });
+      const res = await axios.post(`${AUTH}/auth/login`, { email, password });
       const data = res.data || {};
       if (data.error) {
         setError(data.error);

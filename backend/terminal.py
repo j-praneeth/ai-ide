@@ -334,7 +334,7 @@ def cli_status(tool: str = "claude"):
 
 
 @router.post("/run")
-def run_command(command: str, session: str = "default"):
+def run_command(command: str, session: str = "default", shell: str = None):
     """Run a terminal command with persistent cwd tracking per session."""
     # Security: block dangerous commands
     cmd_lower = command.lower()
@@ -400,15 +400,25 @@ def run_command(command: str, session: str = "default"):
             # Not a cd command, run it
             try:
                 if IS_WINDOWS:
-                    # Use PowerShell on Windows for better compatibility
-                    result = subprocess.run(
-                        ["powershell", "-NoProfile", "-Command", remaining],
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                        cwd=cwd,
-                        env=_build_env(),
-                    )
+                    if shell == 'cmd':
+                        result = subprocess.run(
+                            ["cmd.exe", "/c", remaining],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            cwd=cwd,
+                            env=_build_env(),
+                        )
+                    else:
+                        # Default to PowerShell on Windows for better compatibility
+                        result = subprocess.run(
+                            ["powershell", "-NoProfile", "-Command", remaining],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            cwd=cwd,
+                            env=_build_env(),
+                        )
                 else:
                     result = subprocess.run(
                         remaining,

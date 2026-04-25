@@ -11,9 +11,17 @@ const { contextBridge, ipcRenderer } = require('electron');
  * we fetch it via invoke (async) and inject it into the page via a script tag.
  */
 
+let urlConfig = { apiUrl: '', authUrl: '', isProduction: false };
+try {
+  urlConfig = ipcRenderer.sendSync('get-url-config-sync') || urlConfig;
+} catch (_) {}
+
+contextBridge.exposeInMainWorld('NEBULA_CONFIG', urlConfig);
+
 contextBridge.exposeInMainWorld('electronAPI', {
   // Get the backend API URL
   getApiUrl: () => ipcRenderer.invoke('get-api-url'),
+  getAuthUrl: () => ipcRenderer.invoke('get-auth-url'),
 
   // Get the current platform (darwin, win32, linux)
   getPlatform: () => ipcRenderer.invoke('get-platform'),
@@ -39,16 +47,4 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Check if running in Electron
   isElectron: true,
-});
-
-// Inject the API URL into the page as early as possible
-// This runs before the React app loads
-ipcRenderer.invoke('get-api-url').then((apiUrl) => {
-  // Use a script tag to set the global variable in the page context
-  // contextBridge doesn't let us set arbitrary window properties,
-  // so we use webFrame to execute in the page context
-  const { webFrame } = require('electron');
-  webFrame.executeJavaScript(`window.NEBULA_API_URL = "${apiUrl}";`);
-}).catch((err) => {
-  console.error('Failed to get API URL:', err);
 });

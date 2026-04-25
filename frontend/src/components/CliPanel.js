@@ -58,7 +58,16 @@ export default function CliPanel({ visible }) {
 
     term.clear();
     term.writeln('');
-    term.writeln(`\x1b[1;33m  ✦ Starting ${cli === 'claude' ? 'Claude' : 'Codex'} CLI...\x1b[0m`);
+    const label = cli === 'claude'
+      ? 'Claude CLI'
+      : cli === 'codex'
+        ? 'Codex CLI'
+        : cli === 'powershell'
+          ? 'PowerShell'
+          : cli === 'cmd'
+            ? 'Command Prompt'
+            : 'Terminal';
+    term.writeln(`\x1b[1;33m  ✦ Starting ${label}...\x1b[0m`);
 
     if (!window.electronAPI?.startCliSession) {
       term.writeln('\x1b[31m  Electron CLI bridge is not available.\x1b[0m');
@@ -77,6 +86,7 @@ export default function CliPanel({ visible }) {
     }
     term.writeln('\x1b[32m  Connected to terminal.\x1b[0m');
     term.writeln('');
+    term.focus();
 
     try {
       const dims = fitAddonRef.current?.proposeDimensions?.();
@@ -209,6 +219,12 @@ export default function CliPanel({ visible }) {
         >
           <option value="claude">Claude CLI</option>
           <option value="codex">Codex CLI</option>
+          {window.electronAPI?.isElectron && navigator.platform?.startsWith('Win') && (
+            <>
+              <option value="powershell">PowerShell</option>
+              <option value="cmd">Command Prompt</option>
+            </>
+          )}
         </select>
       </div>
       <div className="cli-body" ref={containerRef} style={{ flex: 1, padding: '4px' }} />

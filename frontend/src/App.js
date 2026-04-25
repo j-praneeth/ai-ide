@@ -67,12 +67,6 @@ const MENU_ITEMS = {
     { id: 'edit.find', label: 'Find', shortcut: '⌘ F' },
     { id: 'edit.replace', label: 'Replace', shortcut: '⌘ H' },
   ],
-  Selection: [
-    { id: 'selection.selectAll', label: 'Select All', shortcut: '⌘ A' },
-    { id: 'selection.expandSelection', label: 'Expand Selection', shortcut: '⌘ ⇧ →' },
-    { id: 'selection.copyLineUp', label: 'Copy Line Up', shortcut: '⌘ ⇧ ↑' },
-    { id: 'selection.copyLineDown', label: 'Copy Line Down', shortcut: '⌘ ⇧ ↓' },
-  ],
   View: [
     { id: 'view.commandPalette', label: 'Command Palette', shortcut: '⌘ ⇧ P' },
     { type: 'separator' },
@@ -84,30 +78,7 @@ const MENU_ITEMS = {
     { id: 'view.terminal', label: 'Terminal', shortcut: '⌘ `' },
     { id: 'view.chat', label: 'AI Chat', shortcut: '⌘ L' },
     { type: 'separator' },
-    { id: 'view.sidebar', label: 'Toggle Sidebar', shortcut: '⌘ B' },
     { id: 'view.settings', label: 'Settings', shortcut: '⌘ ,' },
-  ],
-  Go: [
-    { id: 'go.quickOpen', label: 'Go to File', shortcut: '⌘ P' },
-    { id: 'go.goToLine', label: 'Go to Line', shortcut: '⌘ G' },
-    { id: 'go.goToSymbol', label: 'Go to Symbol', shortcut: '⌘ ⇧ O' },
-  ],
-  Run: [
-    { id: 'run.start', label: 'Start Debugging', shortcut: 'F5' },
-    { id: 'run.runNoDebug', label: 'Run Without Debugging', shortcut: '⌘ F5' },
-  ],
-  Terminal: [
-    { id: 'terminal.new', label: 'New Terminal', shortcut: '⌘ ⇧ `' },
-    { id: 'terminal.split', label: 'Split Terminal' },
-    { type: 'separator' },
-    { id: 'terminal.toggle', label: 'Toggle Terminal', shortcut: '⌘ `' },
-  ],
-  Help: [
-    { id: 'help.welcome', label: 'Welcome' },
-    { id: 'help.docs', label: 'Documentation' },
-    { id: 'help.shortcuts', label: 'Keyboard Shortcuts' },
-    { type: 'separator' },
-    { id: 'help.about', label: 'About Nebula IDE' },
   ],
 };
 

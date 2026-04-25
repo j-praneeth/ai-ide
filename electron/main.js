@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, Menu } = require('electron');
 const path = require('path');
 const { spawn, execSync, execFile } = require('child_process');
 const net = require('net');
@@ -25,6 +25,13 @@ const CLI_SPECS = [
   { label: 'Claude CLI', command: 'claude', packageName: '@anthropic-ai/claude-code' },
   { label: 'Codex CLI', command: 'codex', packageName: '@openai/codex' },
 ];
+
+if (process.platform === 'win32') {
+  CLI_SPECS.push(
+    { label: 'PowerShell', command: 'powershell', file: 'powershell.exe', args: ['-NoLogo'] },
+    { label: 'Command Prompt', command: 'cmd', file: 'cmd.exe', args: [] },
+  );
+}
 
 // ─── Utility: Find a free port ──────────────────────────────────
 
@@ -152,6 +159,18 @@ function findGitBash() {
 
 function getCliLaunchConfig(tool) {
   const spec = CLI_SPECS.find((item) => item.command === tool) || CLI_SPECS[0];
+
+  // If it's a direct shell request (powershell/cmd)
+  if (tool === 'powershell' || tool === 'cmd') {
+    return {
+      installed: true,
+      label: spec.label,
+      shellLabel: tool,
+      file: spec.file,
+      args: spec.args || [],
+    };
+  }
+
   const commandPath = resolveCommandPath(spec.command);
   const npmBin = getNpmGlobalBinDir();
   if (npmBin) {
@@ -214,6 +233,7 @@ async function ensureCliToolsInstalled() {
   }
 
   for (const cli of CLI_SPECS) {
+    if (!cli.packageName) continue;
     if (commandExists(cli.command)) {
       console.log(`${cli.label} already installed`);
       continue;
@@ -645,6 +665,7 @@ function createWindow() {
     backgroundColor: '#08090d',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     frame: process.platform !== 'darwin',
+    autoHideMenuBar: true,
     trafficLightPosition: { x: 12, y: 12 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -655,6 +676,14 @@ function createWindow() {
     icon: getAppIcon(),
     show: false,
   });
+
+  try {
+    Menu.setApplicationMenu(null);
+  } catch (_) {}
+  try {
+    mainWindow.setMenuBarVisibility(false);
+    mainWindow.setMenu(null);
+  } catch (_) {}
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:3000');
@@ -700,6 +729,22 @@ function getAppIcon() {
 
 ipcMain.handle('get-api-url', () => {
   return `http://127.0.0.1:${backendPort}`;
+});
+
+ipcMain.handle('get-auth-url', () => {
+  const isProduction = !isDev && app.isPackaged;
+  const productionUrl = process.env.NEBULA_AUTH_URL || 'https://api.nebula-ide.com';
+  const developmentUrl = process.env.NEBULA_AUTH_URL_DEV || `http://127.0.0.1:${backendPort}`;
+  return isProduction ? productionUrl : developmentUrl;
+});
+
+ipcMain.on('get-url-config-sync', (event) => {
+  const apiUrl = `http://127.0.0.1:${backendPort}`;
+  const isProduction = !isDev && app.isPackaged;
+  const productionAuthUrl = process.env.NEBULA_AUTH_URL || 'https://api.nebula-ide.com';
+  const developmentAuthUrl = process.env.NEBULA_AUTH_URL_DEV || apiUrl;
+  const authUrl = isProduction ? productionAuthUrl : developmentAuthUrl;
+  event.returnValue = { apiUrl, authUrl, isProduction };
 });
 
 ipcMain.handle('get-platform', () => {

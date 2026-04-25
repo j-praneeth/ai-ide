@@ -46,7 +46,7 @@ const TERM_OPTIONS = {
   allowProposedApi: true,
 };
 
-function initTerminal(container, sessionId, onOutput) {
+function initTerminal(container, sessionId, shell, onOutput) {
   const term = new Terminal(TERM_OPTIONS);
   const fit = new FitAddon();
   const inputBuffer = { current: '' };
@@ -81,7 +81,7 @@ function initTerminal(container, sessionId, onOutput) {
         return;
       }
       const res = await axios.post(`${API}/terminal/run`, null, {
-        params: { command, session: sessionId }
+        params: { command, session: sessionId, shell }
       });
       const output = res.data.output || res.data.error || '';
       if (onOutput) onOutput({ time: new Date().toLocaleTimeString(), command, output });
@@ -138,12 +138,14 @@ function initTerminal(container, sessionId, onOutput) {
 export default function TerminalPanel({ visible, onClose, onResize }) {
   // Detect shell name from platform
   const shellName = (window.electronAPI?.isElectron && navigator.platform?.startsWith('Win')) ? 'powershell' : 'zsh';
-  const [terminals, setTerminals] = useState([{ id: 1, name: shellName }]);
+  const isWindows = navigator.platform?.startsWith('Win');
+  const [terminals, setTerminals] = useState([{ id: 1, name: shellName, shell: shellName }]);
   const [activeTermId, setActiveTermId] = useState(1);
   const [viewTab, setViewTab] = useState('terminals');
   const [splitMode, setSplitMode] = useState(false);
   const [problems] = useState([]);
   const [outputLogs, setOutputLogs] = useState([]);
+  const [showShellMenu, setShowShellMenu] = useState(false);
 
   const nextId = useRef(2);
   const instances = useRef(new Map());
@@ -154,14 +156,15 @@ export default function TerminalPanel({ visible, onClose, onResize }) {
     if (!el) return;
     containers.current.set(id, el);
     if (!instances.current.has(id)) {
-      const sessionId = `term-${id}`;
-      const inst = initTerminal(el, sessionId, (log) => onOutputRef.current(log));
+      const terminal = terminals.find(t => t.id === id);
+      const sessionId = `term-${id}-${terminal?.shell || 'default'}`;
+      const inst = initTerminal(el, sessionId, terminal?.shell, (log) => onOutputRef.current(log));
       instances.current.set(id, inst);
       setTimeout(() => {
         try { inst.fitAddon.fit(); } catch (_) {}
       }, 100);
     }
-  }, []);
+  }, [terminals]);
 
   // Fit active terminal on visibility/resize changes
   useEffect(() => {
@@ -197,17 +200,19 @@ export default function TerminalPanel({ visible, onClose, onResize }) {
     return () => window.removeEventListener('resize', handleResize);
   }, [activeTermId, splitMode, terminals]);
 
-  const addTerminal = useCallback(() => {
+  const addTerminal = useCallback((specificShell) => {
     const id = nextId.current++;
-    setTerminals(prev => [...prev, { id, name: `${shellName} ${id}` }]);
+    const s = specificShell || shellName;
+    setTerminals(prev => [...prev, { id, name: `${s} ${id}`, shell: s }]);
     setActiveTermId(id);
     setViewTab('terminals');
     setSplitMode(false);
+    setShowShellMenu(false);
   }, [shellName]);
 
   const splitTerminal = useCallback(() => {
     const id = nextId.current++;
-    setTerminals(prev => [...prev, { id, name: `${shellName} ${id}` }]);
+    setTerminals(prev => [...prev, { id, name: `${shellName} ${id}`, shell: shellName }]);
     setActiveTermId(id);
     setViewTab('terminals');
     setSplitMode(true);
@@ -228,7 +233,7 @@ export default function TerminalPanel({ visible, onClose, onResize }) {
         const newId = nextId.current++;
         setActiveTermId(newId);
         setSplitMode(false);
-        return [{ id: newId, name: shellName }];
+        return [{ id: newId, name: shellName, shell: shellName }];
       }
       setActiveTermId(curr => {
         if (curr === id) {
@@ -270,9 +275,41 @@ export default function TerminalPanel({ visible, onClose, onResize }) {
               )}
             </div>
           ))}
-          <button type="button" className="terminal-tab terminal-tab-add" title="New Terminal" onClick={addTerminal}>
-            <VscAdd size={14} />
-          </button>
+          <div style={{ position: 'relative' }}>
+            <button type="button" className="terminal-tab terminal-tab-add" title="New Terminal" onClick={() => setShowShellMenu(!showShellMenu)}>
+              <VscAdd size={14} />
+            </button>
+            {showShellMenu && (
+              <div className="shell-selection-menu" style={{
+                position: 'absolute',
+                bottom: '100%',
+                left: 0,
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border)',
+                borderRadius: '4px',
+                padding: '4px 0',
+                zIndex: 100,
+                minWidth: '150px',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                marginBottom: '4px'
+              }}>
+                 {isWindows ? (
+                   <>
+                     <div className="shell-menu-item" onClick={() => addTerminal('powershell')} style={{ padding: '6px 12px', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                       <span style={{ color: 'var(--blue)' }}>&#x2B24;</span> PowerShell
+                     </div>
+                     <div className="shell-menu-item" onClick={() => addTerminal('cmd')} style={{ padding: '6px 12px', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                       <span style={{ color: 'var(--text-secondary)' }}>&#x2B24;</span> Command Prompt
+                     </div>
+                   </>
+                 ) : (
+                  <div className="shell-menu-item" onClick={() => addTerminal('zsh')} style={{ padding: '6px 12px', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ color: 'var(--green)' }}>&#x2B24;</span> Zsh
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           <div style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 6px', flexShrink: 0 }} />
           <div className={`terminal-tab ${viewTab === 'problems' ? 'active' : ''}`} onClick={() => setViewTab('problems')}>
             <span>Problems</span>

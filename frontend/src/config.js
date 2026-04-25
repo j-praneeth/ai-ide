@@ -12,10 +12,21 @@ const DEFAULT_API_URL = 'http://127.0.0.1:8000';
 // Electron preload script sets window.NEBULA_API_URL with the dynamic port
 // This may be set synchronously before React loads, or asynchronously after
 function getApiUrl() {
-  if (typeof window !== 'undefined' && window.NEBULA_API_URL) {
-    return window.NEBULA_API_URL;
+  if (typeof window !== 'undefined') {
+    const configUrl = window.NEBULA_CONFIG?.apiUrl;
+    if (configUrl) return configUrl;
+    if (window.NEBULA_API_URL) return window.NEBULA_API_URL;
   }
   return DEFAULT_API_URL;
+}
+
+function getAuthUrl() {
+  if (typeof window !== 'undefined') {
+    const configUrl = window.NEBULA_CONFIG?.authUrl;
+    if (configUrl) return configUrl;
+    if (window.NEBULA_AUTH_URL) return window.NEBULA_AUTH_URL;
+  }
+  return getApiUrl();
 }
 
 // Export a static value for components that import at module level
@@ -23,9 +34,10 @@ function getApiUrl() {
 // 1. In Electron: preload injects NEBULA_API_URL before the app loads
 // 2. In browser dev: falls back to default localhost URL
 const API_URL = getApiUrl();
+const AUTH_URL = getAuthUrl();
 
 // Whether we're running inside Electron
 const IS_ELECTRON = typeof window !== 'undefined' && !!(window.electronAPI);
 
-export { API_URL, IS_ELECTRON, getApiUrl };
+export { API_URL, AUTH_URL, IS_ELECTRON, getApiUrl, getAuthUrl };
 export default API_URL;
