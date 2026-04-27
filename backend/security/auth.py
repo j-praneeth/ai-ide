@@ -65,6 +65,14 @@ def create_user(email: str, password: str, role: str) -> User:
     user_id = str(uuid.uuid4())
     salt, pw_hash, iters = hash_password(password)
     now = utcnow()
+
+    # If an admin has configured Claude CLI access, provision new users automatically.
+    try:
+        from admin_config import get_claude_cli_config
+        claude_cfg = get_claude_cli_config()
+    except Exception:
+        claude_cfg = None
+
     users_collection().insert_one(
         {
             "_id": user_id,
@@ -74,6 +82,14 @@ def create_user(email: str, password: str, role: str) -> User:
             "password_iters": int(iters),
             "role": role,
             "created_at": now,
+            **(
+                {
+                    "claude_cli_provisioned": True,
+                    "claude_cli_provisioned_at": now,
+                }
+                if claude_cfg
+                else {}
+            ),
         }
     )
     return User(id=user_id, email=(email or "").strip().lower(), role=role)

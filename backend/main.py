@@ -25,6 +25,7 @@ from security.routes import router as auth_router
 from security.middleware import AuthMiddleware
 from usage.routes import router as usage_router
 from db.mongo import init_mongo
+from admin_routes import router as admin_router
 
 logger = logging.getLogger("nebula.main")
 
@@ -139,6 +140,7 @@ app.include_router(ai_router, prefix="/ai")
 app.include_router(mobile_router, prefix="/mobile")
 app.include_router(auth_router)
 app.include_router(usage_router)
+app.include_router(admin_router)
 
 app.add_api_route("/mobile/relay/qr", relay_qr, methods=["GET"])
 

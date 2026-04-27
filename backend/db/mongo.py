@@ -67,6 +67,10 @@ def audit_events_collection() -> Collection:
     return get_db()["audit_events"]
 
 
+def app_config_collection() -> Collection:
+    return get_db()["app_config"]
+
+
 def init_mongo() -> None:
     """
     Attempt to initialize the database connection.

@@ -10,6 +10,8 @@ import {
   VscGraph,
 } from 'react-icons/vsc';
 import { getAuthUser, logout } from '../lib/auth';
+import { AUTH_URL as AUTH } from '../config';
+import { startSsoLogin as startSsoLoginFlow } from '../lib/sso';
 
 const ACTIVITY_ITEMS = [
   { id: 'explorer', icon: VscFiles, label: 'Explorer (⌘⇧E)' },
@@ -79,7 +81,9 @@ export default function ActivityBar({ activePanel, onPanelChange, chatOpen, onTo
       loginBtn.onmouseenter = () => loginBtn.style.background = 'var(--bg-surface)';
       loginBtn.onmouseleave = () => loginBtn.style.background = 'transparent';
       loginBtn.onclick = () => {
-        window.location.search = '?login=true';
+        startSsoLoginFlow(AUTH, { redirectUri: 'nebula://auth' }).catch(() => {
+          window.location.search = '?login=true';
+        });
         menu.remove();
       };
       menu.appendChild(loginBtn);

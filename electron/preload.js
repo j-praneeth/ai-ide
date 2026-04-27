@@ -29,8 +29,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Open a native folder picker dialog
   openFolderDialog: () => ipcRenderer.invoke('open-folder-dialog'),
 
+  // SSO deep-link callback
+  getPendingAuthCallback: () => ipcRenderer.invoke('auth:get-pending-callback'),
+  onAuthCallback: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('auth:callback', wrapped);
+    return () => ipcRenderer.removeListener('auth:callback', wrapped);
+  },
+
+  // Open external URLs in the user's default browser
+  openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
+
   // Right-side CLI PTY integration
-  startCliSession: (tool) => ipcRenderer.invoke('cli:start', tool),
+  startCliSession: (tool, options) => ipcRenderer.invoke('cli:start', tool, options),
   writeCliSession: (sessionId, data) => ipcRenderer.invoke('cli:write', sessionId, data),
   resizeCliSession: (sessionId, cols, rows) => ipcRenderer.invoke('cli:resize', sessionId, cols, rows),
   closeCliSession: (sessionId) => ipcRenderer.invoke('cli:close', sessionId),

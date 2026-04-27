@@ -22,6 +22,7 @@ _ALLOWLIST_PREFIXES: tuple[str, ...] = (
     "/openapi.json",
     "/mobile",  # mobile companion uses its own session token
     "/terminal/cli/data",  # Electron relays PTY data without auth headers
+    "/terminal/cli/env",  # Desktop can request admin-provisioned CLI env (loopback-only enforced in handler)
 )
 
 

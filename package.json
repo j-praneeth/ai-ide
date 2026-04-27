@@ -35,6 +35,14 @@
     "asarUnpack": [
       "**/node_modules/node-pty/**/*"
     ],
+    "protocols": [
+      {
+        "name": "Nebula IDE",
+        "schemes": [
+          "nebula"
+        ]
+      }
+    ],
     "files": [
       "electron/**/*",
       "frontend/build/**/*",

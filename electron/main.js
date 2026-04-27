@@ -15,6 +15,67 @@ let splashWindow = null;
 let cliSessionCounter = 0;
 const cliSessions = new Map();
 
+// ─── Deep-link / SSO callback handling ──────────────────────────
+const APP_PROTOCOL = 'nebula';
+let pendingAuthCallbackUrl = null;
+
+function _loadPackagedDotEnv() {
+  try {
+    if (!app.isPackaged) return;
+    const resourcesRoot = process.resourcesPath || '';
+    if (!resourcesRoot) return;
+    loadDotEnvFile(path.join(resourcesRoot, 'backend', '.env'));
+    loadDotEnvFile(path.join(resourcesRoot, 'backend-src', '.env'));
+  } catch (_) {}
+}
+
+function _extractDeepLinkFromArgv(argv) {
+  try {
+    return (argv || []).find((a) => typeof a === 'string' && a.startsWith(`${APP_PROTOCOL}://`)) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function handleAuthCallbackUrl(url) {
+  if (!url) return;
+  pendingAuthCallbackUrl = url;
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('auth:callback', { url });
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  } catch (_) {}
+}
+
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const url = _extractDeepLinkFromArgv(argv);
+    if (url) handleAuthCallbackUrl(url);
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    } catch (_) {}
+  });
+}
+
+app.on('open-url', (event, url) => {
+  try { event.preventDefault(); } catch (_) {}
+  handleAuthCallbackUrl(url);
+});
+
+// Capture deep link when the app is launched via protocol (Windows/Linux).
+const _initialDeepLink = _extractDeepLinkFromArgv(process.argv);
+if (_initialDeepLink) {
+  pendingAuthCallbackUrl = _initialDeepLink;
+}
+
 // Determine if we're in development or production
 const isDev = process.env.ELECTRON_DEV === 'true' || !app.isPackaged;
 
@@ -47,6 +108,7 @@ function loadDotEnvFile(filePath) {
 
 loadDotEnvFile(path.join(__dirname, '..', 'backend', '.env'));
 loadDotEnvFile(path.join(__dirname, '..', 'backend-src', '.env'));
+_loadPackagedDotEnv();
 const CLI_SPECS = [
   { label: 'Claude CLI', command: 'claude', packageName: '@anthropic-ai/claude-code' },
   { label: 'Codex CLI', command: 'codex', packageName: '@openai/codex' },
@@ -212,6 +274,20 @@ function getCliLaunchConfig(tool) {
     };
   }
 
+  // Codex on Windows is often registered as an App Execution Alias under WindowsApps.
+  // The resolved path from `where codex` may be non-executable for this process, so
+  // we start an interactive PowerShell PTY and then run `codex` inside it.
+  if (process.platform === 'win32' && tool === 'codex') {
+    return {
+      installed: true,
+      label: spec.label,
+      shellLabel: 'powershell',
+      file: 'powershell.exe',
+      args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit'],
+      bootstrapInput: 'codex\r',
+    };
+  }
+
   if (process.platform === 'win32' && tool === 'claude') {
     const gitBash = findGitBash();
     if (gitBash) {
@@ -221,6 +297,30 @@ function getCliLaunchConfig(tool) {
         shellLabel: 'git-bash',
         file: gitBash,
         args: ['-lc', 'claude'],
+      };
+    }
+  }
+
+  // On Windows, many npm-installed CLIs are shimmed via `.cmd` / `.bat` / `.ps1`.
+  // Spawn them via `cmd.exe` / `powershell.exe` for reliability with node-pty.
+  if (process.platform === 'win32' && commandPath) {
+    const lower = commandPath.toLowerCase();
+    if (lower.endsWith('.cmd') || lower.endsWith('.bat')) {
+      return {
+        installed: true,
+        label: spec.label,
+        shellLabel: 'cmd',
+        file: 'cmd.exe',
+        args: ['/d', '/s', '/c', `"${commandPath}"`],
+      };
+    }
+    if (lower.endsWith('.ps1')) {
+      return {
+        installed: true,
+        label: spec.label,
+        shellLabel: 'powershell',
+        file: 'powershell.exe',
+        args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', commandPath],
       };
     }
   }
@@ -725,6 +825,23 @@ function createWindow() {
     mainWindow.focus();
   });
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (pendingAuthCallbackUrl) {
+      handleAuthCallbackUrl(pendingAuthCallbackUrl);
+    }
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    try {
+      if (!url || typeof url !== 'string') return;
+      const isFile = url.startsWith('file://');
+      const isDevApp = isDev && (url.startsWith('http://localhost:3000') || url.startsWith('http://127.0.0.1:3000'));
+      if (isFile || isDevApp) return;
+      event.preventDefault();
+      shell.openExternal(url);
+    } catch (_) {}
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
@@ -759,7 +876,7 @@ ipcMain.handle('get-api-url', () => {
 
 ipcMain.handle('get-auth-url', () => {
   const isProduction = !isDev && app.isPackaged;
-  const productionUrl = process.env.NEBULA_AUTH_URL || 'https://api.nebula-ide.com';
+  const productionUrl = process.env.NEBULA_AUTH_URL || 'https://nebula-ide-server.up.railway.app';
   const developmentUrl = process.env.NEBULA_AUTH_URL_DEV || `http://127.0.0.1:${backendPort}`;
   return isProduction ? productionUrl : developmentUrl;
 });
@@ -767,7 +884,7 @@ ipcMain.handle('get-auth-url', () => {
 ipcMain.on('get-url-config-sync', (event) => {
   const apiUrl = `http://127.0.0.1:${backendPort}`;
   const isProduction = !isDev && app.isPackaged;
-  const productionAuthUrl = process.env.NEBULA_AUTH_URL || 'https://api.nebula-ide.com';
+  const productionAuthUrl = process.env.NEBULA_AUTH_URL || 'https://nebula-ide-server.up.railway.app';
   const developmentAuthUrl = process.env.NEBULA_AUTH_URL_DEV || apiUrl;
   const authUrl = isProduction ? productionAuthUrl : developmentAuthUrl;
   event.returnValue = { apiUrl, authUrl, isProduction };
@@ -783,12 +900,88 @@ ipcMain.handle('open-folder-dialog', async () => {
     title: 'Open Folder',
   });
   if (!result.canceled && result.filePaths.length > 0) {
-    return result.filePaths[0];
+    const selected = result.filePaths[0];
+    setCurrentProjectRoot(selected);
+    return selected;
   }
   return null;
 });
 
-ipcMain.handle('cli:start', (event, tool = 'claude') => {
+ipcMain.handle('project:set-root', async (_event, folderPath) => {
+  const ok = setCurrentProjectRoot(folderPath);
+  return { ok, projectRoot: currentProjectRoot };
+});
+
+ipcMain.handle('auth:get-pending-callback', () => {
+  const url = pendingAuthCallbackUrl;
+  pendingAuthCallbackUrl = null;
+  return url;
+});
+
+ipcMain.handle('shell:open-external', async (_event, url) => {
+  try {
+    if (typeof url !== 'string' || !url.trim()) return { ok: false, error: 'Invalid URL' };
+    const u = new URL(url);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, error: 'Blocked URL protocol' };
+    await shell.openExternal(url);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || 'Failed to open URL' };
+  }
+});
+
+function fetchCliEnv(tool, authToken) {
+  return new Promise((resolve) => {
+    try {
+      const t = (tool || 'claude').toString().toLowerCase();
+      if (!backendPort || !t) return resolve({ env: {}, status: 0, error: 'Backend not ready' });
+
+      const pathUrl = `/terminal/cli/env?tool=${encodeURIComponent(t)}`;
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: backendPort,
+        path: pathUrl,
+        method: 'GET',
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      }, (res) => {
+        let raw = '';
+        res.on('data', (c) => { raw += c.toString('utf-8'); });
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(raw || '{}') || {};
+            const env = parsed.env && typeof parsed.env === 'object' ? parsed.env : {};
+            const error = typeof parsed.error === 'string' ? parsed.error : '';
+
+            // Only allow a tight set of env keys to be injected into spawned shells.
+            const allowed = new Set([
+              'ANTHROPIC_API_KEY',
+              'CLAUDE_CODE_OAUTH_TOKEN',
+            ]);
+            const filtered = {};
+            for (const [k, v] of Object.entries(env)) {
+              if (!allowed.has(k)) continue;
+              if (typeof v !== 'string') continue;
+              filtered[k] = v;
+            }
+            resolve({ env: filtered, status: res.statusCode || 0, error });
+          } catch (_) {
+            resolve({ env: {}, status: res.statusCode || 0, error: 'Invalid response from backend' });
+          }
+        });
+      });
+      req.on('error', () => resolve({ env: {}, status: 0, error: 'Failed to reach backend' }));
+      req.setTimeout(2000, () => {
+        try { req.destroy(); } catch (_) {}
+        resolve({ env: {}, status: 0, error: 'Backend request timed out' });
+      });
+      req.end();
+    } catch (_) {
+      resolve({ env: {}, status: 0, error: 'Failed to request CLI env' });
+    }
+  });
+}
+
+ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
   const launch = getCliLaunchConfig(tool);
 
   if (!launch.installed) {
@@ -801,21 +994,77 @@ ipcMain.handle('cli:start', (event, tool = 'claude') => {
   }
 
   const sessionId = `cli-${++cliSessionCounter}`;
-  const env = { ...process.env, TERM: 'xterm-256color' };
-  const ptyProcess = pty.spawn(launch.file, launch.args, {
-    name: 'xterm-color',
-    cols: 120,
-    rows: 32,
-    cwd: app.getPath('home'),
-    env,
-  });
+  const authToken = options && typeof options === 'object' ? (options.authToken || '') : '';
+  const normalizedTool = (tool || 'claude').toString().toLowerCase();
+
+  if (normalizedTool === 'claude' && !authToken) {
+    return {
+      ok: false,
+      installed: true,
+      message: 'Login required to use Claude CLI.',
+      shell: launch.shellLabel,
+    };
+  }
+
+  const cliEnvRes = await fetchCliEnv(normalizedTool, authToken);
+  const extraEnv = (cliEnvRes && typeof cliEnvRes === 'object' && cliEnvRes.env) ? cliEnvRes.env : {};
+
+  if (normalizedTool === 'claude') {
+    if ((cliEnvRes.status || 0) === 401) {
+      return {
+        ok: false,
+        installed: true,
+        message: 'Login required to use Claude CLI.',
+        shell: launch.shellLabel,
+      };
+    }
+  }
+
+  const env = { ...process.env, TERM: 'xterm-256color', ...extraEnv };
+  const requestedCwd = options && typeof options === 'object'
+    ? (options.cwd || options.projectRoot || '')
+    : '';
+  const sessionCwd = typeof requestedCwd === 'string' ? requestedCwd.trim() : '';
+  const cwd = (sessionCwd && fs.existsSync(sessionCwd))
+    ? sessionCwd
+    : ((currentProjectRoot && fs.existsSync(currentProjectRoot)) ? currentProjectRoot : app.getPath('home'));
+
+  let ptyProcess = null;
+  try {
+    ptyProcess = pty.spawn(launch.file, launch.args, {
+      name: 'xterm-color',
+      cols: 120,
+      rows: 32,
+      cwd,
+      env,
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      installed: true,
+      message: e?.message ? `Failed to start ${launch.label}: ${e.message}` : `Failed to start ${launch.label}.`,
+      shell: launch.shellLabel,
+    };
+  }
+
+  const ptyCommandLine = `${launch.file} ${(launch.args || []).join(' ')}`.trim();
+  console.log(`CLI PTY spawn: ${ptyCommandLine}`);
+
+  const ptyProcessRef = ptyProcess;
+  if (launch && typeof launch.bootstrapInput === 'string' && launch.bootstrapInput) {
+    setTimeout(() => {
+      try {
+        ptyProcessRef.write(launch.bootstrapInput);
+      } catch (_) {}
+    }, 250);
+  }
 
   cliSessions.set(sessionId, {
-    ptyProcess,
+    ptyProcess: ptyProcessRef,
     sender: event.sender,
   });
 
-  ptyProcess.onData((data) => {
+  ptyProcessRef.onData((data) => {
     if (!event.sender.isDestroyed()) {
       event.sender.send('cli:data', { sessionId, data });
     }
@@ -838,7 +1087,7 @@ ipcMain.handle('cli:start', (event, tool = 'claude') => {
     }
   });
 
-  ptyProcess.onExit((exitEvent) => {
+  ptyProcessRef.onExit((exitEvent) => {
     if (!event.sender.isDestroyed()) {
       event.sender.send('cli:exit', { sessionId, ...exitEvent });
     }
@@ -878,8 +1127,27 @@ ipcMain.handle('cli:close', (event, sessionId) => {
 
 app.whenReady().then(async () => {
   try {
+    try {
+      if (process.defaultApp) {
+        if (process.argv.length >= 2) {
+          app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+        }
+      } else {
+        app.setAsDefaultProtocolClient(APP_PROTOCOL);
+      }
+    } catch (_) {}
+
     // Show splash screen
     createSplashWindow('Starting IDE...');
+
+    // Restore last opened folder session (if any)
+    try {
+      const s = readSessionState();
+      const last = s && typeof s.lastProjectRoot === 'string' ? s.lastProjectRoot.trim() : '';
+      if (last && fs.existsSync(last)) {
+        currentProjectRoot = last;
+      }
+    } catch (_) {}
 
     // Ensure the CLI tools exist before the backend/terminal sessions use them.
     await ensureCliToolsInstalled();

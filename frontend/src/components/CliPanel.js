@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+import { AUTH_URL as AUTH } from '../config';
+import { getAuthToken } from '../lib/auth';
+import { startSsoLogin as startSsoLoginFlow } from '../lib/sso';
 
 const TERM_THEME = {
   background: '#08090d',
@@ -43,6 +46,21 @@ export default function CliPanel({ visible }) {
       return 'claude';
     }
   });
+  const [authToken, setAuthTokenState] = useState(() => getAuthToken());
+
+  useEffect(() => {
+    const onStorage = () => setAuthTokenState(getAuthToken());
+    window.addEventListener('storage', onStorage);
+    // Same-tab updates won't fire storage; poll lightly when visible.
+    let t = null;
+    if (visible) {
+      t = setInterval(() => setAuthTokenState(getAuthToken()), 750);
+    }
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      if (t) clearInterval(t);
+    };
+  }, [visible]);
 
   const cleanupSession = useCallback(async () => {
     if (sessionIdRef.current && window.electronAPI?.closeCliSession) {
@@ -74,7 +92,11 @@ export default function CliPanel({ visible }) {
       return;
     }
 
-    const result = await window.electronAPI.startCliSession(cli);
+    const startPromise = window.electronAPI.startCliSession(cli, { authToken });
+    const timeoutPromise = new Promise((resolve) => {
+      setTimeout(() => resolve({ ok: false, message: 'CLI start timed out. Try re-selecting the tool or restarting the app.' }), 8000);
+    });
+    const result = await Promise.race([startPromise, timeoutPromise]);
     if (!result?.ok) {
       term.writeln(`\x1b[31m  ${result?.message || 'Failed to start CLI session.'}\x1b[0m`);
       return;
@@ -94,7 +116,7 @@ export default function CliPanel({ visible }) {
         await window.electronAPI.resizeCliSession(sessionIdRef.current, dims.cols, dims.rows);
       }
     } catch (_) {}
-  }, [cleanupSession]);
+  }, [cleanupSession, authToken]);
 
   const initTerm = useCallback(() => {
     if (!containerRef.current || termRef.current) return;
@@ -106,6 +128,21 @@ export default function CliPanel({ visible }) {
     
     termRef.current = term;
     fitAddonRef.current = fit;
+
+    if (!unsubscribeDataRef.current && window.electronAPI?.onCliData) {
+      unsubscribeDataRef.current = window.electronAPI.onCliData(({ sessionId, data }) => {
+        if (sessionId !== sessionIdRef.current || !termRef.current) return;
+        termRef.current.write(data.replace(/\r?\n/g, '\r\n'));
+      });
+    }
+
+    if (!unsubscribeExitRef.current && window.electronAPI?.onCliExit) {
+      unsubscribeExitRef.current = window.electronAPI.onCliExit(({ sessionId }) => {
+        if (sessionId !== sessionIdRef.current || !termRef.current) return;
+        termRef.current.writeln('\r\n\x1b[33m  CLI session ended. Re-select the tool to restart.\x1b[0m');
+        sessionIdRef.current = null;
+      });
+    }
 
     connectCliSession(term, selectedCli);
 
@@ -135,33 +172,9 @@ export default function CliPanel({ visible }) {
     }
   }, [visible, initTerm]);
 
-  useEffect(() => {
-    if (unsubscribeDataRef.current) {
-      unsubscribeDataRef.current();
-    }
-    if (unsubscribeExitRef.current) {
-      unsubscribeExitRef.current();
-    }
-
-    if (window.electronAPI?.onCliData) {
-      unsubscribeDataRef.current = window.electronAPI.onCliData(({ sessionId, data }) => {
-        if (sessionId !== sessionIdRef.current || !termRef.current) return;
-        termRef.current.write(data.replace(/\r?\n/g, '\r\n'));
-      });
-    }
-
-    if (window.electronAPI?.onCliExit) {
-      unsubscribeExitRef.current = window.electronAPI.onCliExit(({ sessionId }) => {
-        if (sessionId !== sessionIdRef.current || !termRef.current) return;
-        termRef.current.writeln('\r\n\x1b[33m  CLI session ended. Re-select the tool to restart.\x1b[0m');
-        sessionIdRef.current = null;
-      });
-    }
-
-    return () => {
-      if (unsubscribeDataRef.current) unsubscribeDataRef.current();
-      if (unsubscribeExitRef.current) unsubscribeExitRef.current();
-    };
+  useEffect(() => () => {
+    if (unsubscribeDataRef.current) unsubscribeDataRef.current();
+    if (unsubscribeExitRef.current) unsubscribeExitRef.current();
   }, []);
 
   useEffect(() => {
@@ -199,6 +212,40 @@ export default function CliPanel({ visible }) {
   };
 
   if (!visible) return null;
+
+  if (!window.electronAPI?.startCliSession) {
+    return (
+      <div style={{ height: '100%', display: 'grid', placeItems: 'center', background: 'var(--bg-deep)', padding: 18 }}>
+        <div style={{ width: 560, maxWidth: '95vw', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 12, padding: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 900, color: 'var(--text-primary)' }}>CLI is available in the Desktop app</div>
+          <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+            The embedded CLI panel requires the Electron desktop build. In a browser build, local CLIs cannot be spawned.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!authToken) {
+    const startSsoLogin = () => {
+      startSsoLoginFlow(AUTH, { redirectUri: 'nebula://auth' }).catch(() => {});
+    };
+    return (
+      <div style={{ height: '100%', display: 'grid', placeItems: 'center', background: 'var(--bg-deep)', padding: 18 }}>
+        <div style={{ width: 520, maxWidth: '95vw', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 12, padding: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 900, color: 'var(--text-primary)' }}>CLI access requires login</div>
+          <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+            Please authenticate to use the CLI tools.
+          </div>
+          <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+            <button type="button" onClick={startSsoLogin} style={{ background: 'var(--accent)', color: '#071018', border: 'none', borderRadius: 8, padding: '10px 12px', fontWeight: 800, cursor: 'pointer', fontSize: 13 }}>
+              Login
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="cli-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-deep)' }}>

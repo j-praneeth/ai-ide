@@ -1,12 +1,18 @@
 import logging
+import secrets
+import time
+import html as _html
+from urllib.parse import urlencode
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi import Form
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 logger = logging.getLogger("security.routes")
 
 from .auth import (
     ROLE_SUPER_ADMIN,
     ROLE_USER,
+    User,
     authenticate,
     create_user,
     get_user_for_token,
@@ -18,6 +24,129 @@ from .auth import (
 from .middleware import get_request_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+_SSO_CODE_TTL_SECONDS = 180
+_sso_codes: dict[str, dict] = {}
+
+
+def _sso_prune() -> None:
+    now = time.time()
+    expired = [k for k, v in list(_sso_codes.items()) if (v or {}).get("exp", 0) <= now]
+    for k in expired:
+        _sso_codes.pop(k, None)
+
+
+def _safe_redirect_uri(value: str) -> str:
+    """
+    Only allow redirects to our custom protocol (desktop deep link).
+    """
+    v = (value or "").strip()
+    if v.startswith("nebula://"):
+        return v
+    return "nebula://auth"
+
+
+@router.get("/sso/start")
+def sso_start(redirect_uri: str = "nebula://auth", state: str = "", error: str = ""):
+    redirect_uri = _safe_redirect_uri(redirect_uri)
+    state = (state or "").strip()[:200]
+    show_error = (error or "").strip() == "1"
+    redirect_uri_esc = _html.escape(redirect_uri, quote=True)
+    state_esc = _html.escape(state, quote=True)
+    html = f"""
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nebula IDE – Sign In</title>
+    <style>
+      :root {{ color-scheme: dark; }}
+      body {{ margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background: #0b0c10; color: #e5e7eb; }}
+      .wrap {{ min-height: 100vh; display: grid; place-items: center; padding: 24px; }}
+      .card {{ width: 420px; max-width: 95vw; background: #0f1118; border: 1px solid #232634; border-radius: 14px; padding: 18px; box-shadow: 0 18px 60px rgba(0,0,0,0.55); }}
+      .title {{ font-weight: 900; font-size: 16px; }}
+      .sub {{ margin-top: 6px; font-size: 12px; color: #9aa3b2; line-height: 1.4; }}
+      label {{ display: block; margin-top: 12px; font-size: 12px; color: #9aa3b2; }}
+      input {{ width: 100%; margin-top: 6px; background: #0b0c10; color: #e5e7eb; border: 1px solid #232634; border-radius: 10px; padding: 10px 12px; outline: none; }}
+      button {{ margin-top: 14px; width: 100%; background: #f59e0b; color: #071018; border: none; border-radius: 10px; padding: 10px 12px; font-weight: 900; cursor: pointer; }}
+      .hint {{ margin-top: 10px; font-size: 11px; color: #778199; }}
+      .err {{ margin-top: 10px; font-size: 12px; color: #f87171; font-weight: 700; }}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <div class="title">Sign in to Nebula IDE</div>
+        <div class="sub">This will open the desktop app automatically after sign-in.</div>
+        <form method="post" action="/auth/sso/login">
+          <input type="hidden" name="redirect_uri" value="{redirect_uri_esc}" />
+          <input type="hidden" name="state" value="{state_esc}" />
+          <label>Email</label>
+          <input name="email" autocomplete="username" autofocus />
+          <label>Password</label>
+          <input name="password" type="password" autocomplete="current-password" />
+          <button type="submit">Sign In</button>
+        </form>
+        {('<div class="err">Invalid email or password.</div>' if show_error else '')}
+        <div class="hint">If the app does not open, make sure Nebula IDE is installed.</div>
+      </div>
+    </div>
+  </body>
+</html>
+"""
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/sso/login")
+def sso_login(
+    email: str = Form(default=""),
+    password: str = Form(default=""),
+    redirect_uri: str = Form(default="nebula://auth"),
+    state: str = Form(default=""),
+):
+    redirect_uri = _safe_redirect_uri(redirect_uri)
+    state = (state or "").strip()[:200]
+
+    _sso_prune()
+    user = authenticate((email or "").strip(), (password or "").strip())
+    if not user:
+        # Redirect back to start with a simple error flag (keeps this flow lightweight).
+        qs = urlencode({"redirect_uri": redirect_uri, "state": state, "error": "1"})
+        return RedirectResponse(url=f"/auth/sso/start?{qs}", status_code=302)
+
+    code = secrets.token_urlsafe(24)
+    _sso_codes[code] = {"user_id": user.id, "exp": time.time() + _SSO_CODE_TTL_SECONDS}
+
+    sep = "&" if "?" in redirect_uri else "?"
+    qs = urlencode({"code": code, "state": state})
+    return RedirectResponse(url=f"{redirect_uri}{sep}{qs}", status_code=302)
+
+
+@router.post("/sso/exchange")
+async def sso_exchange(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    code = ""
+    if isinstance(body, dict):
+        code = (body.get("code") or "").strip()
+
+    _sso_prune()
+    record = _sso_codes.pop(code, None) if code else None
+    if not record:
+        return JSONResponse({"error": "Invalid or expired code"}, status_code=400)
+
+    from db.mongo import users_collection
+    doc = users_collection().find_one({"_id": record.get("user_id")})
+    if not doc:
+        return JSONResponse({"error": "User not found"}, status_code=404)
+
+    user_obj = User(id=str(doc.get("_id")), email=doc.get("email") or "", role=doc.get("role") or ROLE_USER)
+    token = issue_jwt(user_obj)
+    return {"token": token, "user": {"id": user_obj.id, "email": user_obj.email, "role": user_obj.role}}
 
 
 @router.get("/status")

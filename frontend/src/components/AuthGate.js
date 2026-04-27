@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { AUTH_URL as AUTH } from '../config';
 import { applyAxiosAuthHeader, authFetch, getAuthToken, setAuthToken, setAuthUser } from '../lib/auth';
+import { startSsoLogin as startSsoLoginFlow } from '../lib/sso';
 
 const overlayStyle = {
   position: 'fixed',
@@ -52,14 +53,78 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
   const [dbConnected, setDbConnected] = useState(true);
   const [authRequired, setAuthRequired] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [ssoBusy, setSsoBusy] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [retryCount, setRetryCount] = useState(0);
+  const ssoStateRef = useRef('');
 
   useEffect(() => {
     applyAxiosAuthHeader();
   }, []);
+
+  const exchangeSsoCode = useCallback(async (code, state) => {
+    if (!code) return;
+    if (state && ssoStateRef.current && state !== ssoStateRef.current) {
+      // If state mismatches, ignore (can happen if app was relaunched).
+    }
+
+    setError('');
+    setSsoBusy(true);
+    try {
+      const res = await axios.post(`${AUTH}/auth/sso/exchange`, { code });
+      const data = res.data || {};
+      if (data.error) {
+        setError(data.error);
+        return;
+      }
+      if (data.token && data.user) {
+        setAuthToken(data.token);
+        setAuthUser(data.user);
+        setAuthenticated(true);
+      } else {
+        setError('SSO exchange failed.');
+      }
+    } catch (e) {
+      setError(e?.response?.data?.error || e.message || 'SSO exchange failed');
+    } finally {
+      setSsoBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onAuthCallback && !window.electronAPI?.getPendingAuthCallback) return;
+
+    const handle = async (payload) => {
+      try {
+        const rawUrl = payload?.url || payload;
+        if (!rawUrl) return;
+        const u = new URL(rawUrl);
+        const code = u.searchParams.get('code') || '';
+        const state = u.searchParams.get('state') || '';
+        if (code) {
+          await exchangeSsoCode(code, state);
+        }
+      } catch (_) {}
+    };
+
+    let unsubscribe = null;
+    if (window.electronAPI?.onAuthCallback) {
+      unsubscribe = window.electronAPI.onAuthCallback(handle);
+    }
+
+    (async () => {
+      try {
+        const pending = await window.electronAPI?.getPendingAuthCallback?.();
+        if (pending) await handle(pending);
+      } catch (_) {}
+    })();
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [exchangeSsoCode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -138,6 +203,18 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
     }
   };
 
+  const startSsoLogin = () => {
+    setError('');
+    (async () => {
+      try {
+        const { state } = await startSsoLoginFlow(AUTH, { redirectUri: 'nebula://auth' });
+        ssoStateRef.current = state;
+      } catch (e) {
+        setError(e?.message || 'Failed to open login URL');
+      }
+    })();
+  };
+
   if (loading) return null;
   if (!authRequired && !forceRequireAuth) return children;
   if (authenticated) return children;
@@ -170,8 +247,18 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
         )}
 
         <div style={{ marginTop: 14 }}>
+          <button type="button" onClick={startSsoLogin} style={{ ...buttonStyle, width: '100%' }} disabled={ssoBusy}>
+            {ssoBusy ? 'Completing sign-in…' : 'Login'}
+          </button>
+        </div>
+
+        <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-muted)' }}>
+          Or sign in with local credentials:
+        </div>
+
+        <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 12, marginBottom: 6, color: 'var(--text-muted)' }}>Email</div>
-          <input value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} autoFocus />
+          <input value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} autoFocus={false} />
         </div>
 
         <div style={{ marginTop: 12 }}>
@@ -186,7 +273,7 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
         )}
 
         <div style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button type="button" onClick={doLogin} style={buttonStyle} disabled={!hasUsers}>
+          <button type="button" onClick={doLogin} style={buttonStyle} disabled={!hasUsers || ssoBusy}>
             Sign In
           </button>
         </div>

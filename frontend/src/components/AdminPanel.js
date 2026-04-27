@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { API_URL as API } from '../config';
 import { getAuthUser } from '../lib/auth';
@@ -37,7 +38,7 @@ const buttonStyle = {
 export default function AdminPanel() {
   const user = getAuthUser();
   const isAdmin = user?.role === 'super_admin';
-  const [tab, setTab] = useState('users'); // 'users' | 'usage'
+  const [tab, setTab] = useState('users'); // 'users' | 'usage' | 'configurations'
   const [users, setUsers] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [createEmail, setCreateEmail] = useState('');
@@ -45,6 +46,13 @@ export default function AdminPanel() {
   const [createRole, setCreateRole] = useState('user');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+
+  const [configLoading, setConfigLoading] = useState(false);
+  const [claudeCfg, setClaudeCfg] = useState(null);
+  const [claudeApiKey, setClaudeApiKey] = useState('');
+  const [claudeOauthToken, setClaudeOauthToken] = useState('');
+  const [cfgError, setCfgError] = useState('');
+  const [cfgSuccess, setCfgSuccess] = useState('');
 
   const refreshUsers = useCallback(async () => {
     if (!isAdmin) return;
@@ -60,6 +68,25 @@ export default function AdminPanel() {
   }, [isAdmin]);
 
   useEffect(() => { refreshUsers(); }, [refreshUsers]);
+
+  const refreshConfig = useCallback(async () => {
+    if (!isAdmin) return;
+    setConfigLoading(true);
+    setCfgError('');
+    try {
+      const res = await axios.get(`${API}/admin/config/claude-cli`);
+      setClaudeCfg(res.data?.claude_cli || null);
+    } catch (e) {
+      setClaudeCfg(null);
+      setCfgError(e?.response?.data?.error || e.message || 'Failed to load configuration');
+    } finally {
+      setConfigLoading(false);
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (tab === 'configurations') refreshConfig();
+  }, [tab, refreshConfig]);
 
   const createUser = async () => {
     setError('');
@@ -78,6 +105,42 @@ export default function AdminPanel() {
       setTimeout(() => setSuccess(''), 2500);
     } catch (e) {
       setError(e?.response?.data?.error || e.message || 'Create failed');
+    }
+  };
+
+  const saveClaudeConfig = async () => {
+    setCfgError('');
+    setCfgSuccess('');
+    try {
+      const res = await axios.post(`${API}/admin/config/claude-cli`, { api_key: claudeApiKey, oauth_token: claudeOauthToken });
+      if (res.data?.error) {
+        setCfgError(res.data.error);
+        return;
+      }
+      setClaudeCfg(res.data?.claude_cli || null);
+      setCfgSuccess(`Saved. Provisioned ${res.data?.provisioned_users ?? 0} users.`);
+      setClaudeApiKey('');
+      setClaudeOauthToken('');
+      setTimeout(() => setCfgSuccess(''), 3500);
+    } catch (e) {
+      setCfgError(e?.response?.data?.error || e.message || 'Save failed');
+    }
+  };
+
+  const clearClaudeConfig = async () => {
+    setCfgError('');
+    setCfgSuccess('');
+    try {
+      const res = await axios.post(`${API}/admin/config/claude-cli/clear`, {});
+      if (res.data?.error) {
+        setCfgError(res.data.error);
+        return;
+      }
+      setClaudeCfg(null);
+      setCfgSuccess('Cleared.');
+      setTimeout(() => setCfgSuccess(''), 2500);
+    } catch (e) {
+      setCfgError(e?.response?.data?.error || e.message || 'Clear failed');
     }
   };
 
@@ -118,10 +181,80 @@ export default function AdminPanel() {
         >
           Monitoring
         </button>
+        <button
+          type="button"
+          onClick={() => setTab('configurations')}
+          style={{
+            ...buttonStyle,
+            background: tab === 'configurations' ? 'var(--accent)' : 'var(--bg-elevated)',
+            color: tab === 'configurations' ? '#071018' : 'var(--text-primary)',
+            border: tab === 'configurations' ? 'none' : '1px solid var(--border)',
+            padding: '8px 10px',
+          }}
+        >
+          Configurations
+        </button>
       </div>
 
       <div style={{ flex: 1, overflow: 'auto' }}>
         {tab === 'usage' && <UsagePanel />}
+
+        {tab === 'configurations' && (
+          <div style={{ padding: 12 }}>
+            <div style={card}>
+              <div style={{ fontSize: 13, fontWeight: 900, color: 'var(--text-primary)', marginBottom: 8 }}>
+                Claude CLI
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                Save credentials once and Nebula will automatically provision CLI access for all users.
+              </div>
+
+              <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Current</div>
+                  {configLoading ? (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</div>
+                  ) : claudeCfg?.configured ? (
+                    <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>
+                      API key: <span style={{ color: 'var(--text-muted)' }}>{claudeCfg.api_key_masked || '—'}</span>
+                      <br />
+                      OAuth token: <span style={{ color: 'var(--text-muted)' }}>{claudeCfg.oauth_token_masked || '—'}</span>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Not configured.</div>
+                  )}
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>ANTHROPIC_API_KEY</div>
+                  <input type="password" value={claudeApiKey} onChange={e => setClaudeApiKey(e.target.value)} style={inputStyle} placeholder="Paste API key" />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>CLAUDE_CODE_OAUTH_TOKEN (optional)</div>
+                  <input type="password" value={claudeOauthToken} onChange={e => setClaudeOauthToken(e.target.value)} style={inputStyle} placeholder="Paste OAuth token (optional)" />
+                </div>
+
+                {(cfgError || cfgSuccess) && (
+                  <div style={{ fontSize: 12, color: cfgError ? 'var(--error, #e5534b)' : 'var(--accent)', fontWeight: 700 }}>
+                    {cfgError || cfgSuccess}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <button type="button" onClick={refreshConfig} style={{ ...buttonStyle, padding: '8px 10px', background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }} disabled={configLoading}>
+                    Refresh
+                  </button>
+                  <button type="button" onClick={clearClaudeConfig} style={{ ...buttonStyle, padding: '8px 10px', background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
+                    Clear
+                  </button>
+                  <button type="button" onClick={saveClaudeConfig} style={buttonStyle} disabled={!claudeApiKey && !claudeOauthToken}>
+                    Save &amp; Provision
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {tab === 'users' && (
           <div style={{ padding: 12 }}>
@@ -186,4 +319,3 @@ export default function AdminPanel() {
     </div>
   );
 }
-
