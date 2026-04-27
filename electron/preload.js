@@ -56,6 +56,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('cli:exit', wrapped);
   },
 
+  // Project root changes (used to restart CLI sessions in the active workspace)
+  onProjectRootChanged: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('project:root-changed', wrapped);
+    return () => ipcRenderer.removeListener('project:root-changed', wrapped);
+  },
+
   // Check if running in Electron
   isElectron: true,
 });

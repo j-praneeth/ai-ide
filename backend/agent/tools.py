@@ -6,13 +6,14 @@ import json
 import subprocess
 import difflib
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from .indexer import search_codebase
 from .diff_engine import generate_diff
 
-# Default: parent of backend/ directory (the actual full project root)
-_project_root = Path(__file__).resolve().parent.parent.parent
+# When no workspace is open, tools should refuse file operations until a
+# project root is explicitly set (via file_manager / Electron session restore).
+_project_root: Optional[Path] = None
 
 # Directories to skip when building the file tree
 _SKIP_DIRS = {
@@ -26,10 +27,13 @@ _SKIP_DIRS = {
 def set_project_root(path):
     """Update the project root (called by ai.py to sync with file_manager)."""
     global _project_root
-    _project_root = Path(path).resolve()
+    if not path:
+        _project_root = None
+        return
+    _project_root = Path(path).expanduser().resolve()
 
 
-def get_project_root() -> Path:
+def get_project_root() -> Optional[Path]:
     return _project_root
 
 
@@ -75,6 +79,8 @@ def get_project_file_tree(max_files=200) -> str:
 # ---------------------------
 def safe_path(path_str: str) -> Path:
     root = get_project_root()
+    if not root or not root.exists():
+        raise Exception("No workspace is open. Open a folder to get started.")
     path = (root / path_str).resolve()
     if not str(path).startswith(str(root)):
         raise Exception("Access outside project directory is not allowed.")
@@ -89,6 +95,8 @@ def codebase_search(input_data: Dict[str, Any]) -> str:
     target_directories = input_data.get("target_directories") or []
     if not query.strip():
         return "Error: query is required."
+    if not get_project_root():
+        return "Error: No workspace is open. Open a folder to get started."
     try:
         results = search_codebase(query, root=str(get_project_root()))
         if target_directories:
@@ -293,10 +301,14 @@ def run_command(input_data: Dict[str, Any]) -> str:
                 "message": f"This command requires your approval before execution:\n\n{command}\n\nDo you want to proceed?",
             })
 
+    project_root = get_project_root()
+    if not project_root or not project_root.exists():
+        return "Error: No workspace is open. Open a folder to get started."
+
     # Determine working directory
     # If command contains 'cd', extract the directory and use it as cwd
     # Otherwise, use project root or specified working_directory
-    working_dir = str(get_project_root())
+    working_dir = str(project_root)
     working_directory = input_data.get("working_directory") or input_data.get("cwd")
     
     # Check if command starts with 'cd' - extract directory and use it as cwd
@@ -308,18 +320,18 @@ def run_command(input_data: Dict[str, Any]) -> str:
         
         # Resolve relative paths from project root
         if not os.path.isabs(target_dir):
-            working_dir = str(get_project_root() / target_dir)
+            working_dir = str(project_root / target_dir)
         else:
             # For absolute paths, validate it's within project root
             try:
                 target_path = Path(target_dir).resolve()
-                project_root = get_project_root().resolve()
-                if str(target_path).startswith(str(project_root)):
+                resolved_project_root = project_root.resolve()
+                if str(target_path).startswith(str(resolved_project_root)):
                     working_dir = str(target_path)
                 else:
-                    working_dir = str(get_project_root())
+                    working_dir = str(project_root)
             except:
-                working_dir = str(get_project_root())
+                working_dir = str(project_root)
         
         # If there's a command after 'cd', use it instead of the full command
         # This ensures commands run from the correct directory
@@ -328,7 +340,7 @@ def run_command(input_data: Dict[str, Any]) -> str:
     elif working_directory:
         # Use specified working directory (relative to project root)
         if not os.path.isabs(working_directory):
-            working_dir = str(get_project_root() / working_directory)
+            working_dir = str(project_root / working_directory)
         else:
             working_dir = working_directory
 
@@ -450,6 +462,8 @@ def grep_search(input_data: Dict[str, Any]) -> str:
 
     results = []
     root = get_project_root()
+    if not root or not root.exists():
+        return "Error: No workspace is open. Open a folder to get started."
     for root_dir, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith('.')]
         rel_root = os.path.relpath(root_dir, root)
@@ -761,6 +775,8 @@ def file_search(input_data: Dict[str, Any]) -> str:
         return "Error: query (partial filename) is required."
     results = []
     root = get_project_root()
+    if not root:
+        return "No workspace is open. Open a folder to get started."
     for root_dir, _, files in os.walk(root):
         rel_root = os.path.relpath(root_dir, root)
         if rel_root.startswith(".."):

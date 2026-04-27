@@ -194,6 +194,21 @@ export default function CliPanel({ visible }) {
   }, [visible]);
 
   useEffect(() => {
+    if (!visible) return;
+    if (!window.electronAPI?.onProjectRootChanged) return;
+
+    const unsubscribe = window.electronAPI.onProjectRootChanged(() => {
+      if (termRef.current) {
+        connectCliSession(termRef.current, selectedCli);
+      }
+    });
+
+    return () => {
+      try { unsubscribe?.(); } catch (_) {}
+    };
+  }, [visible, connectCliSession, selectedCli]);
+
+  useEffect(() => {
     try {
       localStorage.setItem('nebula_selected_cli', selectedCli);
     } catch (_) {}

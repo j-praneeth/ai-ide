@@ -103,8 +103,29 @@ def _emit_terminal_event(command: str, output: str, exit_code: int, cwd: str):
     except Exception:
         pass  # Don't break terminal if mobile bridge is unavailable
 
-# Use the actual project root (parent of backend/)
 import file_manager
+
+
+def _get_project_root_dir() -> str:
+    """Return the active workspace root, or a safe fallback when no workspace is open."""
+    try:
+        root = getattr(file_manager, "PROJECT_ROOT", None)
+        if root:
+            root_str = str(root)
+            if os.path.isdir(root_str):
+                return root_str
+    except Exception:
+        pass
+
+    # No workspace open → default terminal sessions to the user's home directory.
+    try:
+        home = os.path.expanduser("~")
+        if os.path.isdir(home):
+            return home
+    except Exception:
+        pass
+
+    return os.getcwd()
 
 # Detect platform
 IS_WINDOWS = platform.system() == "Windows"
@@ -387,7 +408,7 @@ def run_command(command: str, session: str = "default", shell: str = None):
         if pattern.lower() in cmd_lower:
             return {"error": "Blocked: dangerous command pattern detected"}
 
-    project_root = str(file_manager.PROJECT_ROOT)
+    project_root = _get_project_root_dir()
 
     # Get current cwd for this session
     cwd = _session_cwds.get(session, project_root)
@@ -499,7 +520,7 @@ def run_command(command: str, session: str = "default", shell: str = None):
 @router.get("/info")
 def get_terminal_info(session: str = "default"):
     """Return terminal info for prompt rendering."""
-    project_root = str(file_manager.PROJECT_ROOT)
+    project_root = _get_project_root_dir()
     cwd = _session_cwds.get(session, project_root)
     if not os.path.isdir(cwd):
         cwd = project_root
@@ -534,7 +555,7 @@ async def cli_websocket(websocket: WebSocket, tool: str = "claude"):
             shell=False, # We don't need shell=True since we are spawning the shell itself
             bufsize=0,
             env=env,
-            cwd=str(file_manager.PROJECT_ROOT)
+            cwd=_get_project_root_dir()
         )
     except Exception as e:
         await websocket.send_text(f"Failed to start terminal shell: {e}\r\n")

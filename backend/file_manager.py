@@ -1,27 +1,51 @@
 from fastapi import APIRouter
 from pathlib import Path
 import os
+from typing import Optional, Tuple, Any
 
 router = APIRouter()
 
-# Auto-detect the actual project root: the parent of the backend/ directory
-# This ensures the full project (frontend + backend + everything) is visible
-_BACKEND_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = _BACKEND_DIR.parent  # /Users/.../ai-ide/
+# NOTE: The desktop app should start with *no* workspace open so the Welcome
+# screen is shown on first launch. The workspace is set explicitly via
+# /files/open-folder or --project-root.
+PROJECT_ROOT: Optional[Path] = None
 
 
-def set_project_root_path(path_str):
+def _require_project_root() -> Tuple[Optional[Path], Optional[dict]]:
+    root = PROJECT_ROOT
+    if not root:
+        return None, {"error": "No workspace is open. Open a folder to get started."}
+    return root, None
+
+
+def _is_within_root(target: Path, root: Path) -> bool:
+    try:
+        target.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def set_project_root_path(path_str: Any):
     """Set the project root from an external source (e.g. CLI args, Electron)."""
     global PROJECT_ROOT
-    target = Path(path_str).resolve()
+    p = (str(path_str).strip() if path_str is not None else "")
+    if not p:
+        PROJECT_ROOT = None
+        return False
+    target = Path(p).expanduser().resolve()
     if target.exists() and target.is_dir():
         PROJECT_ROOT = target
+        return True
+    return False
 
 
 @router.get("/workspace")
 def get_workspace():
     """Return the current project root path."""
-    return {"path": str(PROJECT_ROOT), "name": PROJECT_ROOT.name}
+    if not PROJECT_ROOT:
+        return {"open": False, "path": "", "name": ""}
+    return {"open": True, "path": str(PROJECT_ROOT), "name": PROJECT_ROOT.name}
 
 
 @router.post("/open-folder")
@@ -137,16 +161,22 @@ def _list_dir(dir_path, show_hidden=False):
 @router.get("/tree")
 def get_tree(show_hidden: bool = False):
     """Return the top-level directory listing (one level). Fast. show_hidden: include dotfiles/dotdirs."""
+    if not PROJECT_ROOT:
+        return []
     return _list_dir(PROJECT_ROOT, show_hidden=show_hidden)
 
 
 @router.get("/tree-children")
 def get_tree_children(path: str, show_hidden: bool = False):
     """Return children of a subdirectory (lazy loading on expand). show_hidden: include dotfiles/dotdirs."""
-    target = (PROJECT_ROOT / path).resolve()
+    root, err = _require_project_root()
+    if err:
+        return []
+
+    target = (root / path).resolve()
 
     # Security: prevent reading outside project root
-    if not str(target).startswith(str(PROJECT_ROOT)):
+    if not _is_within_root(target, root):
         return {"error": "Access denied"}
 
     if not target.exists() or not target.is_dir():
@@ -157,10 +187,14 @@ def get_tree_children(path: str, show_hidden: bool = False):
 
 @router.get("/read")
 def read_file(path: str):
-    file_path = (PROJECT_ROOT / path).resolve()
+    root, err = _require_project_root()
+    if err:
+        return err
+
+    file_path = (root / path).resolve()
 
     # Security: prevent reading outside project root
-    if not str(file_path).startswith(str(PROJECT_ROOT)):
+    if not _is_within_root(file_path, root):
         return {"error": "Access denied: path outside project directory"}
 
     if not file_path.exists():
@@ -179,10 +213,14 @@ def read_file(path: str):
 
 @router.post("/write")
 def write_file(path: str, content: str):
-    file_path = (PROJECT_ROOT / path).resolve()
+    root, err = _require_project_root()
+    if err:
+        return err
+
+    file_path = (root / path).resolve()
 
     # Security: prevent writing outside project root
-    if not str(file_path).startswith(str(PROJECT_ROOT)):
+    if not _is_within_root(file_path, root):
         return {"error": "Access denied: path outside project directory"}
 
     try:
@@ -195,9 +233,13 @@ def write_file(path: str, content: str):
 
 @router.post("/create")
 def create_file(path: str, is_folder: bool = False):
-    file_path = (PROJECT_ROOT / path).resolve()
+    root, err = _require_project_root()
+    if err:
+        return err
 
-    if not str(file_path).startswith(str(PROJECT_ROOT)):
+    file_path = (root / path).resolve()
+
+    if not _is_within_root(file_path, root):
         return {"error": "Access denied: path outside project directory"}
 
     try:
@@ -214,9 +256,13 @@ def create_file(path: str, is_folder: bool = False):
 
 @router.delete("/delete")
 def delete_file(path: str):
-    file_path = (PROJECT_ROOT / path).resolve()
+    root, err = _require_project_root()
+    if err:
+        return err
 
-    if not str(file_path).startswith(str(PROJECT_ROOT)):
+    file_path = (root / path).resolve()
+
+    if not _is_within_root(file_path, root):
         return {"error": "Access denied: path outside project directory"}
 
     try:
@@ -233,8 +279,12 @@ def delete_file(path: str):
 @router.post("/rename")
 def rename_path(path: str, new_name: str):
     """Rename a file or folder. new_name is the new base name (not full path)."""
-    file_path = (PROJECT_ROOT / path).resolve()
-    if not str(file_path).startswith(str(PROJECT_ROOT)):
+    root, err = _require_project_root()
+    if err:
+        return err
+
+    file_path = (root / path).resolve()
+    if not _is_within_root(file_path, root):
         return {"error": "Access denied: path outside project directory"}
     if not file_path.exists():
         return {"error": "File or folder not found"}
@@ -245,7 +295,7 @@ def rename_path(path: str, new_name: str):
         return {"error": "A file or folder with that name already exists"}
     try:
         file_path.rename(new_path)
-        rel = new_path.relative_to(PROJECT_ROOT)
+        rel = new_path.relative_to(root)
         return {"status": "renamed", "path": str(rel)}
     except Exception as e:
         return {"error": str(e)}
@@ -254,9 +304,13 @@ def rename_path(path: str, new_name: str):
 @router.post("/move")
 def move_path(path: str, dest: str):
     """Move a file or folder to a new location. dest is the destination directory path (relative to project root)."""
-    file_path = (PROJECT_ROOT / path).resolve()
-    dest_dir = (PROJECT_ROOT / dest).resolve()
-    if not str(file_path).startswith(str(PROJECT_ROOT)) or not str(dest_dir).startswith(str(PROJECT_ROOT)):
+    root, err = _require_project_root()
+    if err:
+        return err
+
+    file_path = (root / path).resolve()
+    dest_dir = (root / dest).resolve()
+    if not _is_within_root(file_path, root) or not _is_within_root(dest_dir, root):
         return {"error": "Access denied: path outside project directory"}
     if not file_path.exists():
         return {"error": "File or folder not found"}
@@ -276,7 +330,7 @@ def move_path(path: str, dest: str):
     try:
         import shutil
         shutil.move(str(file_path), str(new_path))
-        rel = new_path.relative_to(PROJECT_ROOT)
+        rel = new_path.relative_to(root)
         return {"status": "moved", "path": str(rel)}
     except Exception as e:
         return {"error": str(e)}
@@ -285,10 +339,14 @@ def move_path(path: str, dest: str):
 @router.get("/search")
 def search_files(query: str, case_sensitive: bool = False):
     """Search for text across all project files."""
+    root, err = _require_project_root()
+    if err:
+        return {"results": [], "truncated": False}
+
     results = []
     max_results = 200
 
-    for root_dir, dirs, files in os.walk(PROJECT_ROOT):
+    for root_dir, dirs, files in os.walk(root):
         # Skip hidden/known directories
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith('.')]
 
@@ -297,7 +355,7 @@ def search_files(query: str, case_sensitive: bool = False):
                 continue
 
             full_path = os.path.join(root_dir, file)
-            rel_path = os.path.relpath(full_path, PROJECT_ROOT)
+            rel_path = os.path.relpath(full_path, root)
 
             # Skip binary/large files
             try:

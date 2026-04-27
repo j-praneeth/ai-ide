@@ -579,11 +579,12 @@ async def _send_file_tree(ws: WebSocket):
     try:
         import file_manager as fm
         tree = fm.get_tree()
+        root = getattr(fm, "PROJECT_ROOT", None)
         await ws.send_text(json.dumps({
             "type": "file_tree",
             "tree": tree,
-            "workspace": str(fm.PROJECT_ROOT),
-            "name": fm.PROJECT_ROOT.name,
+            "workspace": str(root) if root else "",
+            "name": (root.name if root else ""),
         }))
     except Exception as e:
         await ws.send_text(json.dumps({
@@ -663,10 +664,11 @@ async def _send_status(ws: WebSocket):
     """Send full IDE status to mobile."""
     try:
         import file_manager as fm
+        root = getattr(fm, "PROJECT_ROOT", None)
         await ws.send_text(json.dumps({
             "type": "ide_status",
-            "workspace": str(fm.PROJECT_ROOT),
-            "workspace_name": fm.PROJECT_ROOT.name,
+            "workspace": str(root) if root else "",
+            "workspace_name": (root.name if root else ""),
             "connected_clients": len(_clients),
             "local_ip": get_local_ip(),
         }))

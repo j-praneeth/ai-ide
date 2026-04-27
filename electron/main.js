@@ -14,6 +14,8 @@ let backendPort = null;
 let splashWindow = null;
 let cliSessionCounter = 0;
 const cliSessions = new Map();
+let currentProjectRoot = null;
+let cliToolsInstallPromise = null;
 
 // ─── Deep-link / SSO callback handling ──────────────────────────
 const APP_PROTOCOL = 'nebula';
@@ -82,6 +84,51 @@ const isDev = process.env.ELECTRON_DEV === 'true' || !app.isPackaged;
 // Paths
 const userDataPath = app.getPath('userData');
 const embeddedPythonDir = path.join(userDataPath, 'python');
+const embeddedNodeDir = path.join(userDataPath, 'node');
+const cliToolsPrefixDir = path.join(userDataPath, 'cli-tools');
+const sessionStatePath = path.join(userDataPath, 'nebula-session.json');
+
+function readSessionState() {
+  try {
+    if (!fs.existsSync(sessionStatePath)) return {};
+    const raw = fs.readFileSync(sessionStatePath, 'utf-8');
+    const parsed = JSON.parse(raw || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeSessionState(patch = {}) {
+  try {
+    const prev = readSessionState();
+    const next = { ...(prev || {}), ...(patch || {}) };
+    fs.mkdirSync(path.dirname(sessionStatePath), { recursive: true });
+    fs.writeFileSync(sessionStatePath, JSON.stringify(next, null, 2), 'utf-8');
+  } catch (_) {}
+}
+
+function setCurrentProjectRoot(folderPath) {
+  try {
+    const p = typeof folderPath === 'string' ? folderPath.trim() : '';
+    if (!p) return false;
+    const resolved = path.resolve(p);
+    if (!fs.existsSync(resolved)) return false;
+    const st = fs.statSync(resolved);
+    if (!st.isDirectory()) return false;
+    currentProjectRoot = resolved;
+    process.env.NEBULA_PROJECT_ROOT = resolved;
+    writeSessionState({ lastProjectRoot: resolved });
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('project:root-changed', { projectRoot: resolved });
+      }
+    } catch (_) {}
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 
 function loadDotEnvFile(filePath) {
   try {
@@ -168,6 +215,16 @@ function runFile(command, args, options = {}) {
   });
 }
 
+function ensureCliPaths(env = process.env) {
+  try {
+    prependToPath(cliToolsPrefixDir, env);
+  } catch (_) {}
+  try {
+    const nodeRoot = getEmbeddedNodeRoot();
+    if (nodeRoot) prependToPath(nodeRoot, env);
+  } catch (_) {}
+}
+
 function getNpmGlobalBinDir() {
   try {
     const npmCommand = getNpmCommand();
@@ -247,6 +304,7 @@ function findGitBash() {
 
 function getCliLaunchConfig(tool) {
   const spec = CLI_SPECS.find((item) => item.command === tool) || CLI_SPECS[0];
+  ensureCliPaths(process.env);
 
   // If it's a direct shell request (powershell/cmd)
   if (tool === 'powershell' || tool === 'cmd') {
@@ -259,12 +317,12 @@ function getCliLaunchConfig(tool) {
     };
   }
 
-  const commandPath = resolveCommandPath(spec.command);
   const npmBin = getNpmGlobalBinDir();
   if (npmBin) {
     prependToPath(npmBin, process.env);
   }
 
+  const commandPath = resolveCommandPath(spec.command);
   if (!commandPath && !commandExists(spec.command)) {
     return {
       installed: false,
@@ -288,7 +346,7 @@ function getCliLaunchConfig(tool) {
     };
   }
 
-  if (process.platform === 'win32' && tool === 'claude') {
+  if (process.platform === 'win32' && tool === 'claude' && !commandPath) {
     const gitBash = findGitBash();
     if (gitBash) {
       return {
@@ -346,16 +404,27 @@ function closeCliSession(sessionId) {
 
 async function ensureCliToolsInstalled() {
   updateSplash('Checking Claude and Codex CLI tools...');
-  const npmBin = getNpmGlobalBinDir();
-  if (npmBin) {
-    prependToPath(npmBin, process.env);
-  }
+  ensureCliPaths(process.env);
+  try { fs.mkdirSync(cliToolsPrefixDir, { recursive: true }); } catch (_) {}
 
-  let npmAvailable = true;
+  let npmCommand = null;
   try {
     await runFile(getNpmCommand(), ['--version'], { timeout: 10000, env: { ...process.env } });
-  } catch (_) {
-    npmAvailable = false;
+    npmCommand = getNpmCommand();
+  } catch (_) {}
+
+  // Windows: if npm is missing, download a portable Node.js runtime (includes npm)
+  if (!npmCommand && process.platform === 'win32') {
+    const nodeRoot = await setupEmbeddedNode();
+    if (nodeRoot) {
+      try {
+        prependToPath(nodeRoot, process.env);
+        ensureCliPaths(process.env);
+        const embeddedNpm = path.join(nodeRoot, 'npm.cmd');
+        await runFile(embeddedNpm, ['--version'], { timeout: 15000, env: { ...process.env } });
+        npmCommand = embeddedNpm;
+      } catch (_) {}
+    }
   }
 
   for (const cli of CLI_SPECS) {
@@ -365,7 +434,7 @@ async function ensureCliToolsInstalled() {
       continue;
     }
 
-    if (!npmAvailable) {
+    if (!npmCommand) {
       console.warn(`Skipping ${cli.label} install because npm is unavailable`);
       continue;
     }
@@ -373,7 +442,7 @@ async function ensureCliToolsInstalled() {
     updateSplash(`Installing ${cli.label}...`);
     console.log(`Installing ${cli.label} using ${cli.packageName}`);
     try {
-      await runFile(getNpmCommand(), ['install', '-g', cli.packageName], {
+      await runFile(npmCommand, ['install', '-g', cli.packageName, '--prefix', cliToolsPrefixDir, '--no-audit', '--no-fund'], {
         timeout: 300000,
         env: { ...process.env },
       });
@@ -381,11 +450,7 @@ async function ensureCliToolsInstalled() {
       console.error(`Failed to install ${cli.label}:`, err.stderr || err.message);
       continue;
     }
-
-    const refreshedBin = getNpmGlobalBinDir();
-    if (refreshedBin) {
-      prependToPath(refreshedBin, process.env);
-    }
+    ensureCliPaths(process.env);
   }
 }
 
@@ -464,6 +529,114 @@ function getEmbeddedPython() {
     if (fs.existsSync(pythonExe)) return pythonExe;
   }
   return null;
+}
+
+// ─── Embedded Node.js Setup (Windows) ────────────────────────────
+
+function getEmbeddedNodeRoot() {
+  if (process.platform !== 'win32') return null;
+  try {
+    const directNode = path.join(embeddedNodeDir, 'node.exe');
+    const directNpm = path.join(embeddedNodeDir, 'npm.cmd');
+    if (fs.existsSync(directNode) && fs.existsSync(directNpm)) return embeddedNodeDir;
+
+    if (!fs.existsSync(embeddedNodeDir)) return null;
+    const entries = fs.readdirSync(embeddedNodeDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const candidate = path.join(embeddedNodeDir, entry.name);
+      const nodeExe = path.join(candidate, 'node.exe');
+      const npmCmd = path.join(candidate, 'npm.cmd');
+      if (fs.existsSync(nodeExe) && fs.existsSync(npmCmd)) return candidate;
+    }
+  } catch (_) {}
+  return null;
+}
+
+function fetchText(url, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const get = url.startsWith('https') ? https.get : http.get;
+
+    const request = (targetUrl) => {
+      const req = get(targetUrl, (response) => {
+        // Handle redirects
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          request(response.headers.location);
+          return;
+        }
+        if (response.statusCode !== 200) {
+          reject(new Error(`Request failed with status ${response.statusCode}`));
+          return;
+        }
+        let raw = '';
+        response.setEncoding('utf-8');
+        response.on('data', (chunk) => { raw += chunk; });
+        response.on('end', () => resolve(raw));
+      });
+      req.on('error', reject);
+      req.setTimeout(timeoutMs, () => {
+        try { req.destroy(new Error('Request timed out')); } catch (_) {}
+      });
+    };
+
+    request(url);
+  });
+}
+
+async function getLatestLtsNodeVersion() {
+  const fallback = 'v20.11.1';
+  try {
+    const raw = await fetchText('https://nodejs.org/dist/index.json', 15000);
+    const list = JSON.parse(raw || '[]');
+    if (!Array.isArray(list)) return fallback;
+    const lts = list.find((item) => item && item.lts);
+    const v = lts && typeof lts.version === 'string' ? lts.version : '';
+    return /^v\d+\.\d+\.\d+$/.test(v) ? v : fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+async function setupEmbeddedNode() {
+  if (process.platform !== 'win32') return null;
+
+  const existing = getEmbeddedNodeRoot();
+  if (existing) return existing;
+
+  console.log('Setting up embedded Node.js for Windows...');
+  updateSplash('Setting up Node.js (first-time only)...');
+
+  const version = await getLatestLtsNodeVersion();
+  const zipUrl = `https://nodejs.org/dist/${version}/node-${version}-win-x64.zip`;
+  const zipPath = path.join(userDataPath, `node-${version}-win-x64.zip`);
+
+  try {
+    fs.mkdirSync(embeddedNodeDir, { recursive: true });
+
+    updateSplash(`Downloading Node.js runtime (${version})...`);
+    await downloadFile(zipUrl, zipPath);
+
+    updateSplash('Extracting Node.js...');
+    execSync(
+      `powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${embeddedNodeDir}' -Force"`,
+      { timeout: 600000 }
+    );
+
+    try { fs.unlinkSync(zipPath); } catch (_) {}
+
+    const nodeRoot = getEmbeddedNodeRoot();
+    if (!nodeRoot) {
+      throw new Error('Embedded Node extraction did not produce node.exe');
+    }
+
+    console.log('Embedded Node.js setup complete');
+    return nodeRoot;
+  } catch (err) {
+    console.error('Failed to setup embedded Node.js:', err);
+    try { fs.rmSync(embeddedNodeDir, { recursive: true, force: true }); } catch (_) {}
+    try { fs.unlinkSync(zipPath); } catch (_) {}
+    return null;
+  }
 }
 
 // ─── Embedded Python Download (Windows) ─────────────────────────
@@ -637,9 +810,12 @@ function getBackendSourceDir() {
 
 // ─── Start Backend ──────────────────────────────────────────────
 
-async function startBackend(port) {
+async function startBackend(port, projectRoot = null) {
   return new Promise(async (resolve, reject) => {
-    const defaultProjectRoot = app.getPath('home');
+    const requestedProjectRoot = typeof projectRoot === 'string' ? projectRoot.trim() : '';
+    const initialProjectRoot = (requestedProjectRoot && fs.existsSync(requestedProjectRoot))
+      ? requestedProjectRoot
+      : '';
     let command, args, cwd;
 
     // ─── Strategy 1: Bundled PyInstaller executable ───────────
@@ -647,7 +823,8 @@ async function startBackend(port) {
     if (bundledExe) {
       console.log('Using bundled PyInstaller backend');
       command = bundledExe;
-      args = ['--port', port.toString(), '--host', '0.0.0.0', '--project-root', defaultProjectRoot];
+      args = ['--port', port.toString(), '--host', '0.0.0.0'];
+      if (initialProjectRoot) args.push('--project-root', initialProjectRoot);
       cwd = undefined;
     } else {
       // ─── Strategy 2: Find or setup Python ───────────────────
@@ -692,8 +869,8 @@ async function startBackend(port) {
         path.join(backendSourceDir, 'main.py'),
         '--port', port.toString(),
         '--host', '0.0.0.0',
-        '--project-root', defaultProjectRoot,
       ];
+      if (initialProjectRoot) args.push('--project-root', initialProjectRoot);
       cwd = backendSourceDir;
     }
 
@@ -982,13 +1159,30 @@ function fetchCliEnv(tool, authToken) {
 }
 
 ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
-  const launch = getCliLaunchConfig(tool);
+  let launch = getCliLaunchConfig(tool);
 
   if (!launch.installed) {
+    // Try to install in the background (first launch may not have npm on PATH).
+    if (launch.packageName) {
+      try {
+        if (!cliToolsInstallPromise) {
+          cliToolsInstallPromise = ensureCliToolsInstalled()
+            .catch(() => {})
+            .finally(() => { cliToolsInstallPromise = null; });
+        }
+      } catch (_) {}
+      return {
+        ok: false,
+        installed: false,
+        message: `${launch.label} is not installed yet. Nebula is installing CLI tools in the background — please wait a moment and re-select the tool.`,
+        shell: launch.shellLabel,
+      };
+    }
+
     return {
       ok: false,
       installed: false,
-      message: `${launch.label} is not installed. Run: npm install -g ${launch.packageName}`,
+      message: `${launch.label} is not installed.`,
       shell: launch.shellLabel,
     };
   }
@@ -1144,20 +1338,23 @@ app.whenReady().then(async () => {
     try {
       const s = readSessionState();
       const last = s && typeof s.lastProjectRoot === 'string' ? s.lastProjectRoot.trim() : '';
-      if (last && fs.existsSync(last)) {
-        currentProjectRoot = last;
-      }
+      if (last) setCurrentProjectRoot(last);
     } catch (_) {}
 
     // Ensure the CLI tools exist before the backend/terminal sessions use them.
-    await ensureCliToolsInstalled();
+    if (!cliToolsInstallPromise) {
+      cliToolsInstallPromise = ensureCliToolsInstalled()
+        .catch(() => {})
+        .finally(() => { cliToolsInstallPromise = null; });
+    }
+    // We intentionally don't await cliToolsInstallPromise here so it doesn't block startup.
 
     // Find a free port
     backendPort = await findFreePort();
     console.log(`Using port ${backendPort} for backend`);
 
     // Start the backend (handles all Python detection/setup)
-    await startBackend(backendPort);
+    await startBackend(backendPort, currentProjectRoot);
     console.log('Backend started successfully');
 
     // Create the main window

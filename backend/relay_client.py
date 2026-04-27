@@ -363,11 +363,12 @@ async def _handle_get_files():
     try:
         import file_manager as fm
         tree = fm.get_tree()
+        root = getattr(fm, "PROJECT_ROOT", None)
         relay_emit({
             "type": "file_tree",
             "tree": tree,
-            "workspace": str(fm.PROJECT_ROOT),
-            "name": fm.PROJECT_ROOT.name,
+            "workspace": str(root) if root else "",
+            "name": (root.name if root else ""),
         })
     except Exception as e:
         relay_emit({"type": "error", "message": f"File tree error: {e}"})
@@ -393,10 +394,11 @@ async def _handle_get_status():
     """Send IDE status through relay."""
     try:
         import file_manager as fm
+        root = getattr(fm, "PROJECT_ROOT", None)
         relay_emit({
             "type": "ide_status",
-            "workspace": str(fm.PROJECT_ROOT),
-            "workspace_name": fm.PROJECT_ROOT.name,
+            "workspace": str(root) if root else "",
+            "workspace_name": (root.name if root else ""),
             "desktop_online": True,
         })
     except Exception as e:

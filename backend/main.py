@@ -253,7 +253,7 @@ def main():
     parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--project-root", type=str, default=None,
-                        help="Project root directory (default: parent of backend/)")
+                        help="Project root directory (default: none)")
     args = parser.parse_args()
 
     if args.project_root:

@@ -226,7 +226,13 @@ def chat_stream(request: Request, prompt: str, mode: str = "agent", model: str =
             logger.exception("Error setting model for request: %s", e)
 
     import file_manager
-    set_project_root(file_manager.PROJECT_ROOT)
+    project_root = getattr(file_manager, "PROJECT_ROOT", None)
+    if mode == "agent" and not project_root:
+        def no_workspace():
+            yield f"data: {json_module.dumps({'type': 'done', 'answer': 'No workspace is open. Use Open Folder to select a project first.'})}\n\n"
+        return StreamingResponse(no_workspace(), media_type="text/event-stream")
+    if project_root:
+        set_project_root(project_root)
 
     # Identify user for usage tracking (AuthMiddleware stores request.state.user when enabled).
     req_user = getattr(request.state, "user", None)
@@ -341,7 +347,12 @@ def chat(prompt: str, mode: str = "agent", session_id: str = "default"):
         try:
             # Sync agent's project root with the file manager's current project root
             import file_manager
-            set_project_root(file_manager.PROJECT_ROOT)
+            project_root = getattr(file_manager, "PROJECT_ROOT", None)
+            if mode == "agent" and not project_root:
+                msg = "No workspace is open. Use Open Folder to select a project first."
+                return {"response": msg, "session_id": sid, "history": list(CONVERSATIONS.get(sid, []))}
+            if project_root:
+                set_project_root(project_root)
 
             CONVERSATIONS.setdefault(sid, [])
             CONVERSATIONS[sid].append({"role": "user", "content": prompt})
