@@ -274,7 +274,12 @@ function resolveCommandPath(command) {
         env: { ...process.env },
         encoding: 'utf-8',
       }).trim();
-      return output.split(/\r?\n/).find(Boolean) || null;
+      const lines = output.split(/\r?\n/).filter(Boolean);
+      const winExecutable = lines.find(line => {
+        const lower = line.toLowerCase();
+        return lower.endsWith('.cmd') || lower.endsWith('.bat') || lower.endsWith('.exe') || lower.endsWith('.ps1');
+      });
+      return winExecutable || lines[0] || null;
     }
 
     const output = execSync(`command -v ${command}`, {
@@ -364,12 +369,14 @@ function getCliLaunchConfig(tool) {
   if (process.platform === 'win32' && commandPath) {
     const lower = commandPath.toLowerCase();
     if (lower.endsWith('.cmd') || lower.endsWith('.bat')) {
+      // Pass args as a single verbatim string so node-pty's argsToCommandLine
+      // doesn't backslash-escape the wrapping quotes (cmd.exe can't parse `\"...\"`).
       return {
         installed: true,
         label: spec.label,
         shellLabel: 'cmd',
         file: 'cmd.exe',
-        args: ['/d', '/s', '/c', `"${commandPath}"`],
+        args: `/d /s /c "${commandPath}"`,
       };
     }
     if (lower.endsWith('.ps1')) {
@@ -1241,7 +1248,8 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
     };
   }
 
-  const ptyCommandLine = `${launch.file} ${(launch.args || []).join(' ')}`.trim();
+  const argsForLog = Array.isArray(launch.args) ? launch.args.join(' ') : (launch.args || '');
+  const ptyCommandLine = `${launch.file} ${argsForLog}`.trim();
   console.log(`CLI PTY spawn: ${ptyCommandLine}`);
 
   const ptyProcessRef = ptyProcess;
