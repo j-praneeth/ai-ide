@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C E:/ai-ide ls-files)",
+      "Bash(git -C E:/ai-ide check-ignore build/installer.nsh build/installer.nsh -v)",
+      "Bash(node --check E:/ai-ide/electron/cli-bundle.js)",
+      "Bash(node --check E:/ai-ide/scripts/build-cli-vault.mjs)",
+      "Bash(node --check E:/ai-ide/scripts/embed-kek.mjs)",
+      "Bash(node --check E:/ai-ide/scripts/build-with-kek.mjs)",
+      "Bash(node -e ' *)",
+      "Bash(cp electron/cli-bundle.js electron/cli-bundle.js.bak)",
+      "Bash(cp electron/preload.js electron/preload.js.bak)",
+      "Bash(NEBULA_CLI_KEK=f7a3254fa722910e976fa56b72b18458762926fecc14250fb49142d2a501334f node scripts/embed-kek.mjs embed)",
+      "Bash(node scripts/embed-kek.mjs restore)",
+      "Bash(node --check electron/preload.js)",
+      "Bash(node --check E:/ai-ide/electron/main.js)",
+      "Bash(python -m py_compile terminal.py security/middleware.py)",
+      "Bash(node --check E:/ai-ide/electron/preload.js)",
+      "Bash(python -m py_compile terminal.py security/middleware.py security/auth.py admin_config.py)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(git -C E:/ai-ide status --short)",
+      "Bash(git -C E:/ai-ide check-ignore -v .env.build.example)"
+    ]
+  }
+}

@@ -12,6 +12,7 @@ env/
 .env
 .env.*
 !.env.example
+!.env.build.example
 *.egg-info/
 dist/
 build/
@@ -61,6 +62,11 @@ mobile/android/capacitor-android/build/
 mobile/android/capacitor-*/build/
 mobile/android/local.properties
 *.apk
+
+# CLI vault build artifacts (encrypted org-cred bundle — never commit)
+build/creds.bundle.enc
+build/creds.bundle.meta.json
+.env.build.example
 
 # Misc
 *.log

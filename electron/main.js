@@ -6,6 +6,7 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const pty = require('node-pty');
+const cliBundle = require('./cli-bundle');
 
 // Keep a global reference of the window object
 let mainWindow = null;
@@ -16,6 +17,10 @@ let cliSessionCounter = 0;
 const cliSessions = new Map();
 let currentProjectRoot = null;
 let cliToolsInstallPromise = null;
+// Resolves once the bundled CLI credentials have been written (or definitively
+// failed). `cli:start` awaits this before spawning so the CLI never launches
+// against a missing ~/.claude/.credentials.json or ~/.codex/auth.json.
+let cliBundleReadyPromise = null;
 
 // ─── Deep-link / SSO callback handling ──────────────────────────
 const APP_PROTOCOL = 'nebula';
@@ -1114,58 +1119,35 @@ ipcMain.handle('shell:open-external', async (_event, url) => {
   }
 });
 
-function fetchCliEnv(tool, authToken) {
-  return new Promise((resolve) => {
-    try {
-      const t = (tool || 'claude').toString().toLowerCase();
-      if (!backendPort || !t) return resolve({ env: {}, status: 0, error: 'Backend not ready' });
-
-      const pathUrl = `/terminal/cli/env?tool=${encodeURIComponent(t)}`;
-      const req = http.request({
-        hostname: '127.0.0.1',
-        port: backendPort,
-        path: pathUrl,
-        method: 'GET',
-        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-      }, (res) => {
-        let raw = '';
-        res.on('data', (c) => { raw += c.toString('utf-8'); });
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(raw || '{}') || {};
-            const env = parsed.env && typeof parsed.env === 'object' ? parsed.env : {};
-            const error = typeof parsed.error === 'string' ? parsed.error : '';
-
-            // Only allow a tight set of env keys to be injected into spawned shells.
-            const allowed = new Set([
-              'ANTHROPIC_API_KEY',
-              'CLAUDE_CODE_OAUTH_TOKEN',
-            ]);
-            const filtered = {};
-            for (const [k, v] of Object.entries(env)) {
-              if (!allowed.has(k)) continue;
-              if (typeof v !== 'string') continue;
-              filtered[k] = v;
-            }
-            resolve({ env: filtered, status: res.statusCode || 0, error });
-          } catch (_) {
-            resolve({ env: {}, status: res.statusCode || 0, error: 'Invalid response from backend' });
-          }
-        });
-      });
-      req.on('error', () => resolve({ env: {}, status: 0, error: 'Failed to reach backend' }));
-      req.setTimeout(2000, () => {
-        try { req.destroy(); } catch (_) {}
-        resolve({ env: {}, status: 0, error: 'Backend request timed out' });
-      });
-      req.end();
-    } catch (_) {
-      resolve({ env: {}, status: 0, error: 'Failed to request CLI env' });
-    }
-  });
-}
-
 ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
+  // Wait until the shipped credential bundle has been unpacked into
+  // ~/.claude and ~/.codex. If the bundle install hasn't started yet (very
+  // early click), kick it off now. We always wait — never spawn the CLI
+  // against an empty cred dir, otherwise the user gets a login prompt.
+  try {
+    if (!cliBundleReadyPromise) {
+      try { cliBundle.init(app); } catch (_) {}
+      cliBundleReadyPromise = cliBundle.ensureInstalled().catch((err) => ({
+        ok: false, errorCode: 'BUNDLE_UNKNOWN', message: err?.message || String(err),
+      }));
+    }
+    const bundleRes = await cliBundleReadyPromise;
+    if (!bundleRes || bundleRes.ok !== true) {
+      return {
+        ok: false,
+        installed: false,
+        message: `Credential bundle not installed (${bundleRes && bundleRes.errorCode || 'unknown'}). Open Admin → Repair CLI Credentials, or reinstall.`,
+        bundleError: bundleRes || null,
+      };
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      installed: false,
+      message: `Credential bundle check failed: ${e?.message || String(e)}`,
+    };
+  }
+
   let launch = getCliLaunchConfig(tool);
 
   if (!launch.installed) {
@@ -1195,33 +1177,22 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
   }
 
   const sessionId = `cli-${++cliSessionCounter}`;
-  const authToken = options && typeof options === 'object' ? (options.authToken || '') : '';
-  const normalizedTool = (tool || 'claude').toString().toLowerCase();
-
-  if (normalizedTool === 'claude' && !authToken) {
-    return {
-      ok: false,
-      installed: true,
-      message: 'Login required to use Claude CLI.',
-      shell: launch.shellLabel,
-    };
+  // CLI auth comes from on-disk credentials unpacked by cli-bundle into
+  // ~/.claude/.credentials.json and ~/.codex/auth.json. Strip any env-var
+  // overrides the user may have set globally — otherwise Claude/Codex CLI
+  // will prefer the env var over our bundled creds and prompt for login.
+  const env = { ...process.env, TERM: 'xterm-256color' };
+  for (const k of [
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'CLAUDE_API_KEY',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'OPENAI_API_KEY',
+    'OPENAI_AUTH_TOKEN',
+    'CODEX_API_KEY',
+  ]) {
+    delete env[k];
   }
-
-  const cliEnvRes = await fetchCliEnv(normalizedTool, authToken);
-  const extraEnv = (cliEnvRes && typeof cliEnvRes === 'object' && cliEnvRes.env) ? cliEnvRes.env : {};
-
-  if (normalizedTool === 'claude') {
-    if ((cliEnvRes.status || 0) === 401) {
-      return {
-        ok: false,
-        installed: true,
-        message: 'Login required to use Claude CLI.',
-        shell: launch.shellLabel,
-      };
-    }
-  }
-
-  const env = { ...process.env, TERM: 'xterm-256color', ...extraEnv };
   const requestedCwd = options && typeof options === 'object'
     ? (options.cwd || options.projectRoot || '')
     : '';
@@ -1325,6 +1296,21 @@ ipcMain.handle('cli:close', (event, sessionId) => {
   return { ok: true };
 });
 
+// ─── CLI auth bundle (Claude/Codex credentials unpack) ─────────
+ipcMain.handle('cli-bundle:status', () => {
+  try { return cliBundle.getStatus(); }
+  catch (e) { return { ok: false, errorCode: 'BUNDLE_UNKNOWN', message: e?.message || String(e) }; }
+});
+
+ipcMain.handle('cli-bundle:repair', async (_event, opts) => {
+  try {
+    const override = !!(opts && opts.override);
+    return await cliBundle.forceReinstall({ override });
+  } catch (e) {
+    return { ok: false, errorCode: 'BUNDLE_UNKNOWN', message: e?.message || String(e) };
+  }
+});
+
 // ─── App Lifecycle ──────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -1356,6 +1342,31 @@ app.whenReady().then(async () => {
         .finally(() => { cliToolsInstallPromise = null; });
     }
     // We intentionally don't await cliToolsInstallPromise here so it doesn't block startup.
+
+    // Unpack the shipped credential bundle into ~/.claude and ~/.codex.
+    // Runs in parallel with backend startup; never blocks UI. `cli:start`
+    // awaits cliBundleReadyPromise so a CLI session never spawns before the
+    // bundled credentials are on disk.
+    try {
+      cliBundle.init(app);
+      cliBundleReadyPromise = cliBundle.ensureInstalled().then((res) => {
+        if (!res.ok) {
+          console.warn(`[cli-bundle] install failed: ${res.errorCode} — ${res.message || ''}`);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            try { mainWindow.webContents.send('cli-bundle:event', { type: 'install-failed', ...res }); } catch (_) {}
+          }
+        } else if (res.status === 'installed') {
+          console.log('[cli-bundle] installed CLI credentials into ~/.claude and ~/.codex');
+        }
+        return res;
+      }).catch((err) => {
+        console.error('[cli-bundle] unexpected error:', err);
+        return { ok: false, errorCode: 'BUNDLE_UNKNOWN', message: err?.message || String(err) };
+      });
+    } catch (e) {
+      console.error('[cli-bundle] init failed:', e);
+      cliBundleReadyPromise = Promise.resolve({ ok: false, errorCode: 'BUNDLE_INIT_FAIL', message: e?.message || String(e) });
+    }
 
     // Find a free port
     backendPort = await findFreePort();

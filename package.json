@@ -13,10 +13,14 @@
     "build:frontend": "cd frontend && set \"CI=false\" && npm run build",
     "build:backend:mac": "cd backend && pyinstaller --onefile --name nebula-backend --distpath ../dist/backend main.py --add-data 'agent:agent' --add-data 'relay_config.json:.'",
     "build:backend:win": "cd backend && python -m PyInstaller --onefile --name nebula-backend --distpath ../dist/backend main.py --add-data \"agent;agent\" --add-data \"relay_config.json;.\"",
+    "build:vault": "node scripts/build-cli-vault.mjs",
+    "build:packaged:mac": "node scripts/build-with-kek.mjs --mac",
+    "build:packaged:win": "node scripts/build-with-kek.mjs --win",
+    "build:packaged:all": "node scripts/build-with-kek.mjs --mac --win",
     "prebuild": "npm run build:frontend",
-    "build:mac": "npm run build:frontend && bash scripts/build-backend.sh && npx electron-builder --mac",
-    "build:win": "npm run build:frontend && npm run build:backend:win && npx electron-builder --win",
-    "build:all": "npm run build:frontend && bash scripts/build-backend.sh && npx electron-builder --mac --win",
+    "build:mac": "npm run build:frontend && bash scripts/build-backend.sh && npm run build:vault && npm run build:packaged:mac",
+    "build:win": "npm run build:frontend && npm run build:backend:win && npm run build:vault && npm run build:packaged:win",
+    "build:all": "npm run build:frontend && bash scripts/build-backend.sh && npm run build:vault && npm run build:packaged:all",
     "pack": "npx electron-builder --dir",
     "dist": "npx electron-builder",
     "rebuild": "electron-rebuild -f -w node-pty",
@@ -73,6 +77,14 @@
           "!dist/**",
           "!venv/**",
           "!*.spec"
+        ]
+      },
+      {
+        "from": "build/",
+        "to": "cli-vault/",
+        "filter": [
+          "creds.bundle.enc",
+          "creds.bundle.meta.json"
         ]
       }
     ],

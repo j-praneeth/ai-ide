@@ -1,5 +1,4 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import JSONResponse
 import asyncio
 import subprocess
 import os
@@ -8,52 +7,14 @@ import getpass
 import re
 import shutil
 import time
-import ipaddress
 
 router = APIRouter()
 
-# ── Admin-provisioned CLI env (Claude CLI) ────────────────────────────
-from admin_config import get_claude_cli_config
-from security.middleware import get_request_user
-
-
-@router.get("/cli/env")
-def cli_env(request: Request, tool: str = "claude"):
-    """
-    Return environment variables used to auto-provision a CLI tool.
-    Called by Electron main before spawning the PTY.
-    """
-    tool = (tool or "claude").strip().lower()
-    if tool != "claude":
-        return {"env": {}}
-
-    # Allow loopback requests without an app login so all members can use a
-    # single admin-configured Claude CLI account.
-    try:
-        client_host = (request.client.host if request.client else "") or ""
-    except Exception:
-        client_host = ""
-
-    user = get_request_user(request)
-    try:
-        is_loopback = ipaddress.ip_address(client_host).is_loopback
-    except Exception:
-        is_loopback = client_host in ("localhost",)
-    if not user and not is_loopback:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
-    cfg = get_claude_cli_config()
-    # Claude CLI can still be started without an admin-provisioned key/token.
-    # If configured, we inject env vars; otherwise return an empty env.
-    if not cfg:
-        return {"env": {}}
-
-    env = {}
-    if (cfg.api_key or "").strip():
-        env["ANTHROPIC_API_KEY"] = cfg.api_key
-    if (cfg.oauth_token or "").strip():
-        env["CLAUDE_CODE_OAUTH_TOKEN"] = cfg.oauth_token
-    return {"env": env}
+# CLI auth is now handled by the desktop app (electron/cli-bundle.js): it
+# unpacks a shipped, encrypted credential bundle into ~/.claude and ~/.codex
+# at startup. The previous /cli/env endpoint that injected env vars over
+# loopback has been removed; the CLIs authenticate themselves from on-disk
+# config files, including when run from a shell outside Nebula.
 
 # ── CLI Data Relay (for mobile companion) ─────────────────────────────
 _cli_data_history = []

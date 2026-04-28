@@ -1,4 +1,3 @@
-import React, { useEffect, useState, useCallback } from 'react';
 import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { API_URL as API } from '../config';
@@ -47,12 +46,11 @@ export default function AdminPanel() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  const [configLoading, setConfigLoading] = useState(false);
-  const [claudeCfg, setClaudeCfg] = useState(null);
-  const [claudeApiKey, setClaudeApiKey] = useState('');
-  const [claudeOauthToken, setClaudeOauthToken] = useState('');
-  const [cfgError, setCfgError] = useState('');
-  const [cfgSuccess, setCfgSuccess] = useState('');
+  const [bundleLoading, setBundleLoading] = useState(false);
+  const [bundleStatus, setBundleStatus] = useState(null);
+  const [bundleError, setBundleError] = useState('');
+  const [bundleSuccess, setBundleSuccess] = useState('');
+  const [bundleRepairing, setBundleRepairing] = useState(false);
 
   const refreshUsers = useCallback(async () => {
     if (!isAdmin) return;
@@ -69,24 +67,29 @@ export default function AdminPanel() {
 
   useEffect(() => { refreshUsers(); }, [refreshUsers]);
 
-  const refreshConfig = useCallback(async () => {
+  const refreshBundleStatus = useCallback(async () => {
     if (!isAdmin) return;
-    setConfigLoading(true);
-    setCfgError('');
+    if (!window.electronAPI?.cliBundleStatus) {
+      setBundleStatus(null);
+      setBundleError('CLI bundle status is only available in the desktop app.');
+      return;
+    }
+    setBundleLoading(true);
+    setBundleError('');
     try {
-      const res = await axios.get(`${API}/admin/config/claude-cli`);
-      setClaudeCfg(res.data?.claude_cli || null);
+      const res = await window.electronAPI.cliBundleStatus();
+      setBundleStatus(res || null);
     } catch (e) {
-      setClaudeCfg(null);
-      setCfgError(e?.response?.data?.error || e.message || 'Failed to load configuration');
+      setBundleStatus(null);
+      setBundleError(e?.message || 'Failed to load CLI bundle status');
     } finally {
-      setConfigLoading(false);
+      setBundleLoading(false);
     }
   }, [isAdmin]);
 
   useEffect(() => {
-    if (tab === 'configurations') refreshConfig();
-  }, [tab, refreshConfig]);
+    if (tab === 'configurations') refreshBundleStatus();
+  }, [tab, refreshBundleStatus]);
 
   const createUser = async () => {
     setError('');
@@ -108,39 +111,27 @@ export default function AdminPanel() {
     }
   };
 
-  const saveClaudeConfig = async () => {
-    setCfgError('');
-    setCfgSuccess('');
-    try {
-      const res = await axios.post(`${API}/admin/config/claude-cli`, { api_key: claudeApiKey, oauth_token: claudeOauthToken });
-      if (res.data?.error) {
-        setCfgError(res.data.error);
-        return;
-      }
-      setClaudeCfg(res.data?.claude_cli || null);
-      setCfgSuccess(`Saved. Provisioned ${res.data?.provisioned_users ?? 0} users.`);
-      setClaudeApiKey('');
-      setClaudeOauthToken('');
-      setTimeout(() => setCfgSuccess(''), 3500);
-    } catch (e) {
-      setCfgError(e?.response?.data?.error || e.message || 'Save failed');
+  const repairCliBundle = async (override = false) => {
+    setBundleError('');
+    setBundleSuccess('');
+    if (!window.electronAPI?.cliBundleRepair) {
+      setBundleError('CLI bundle repair is only available in the desktop app.');
+      return;
     }
-  };
-
-  const clearClaudeConfig = async () => {
-    setCfgError('');
-    setCfgSuccess('');
+    setBundleRepairing(true);
     try {
-      const res = await axios.post(`${API}/admin/config/claude-cli/clear`, {});
-      if (res.data?.error) {
-        setCfgError(res.data.error);
-        return;
+      const res = await window.electronAPI.cliBundleRepair({ override });
+      if (!res?.ok) {
+        setBundleError(`${res?.errorCode || 'BUNDLE_UNKNOWN'}: ${res?.message || 'Repair failed'}`);
+      } else {
+        setBundleSuccess(res.status === 'installed' ? 'CLI credentials reinstalled.' : 'CLI credentials are healthy.');
+        setTimeout(() => setBundleSuccess(''), 3500);
       }
-      setClaudeCfg(null);
-      setCfgSuccess('Cleared.');
-      setTimeout(() => setCfgSuccess(''), 2500);
+      await refreshBundleStatus();
     } catch (e) {
-      setCfgError(e?.response?.data?.error || e.message || 'Clear failed');
+      setBundleError(e?.message || 'Repair failed');
+    } finally {
+      setBundleRepairing(false);
     }
   };
 
@@ -203,52 +194,73 @@ export default function AdminPanel() {
           <div style={{ padding: 12 }}>
             <div style={card}>
               <div style={{ fontSize: 13, fontWeight: 900, color: 'var(--text-primary)', marginBottom: 8 }}>
-                Claude CLI
+                CLI Auth Bundle
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                Save credentials once and Nebula will automatically provision CLI access for all users.
+                Claude and Codex CLI credentials are unpacked from a shipped bundle into <code>~/.claude</code> and <code>~/.codex</code> at startup. Use Repair if a CLI starts asking for login.
               </div>
 
               <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
                 <div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Current</div>
-                  {configLoading ? (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Status</div>
+                  {bundleLoading ? (
                     <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading…</div>
-                  ) : claudeCfg?.configured ? (
+                  ) : bundleStatus?.marker ? (
                     <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>
-                      API key: <span style={{ color: 'var(--text-muted)' }}>{claudeCfg.api_key_masked || '—'}</span>
+                      Installed at: <span style={{ color: 'var(--text-muted)' }}>{bundleStatus.marker.installed_at || '—'}</span>
                       <br />
-                      OAuth token: <span style={{ color: 'var(--text-muted)' }}>{claudeCfg.oauth_token_masked || '—'}</span>
+                      Bundle SHA: <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>{(bundleStatus.marker.bundleSha || '').slice(0, 16)}…</span>
+                      <br />
+                      Files on disk:{' '}
+                      <span style={{ color: bundleStatus.files?.claudeCreds ? 'var(--text-primary)' : 'var(--error, #e5534b)' }}>
+                        claude.credentials_json {bundleStatus.files?.claudeCreds ? '✓' : '✗'}
+                      </span>
+                      {' · '}
+                      <span style={{ color: bundleStatus.files?.codexAuth ? 'var(--text-primary)' : 'var(--error, #e5534b)' }}>
+                        codex.auth_json {bundleStatus.files?.codexAuth ? '✓' : '✗'}
+                      </span>
                     </div>
                   ) : (
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Not configured.</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      {bundleStatus === null && bundleError ? bundleError : 'Not installed yet — try Repair.'}
+                    </div>
                   )}
                 </div>
 
-                <div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>ANTHROPIC_API_KEY</div>
-                  <input type="password" value={claudeApiKey} onChange={e => setClaudeApiKey(e.target.value)} style={inputStyle} placeholder="Paste API key" />
-                </div>
-                <div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>CLAUDE_CODE_OAUTH_TOKEN (optional)</div>
-                  <input type="password" value={claudeOauthToken} onChange={e => setClaudeOauthToken(e.target.value)} style={inputStyle} placeholder="Paste OAuth token (optional)" />
-                </div>
+                {bundleStatus?.lastError && (
+                  <div style={{ fontSize: 12, color: 'var(--error, #e5534b)', fontFamily: 'monospace' }}>
+                    Last error: {bundleStatus.lastError.code} — {bundleStatus.lastError.message}
+                  </div>
+                )}
 
-                {(cfgError || cfgSuccess) && (
-                  <div style={{ fontSize: 12, color: cfgError ? 'var(--error, #e5534b)' : 'var(--accent)', fontWeight: 700 }}>
-                    {cfgError || cfgSuccess}
+                {(bundleError || bundleSuccess) && (
+                  <div style={{ fontSize: 12, color: bundleError ? 'var(--error, #e5534b)' : 'var(--accent)', fontWeight: 700 }}>
+                    {bundleError || bundleSuccess}
                   </div>
                 )}
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                  <button type="button" onClick={refreshConfig} style={{ ...buttonStyle, padding: '8px 10px', background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }} disabled={configLoading}>
+                  <button
+                    type="button"
+                    onClick={refreshBundleStatus}
+                    style={{ ...buttonStyle, padding: '8px 10px', background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                    disabled={bundleLoading}
+                  >
                     Refresh
                   </button>
-                  <button type="button" onClick={clearClaudeConfig} style={{ ...buttonStyle, padding: '8px 10px', background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
-                    Clear
-                  </button>
-                  <button type="button" onClick={saveClaudeConfig} style={buttonStyle} disabled={!claudeApiKey && !claudeOauthToken}>
-                    Save &amp; Provision
+                  {bundleStatus?.lastError?.code === 'BUNDLE_LOCK_STUCK' && (
+                    <button
+                      type="button"
+                      onClick={() => repairCliBundle(true)}
+                      style={{ ...buttonStyle, padding: '8px 10px', background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+                      disabled={bundleRepairing}
+                      title="Override the install lock (use only after confirming no other instance is installing)"
+                    >
+                      Force Repair
+                    </button>
+                  )}
+                  <button type="button" onClick={() => repairCliBundle(false)} style={buttonStyle} disabled={bundleRepairing}>
+                    {bundleRepairing ? 'Repairing…' : 'Repair CLI auth'}
                   </button>
                 </div>
               </div>

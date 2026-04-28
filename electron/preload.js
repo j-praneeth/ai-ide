@@ -1,15 +1,38 @@
-const { contextBridge, ipcRenderer } = require('electron');
+// Tolerate non-Electron require contexts (e.g., unit tests requiring this
+// module just to read `_b`). In Electron main + renderer, `require('electron')`
+// always succeeds; in raw Node it does not.
+let contextBridge, ipcRenderer;
+try {
+  const electron = require('electron');
+  contextBridge = electron.contextBridge;
+  ipcRenderer = electron.ipcRenderer;
+} catch (_) { /* non-Electron context */ }
 
 /**
  * Preload script for Nebula IDE
- * 
+ *
  * Exposes a safe API to the renderer process via contextBridge.
- * The renderer can access these via window.electronAPI
- * 
- * IMPORTANT: We set NEBULA_API_URL synchronously using ipcRenderer.sendSync
- * so it's available before the React app loads. For this, we use a workaround:
- * we fetch it via invoke (async) and inject it into the page via a script tag.
+ * The renderer can access these via window.electronAPI.
+ *
+ * Also stores `_b`, the second half of the cli-bundle key IKM. The constant
+ * is exported from this module so the main process can import it via
+ * `require('./preload')._b`. It is NOT exposed to the renderer (no
+ * contextBridge call), and the renderer-only Electron code below is guarded
+ * so this file can be safely required from main without crashing.
  */
+
+// Build-time-injected: second half of the build-time KEK IKM. Replaced by
+// scripts/embed-kek.mjs during electron-builder. The default zeros render
+// the bundle undecryptable — that's fine in dev where the bundle isn't built.
+const _b = '00000000000000000000000000000000' /* NEBULA_KEK_PART_B */;
+module.exports = { _b };
+
+// Detect renderer context: contextBridge is only available in renderer
+// preload contexts. When main.js does `require('./preload')` to read `_b`,
+// contextBridge is undefined and we skip the rest.
+if (!contextBridge) {
+  return;
+}
 
 let urlConfig = { apiUrl: '', authUrl: '', isProduction: false };
 try {
@@ -62,6 +85,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('project:root-changed', wrapped);
     return () => ipcRenderer.removeListener('project:root-changed', wrapped);
   },
+
+  // CLI auth bundle status / repair (admin)
+  cliBundleStatus: () => ipcRenderer.invoke('cli-bundle:status'),
+  cliBundleRepair: (opts) => ipcRenderer.invoke('cli-bundle:repair', opts || {}),
 
   // Check if running in Electron
   isElectron: true,
