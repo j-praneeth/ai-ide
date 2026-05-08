@@ -144,7 +144,7 @@ function TreeNode({ node, basePath, depth, openFile, selectedFile, expandedFolde
   );
 }
 
-export default function FileExplorer({ tree, openFile, selectedFile, onRefresh, showHiddenFiles, onToggleShowHidden, triggerNewFile, onNewFileDone, onOpenFolder, onLoadChildren }) {
+export default function FileExplorer({ tree, treeLoading, openFile, selectedFile, onRefresh, showHiddenFiles, onToggleShowHidden, triggerNewFile, onNewFileDone, onOpenFolder, onLoadChildren }) {
   const [expandedFolders, setExpandedFolders] = useState(new Set());
   const [lazyChildren, setLazyChildren] = useState({});
   const [showNewFileInput, setShowNewFileInput] = useState(false);
@@ -389,6 +389,11 @@ export default function FileExplorer({ tree, openFile, selectedFile, onRefresh, 
       )}
       <div className="file-tree">
         {(!tree || tree.length === 0) && !showNewFileInput && !showNewFolderInput ? (
+          treeLoading ? (
+            <div className="explorer-empty-state">
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 24, textAlign: 'center' }}>Loading files…</div>
+            </div>
+          ) : (
           <div className="explorer-empty-state">
             <VscFolderOpened size={40} className="explorer-empty-icon" />
             <p className="explorer-empty-title">No folder opened</p>
@@ -399,6 +404,7 @@ export default function FileExplorer({ tree, openFile, selectedFile, onRefresh, 
               Open Folder
             </button>
           </div>
+          )
         ) : (
           <>
             {(showNewFileInput || showNewFolderInput) && (

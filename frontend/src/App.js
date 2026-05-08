@@ -84,6 +84,7 @@ const MENU_ITEMS = {
 function App() {
   // File system state
   const [tree, setTree] = useState([]);
+  const [treeLoading, setTreeLoading] = useState(false);
   const [openFiles, setOpenFiles] = useState([]);
   const [activeFile, setActiveFile] = useState(null);
   const [fileContents, setFileContents] = useState({});
@@ -128,12 +129,13 @@ function App() {
   const [showHiddenFiles, setShowHiddenFiles] = useState(() => {
     try {
       const s = localStorage.getItem('nebula_ide_settings');
-      return s ? (JSON.parse(s).showHiddenFiles === true) : false;
-    } catch { return false; }
+      return s ? (JSON.parse(s).showHiddenFiles !== false) : true;
+    } catch { return true; }
   });
 
   // Load file tree (optionally include hidden files); from backend or from web folder handle
   const loadTree = useCallback(async () => {
+    setTreeLoading(true);
     try {
       if (webFolderHandle) {
         const nodes = await listDirFromHandle(webFolderHandle, '', showHiddenFiles);
@@ -144,6 +146,8 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to load file tree:', err);
+    } finally {
+      setTreeLoading(false);
     }
   }, [showHiddenFiles, webFolderHandle]);
 
@@ -927,6 +931,7 @@ function App() {
             {sidebarPanel === 'explorer' && (
               <FileExplorer
                 tree={tree}
+                treeLoading={treeLoading}
                 openFile={openFile}
                 selectedFile={activeFile}
                 onRefresh={loadTree}

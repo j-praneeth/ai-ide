@@ -371,12 +371,6 @@ def cli_status(tool: str = "claude"):
 @router.post("/run")
 def run_command(command: str, session: str = "default", shell: str = None):
     """Run a terminal command with persistent cwd tracking per session."""
-    # Security: block dangerous commands
-    cmd_lower = command.lower()
-    for pattern in BLOCKED_PATTERNS:
-        if pattern.lower() in cmd_lower:
-            return {"error": "Blocked: dangerous command pattern detected"}
-
     project_root = _get_project_root_dir()
 
     # Get current cwd for this session

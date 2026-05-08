@@ -124,25 +124,11 @@ def _list_dir(dir_path, show_hidden=False):
         if p.is_dir():
             if p.name in SKIP_DIRS:
                 continue
-            # Check if folder has visible children (for chevron indicator)
-            has_children = False
-            try:
-                for child in p.iterdir():
-                    if not show_hidden and child.name.startswith(".") and child.name not in ('.env', '.gitignore', '.editorconfig'):
-                        continue
-                    if child.name in SKIP_FILES and not (show_hidden and child.name.startswith('.')):
-                        continue
-                    if child.is_dir() and child.name in SKIP_DIRS:
-                        continue
-                    has_children = True
-                    break
-            except PermissionError:
-                pass
             items.append({
                 "name": p.name,
                 "type": "folder",
                 "children": [],  # Lazy — loaded on expand
-                "hasChildren": has_children,
+                "hasChildren": True,  # Always show chevron; actual children loaded on expand
             })
         else:
             try:
