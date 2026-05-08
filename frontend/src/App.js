@@ -865,7 +865,7 @@ function App() {
           </div>
         </div>
         <div className="title-bar-center">
-          <span className="title-bar-project">✦ {projectName}</span>
+          <span className="title-bar-project">{projectName}</span>
           {activeFile && (
             <>
               <span className="title-bar-separator">—</span>
@@ -918,15 +918,15 @@ function App() {
 
       {/* Main Body */}
       <div className="ide-body">
-        {/* Sidebar — includes horizontal activity bar at top */}
+        {/* Vertical Activity Bar — always visible (Cursor-style) */}
+        <ActivityBar
+          activePanel={sidebarPanel}
+          onPanelChange={setSidebarPanel}
+        />
+
         {sidebarPanel && (
           <>
           <div className="sidebar">
-            {/* Horizontal Activity Bar (Cursor-style) */}
-            <ActivityBar
-              activePanel={sidebarPanel}
-              onPanelChange={setSidebarPanel}
-            />
             {/* Panel Content */}
             {sidebarPanel === 'explorer' && (
               <FileExplorer

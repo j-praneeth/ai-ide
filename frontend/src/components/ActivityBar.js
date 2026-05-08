@@ -13,20 +13,21 @@ import { getAuthUser, logout } from '../lib/auth';
 import { AUTH_URL as AUTH } from '../config';
 import { startSsoLogin as startSsoLoginFlow } from '../lib/sso';
 
-const ACTIVITY_ITEMS = [
+const TOP_ITEMS = [
   { id: 'explorer', icon: VscFiles, label: 'Explorer (⌘⇧E)' },
   { id: 'search', icon: VscSearch, label: 'Search (⌘⇧F)' },
   { id: 'source-control', icon: VscSourceControl, label: 'Source Control (⌘⇧G)' },
   { id: 'extensions', icon: VscExtensions, label: 'Extensions (⌘⇧X)' },
   { id: 'usage', icon: VscGraph, label: 'Token Usage' },
-  { id: 'settings', icon: VscSettingsGear, label: 'Settings (⌘,)' },
-  { id: 'account', icon: VscAccount, label: 'Account' },
   { id: 'chat', icon: VscComment, label: 'AI Chat (⌘L)' },
 ];
 
-export default function ActivityBar({ activePanel, onPanelChange, chatOpen, onToggleChat }) {
-  const items = ACTIVITY_ITEMS;
+const BOTTOM_ITEMS = [
+  { id: 'settings', icon: VscSettingsGear, label: 'Settings (⌘,)' },
+  { id: 'account', icon: VscAccount, label: 'Account' },
+];
 
+export default function ActivityBar({ activePanel, onPanelChange, chatOpen, onToggleChat }) {
   const showAccountMenu = (e) => {
     const u = getAuthUser();
     const existing = document.getElementById('account-context-menu');
@@ -35,24 +36,23 @@ export default function ActivityBar({ activePanel, onPanelChange, chatOpen, onTo
     const menu = document.createElement('div');
     menu.id = 'account-context-menu';
     menu.style.cssText = `
-      position: fixed; bottom: 50px; left: 10px; z-index: 10001;
+      position: fixed; bottom: 60px; left: 58px; z-index: 10001;
       background: var(--bg-elevated); border: 1px solid var(--border);
-      border-radius: 8px; padding: 6px; min-width: 200px;
-      box-shadow: var(--shadow-lg); animation: fadeInUp 0.15s ease;
+      border-radius: 6px; padding: 4px; min-width: 200px;
+      box-shadow: var(--shadow-lg); animation: fadeInUp 0.12s ease;
     `;
 
     const info = document.createElement('div');
-    info.style.cssText = 'padding: 8px 12px; font-size: 11px; color: var(--text-muted); border-bottom: 1px solid var(--border); margin-bottom: 4px;';
-    info.textContent = u?.email ? `Logged in as ${u.email}` : 'Not signed in';
+    info.style.cssText = 'padding: 8px 10px; font-size: 11px; color: var(--text-muted); border-bottom: 1px solid var(--border); margin-bottom: 4px;';
+    info.textContent = u?.email ? `Signed in as ${u.email}` : 'Not signed in';
     menu.appendChild(info);
 
     if (u) {
       if (u.role === 'super_admin') {
         const adminBtn = document.createElement('div');
-        adminBtn.className = 'menu-item';
-        adminBtn.style.cssText = 'padding: 8px 12px; font-size: 12px; color: var(--accent); cursor: pointer; border-radius: 4px; font-weight: 700;';
-        adminBtn.textContent = 'Open Admin Panel ↗';
-        adminBtn.onmouseenter = () => adminBtn.style.background = 'var(--bg-surface)';
+        adminBtn.style.cssText = 'padding: 7px 10px; font-size: 12px; color: var(--accent); cursor: pointer; border-radius: 3px; font-weight: 600;';
+        adminBtn.textContent = 'Open Admin Panel';
+        adminBtn.onmouseenter = () => adminBtn.style.background = 'var(--bg-hover)';
         adminBtn.onmouseleave = () => adminBtn.style.background = 'transparent';
         adminBtn.onclick = () => {
           const url = window.location.origin + window.location.pathname + '#/admin';
@@ -61,72 +61,67 @@ export default function ActivityBar({ activePanel, onPanelChange, chatOpen, onTo
         };
         menu.appendChild(adminBtn);
       }
-
       const logoutBtn = document.createElement('div');
-      logoutBtn.className = 'menu-item';
-      logoutBtn.style.cssText = 'padding: 8px 12px; font-size: 12px; color: var(--text-primary); cursor: pointer; border-radius: 4px;';
+      logoutBtn.style.cssText = 'padding: 7px 10px; font-size: 12px; color: var(--text-primary); cursor: pointer; border-radius: 3px;';
       logoutBtn.textContent = 'Log Out';
-      logoutBtn.onmouseenter = () => logoutBtn.style.background = 'var(--bg-surface)';
+      logoutBtn.onmouseenter = () => logoutBtn.style.background = 'var(--bg-hover)';
       logoutBtn.onmouseleave = () => logoutBtn.style.background = 'transparent';
-      logoutBtn.onclick = () => {
-        logout();
-        menu.remove();
-      };
+      logoutBtn.onclick = () => { logout(); menu.remove(); };
       menu.appendChild(logoutBtn);
     } else {
       const loginBtn = document.createElement('div');
-      loginBtn.className = 'menu-item';
-      loginBtn.style.cssText = 'padding: 8px 12px; font-size: 12px; color: var(--text-primary); cursor: pointer; border-radius: 4px;';
+      loginBtn.style.cssText = 'padding: 7px 10px; font-size: 12px; color: var(--text-primary); cursor: pointer; border-radius: 3px;';
       loginBtn.textContent = 'Log In';
-      loginBtn.onmouseenter = () => loginBtn.style.background = 'var(--bg-surface)';
+      loginBtn.onmouseenter = () => loginBtn.style.background = 'var(--bg-hover)';
       loginBtn.onmouseleave = () => loginBtn.style.background = 'transparent';
       loginBtn.onclick = () => {
-        startSsoLoginFlow(AUTH, { redirectUri: 'nebula://auth' }).catch(() => {
-          window.location.search = '?login=true';
-        });
+        startSsoLoginFlow(AUTH, { redirectUri: 'nebula://auth' }).catch(() => { window.location.search = '?login=true'; });
         menu.remove();
       };
       menu.appendChild(loginBtn);
     }
 
     document.body.appendChild(menu);
-
     const closeMenu = (ev) => {
-      if (!menu.contains(ev.target)) {
-        menu.remove();
-        document.removeEventListener('mousedown', closeMenu);
-      }
+      if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('mousedown', closeMenu); }
     };
     setTimeout(() => document.addEventListener('mousedown', closeMenu), 10);
   };
 
-  return (
-    <div className="activity-bar-horizontal">
-      {items.map(item => {
-        const isActive =
-          (item.id === 'chat' && (chatOpen || activePanel === 'chat')) ||
-          (item.id !== 'chat' && activePanel === item.id);
+  const handleItemClick = (e, item) => {
+    if (item.id === 'chat') {
+      if (typeof onToggleChat === 'function') onToggleChat();
+      else onPanelChange(activePanel === item.id ? null : item.id);
+    } else if (item.id === 'account') {
+      showAccountMenu(e);
+    } else {
+      onPanelChange(activePanel === item.id ? null : item.id);
+    }
+  };
 
-        return (
-          <button
-            key={item.id}
-            className={`activity-bar-h-item ${isActive ? 'active' : ''}`}
-            onClick={(e) => {
-              if (item.id === 'chat') {
-                if (typeof onToggleChat === 'function') onToggleChat();
-                else onPanelChange(activePanel === item.id ? null : item.id);
-              } else if (item.id === 'account') {
-                showAccountMenu(e);
-              } else {
-                onPanelChange(activePanel === item.id ? null : item.id);
-              }
-            }}
-            title={item.label}
-          >
-            <item.icon size={18} />
-          </button>
-        );
-      })}
+  const isActive = (item) =>
+    (item.id === 'chat' && (chatOpen || activePanel === 'chat')) ||
+    (item.id !== 'chat' && activePanel === item.id);
+
+  const renderItem = (item) => (
+    <button
+      key={item.id}
+      className={`activity-bar-item ${isActive(item) ? 'active' : ''}`}
+      onClick={(e) => handleItemClick(e, item)}
+      title={item.label}
+    >
+      <item.icon size={22} />
+    </button>
+  );
+
+  return (
+    <div className="activity-bar-vertical">
+      <div className="activity-bar-top">
+        {TOP_ITEMS.map(renderItem)}
+      </div>
+      <div className="activity-bar-bottom">
+        {BOTTOM_ITEMS.map(renderItem)}
+      </div>
     </div>
   );
 }
