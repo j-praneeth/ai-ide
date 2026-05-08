@@ -22,6 +22,8 @@ let cliToolsInstallPromise = null;
 // against a missing ~/.claude/.credentials.json or ~/.codex/auth.json.
 let cliBundleReadyPromise = null;
 
+const SCROLLBACK_MAX_BYTES = 512 * 1024; // 512 KB per session
+
 // ─── Deep-link / SSO callback handling ──────────────────────────
 const APP_PROTOCOL = 'nebula';
 let pendingAuthCallbackUrl = null;
@@ -407,11 +409,172 @@ function getCliLaunchConfig(tool) {
 function closeCliSession(sessionId) {
   const session = cliSessions.get(sessionId);
   if (!session) return;
-
+  session.explicitlyTerminated = true; // prevent auto-respawn
   try {
     session.ptyProcess.kill();
   } catch (_) {}
   cliSessions.delete(sessionId);
+}
+
+// Runs a credential freshness check immediately and then every 6 hours.
+// Warns the renderer if the OAuth refresh token appears to have expired.
+function _scheduleCredentialFreshnessCheck() {
+  const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+  function runCheck() {
+    try {
+      const result = cliBundle.checkTokenFreshness();
+      if (!result.ok && result.reason === 'stale') {
+        console.warn('[auth] Claude credentials stale:', result.message);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          try {
+            mainWindow.webContents.send('claude:credential-warning', result);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  runCheck();
+  setInterval(runCheck, CHECK_INTERVAL_MS);
+}
+
+// Detects OAuth re-auth URLs that Claude CLI prints when the refresh token expires.
+// Matches Claude AI and Anthropic auth domains.
+const CLAUDE_AUTH_URL_RE = /https:\/\/(?:claude\.ai|auth\.anthropic\.com|accounts\.anthropic\.com)\/[^\s\r\n"'<>]+/i;
+
+// Registers onData / onExit on a PTY process for a given session.
+// Called at spawn time and again after each auto-respawn.
+function attachPtyHandlers(sessionId, ptyProc, tool, env) {
+  ptyProc.onData((data) => {
+    const sess = cliSessions.get(sessionId);
+    if (sess) {
+      sess.scrollback.push(data);
+      sess.scrollbackBytes += Buffer.byteLength(data, 'utf8');
+      sess.lastActive = Date.now();
+      while (sess.scrollbackBytes > SCROLLBACK_MAX_BYTES && sess.scrollback.length > 0) {
+        const oldest = sess.scrollback.shift();
+        sess.scrollbackBytes -= Buffer.byteLength(oldest, 'utf8');
+      }
+      if (sess.sender && !sess.sender.isDestroyed()) {
+        sess.sender.send('cli:data', { sessionId, data });
+      }
+
+      // ── OAuth re-auth detection ──────────────────────────────────────
+      // Claude CLI prints an auth URL when the refresh token expires.
+      // We catch it, open the browser automatically, and notify the renderer
+      // so it can show a non-blocking banner — no manual terminal action needed.
+      if (!sess.authDetectBuf) sess.authDetectBuf = '';
+      sess.authDetectBuf = (sess.authDetectBuf + data).slice(-4096);
+      const authMatch = sess.authDetectBuf.match(CLAUDE_AUTH_URL_RE);
+      if (authMatch && !sess.pendingAuthUrl) {
+        sess.pendingAuthUrl = authMatch[0];
+        // Open in the user's default browser so the admin can complete OAuth
+        try { shell.openExternal(sess.pendingAuthUrl); } catch (_) {}
+        if (sess.sender && !sess.sender.isDestroyed()) {
+          sess.sender.send('cli:auth-required', {
+            sessionId,
+            url: sess.pendingAuthUrl,
+          });
+        }
+        // Allow re-detection after 10 minutes in case the first attempt failed
+        setTimeout(() => {
+          const s = cliSessions.get(sessionId);
+          if (s) s.pendingAuthUrl = null;
+        }, 10 * 60 * 1000);
+      }
+    }
+    if (backendPort) {
+      const postData = JSON.stringify({ sessionId, data });
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: backendPort,
+        path: '/terminal/cli/data',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData),
+        },
+      });
+      req.on('error', () => {});
+      req.write(postData);
+      req.end();
+    }
+  });
+
+  ptyProc.onExit((exitEvent) => {
+    const sess = cliSessions.get(sessionId);
+    if (!sess) return;
+
+    // Clean exit (/exit command) or explicit kill → notify and remove
+    if (sess.explicitlyTerminated || exitEvent.exitCode === 0) {
+      if (sess.sender && !sess.sender.isDestroyed()) {
+        sess.sender.send('cli:exit', { sessionId, ...exitEvent });
+      }
+      cliSessions.delete(sessionId);
+      return;
+    }
+
+    // Crash / unexpected exit → auto-respawn with exponential backoff
+    const MAX_RESPAWNS = 5;
+    if (sess.respawnCount >= MAX_RESPAWNS) {
+      const msg = `\r\n\x1b[31m  [Claude crashed ${MAX_RESPAWNS} times — giving up. Re-select the tool to restart.]\x1b[0m\r\n`;
+      sess.scrollback.push(msg);
+      if (sess.sender && !sess.sender.isDestroyed()) {
+        sess.sender.send('cli:data', { sessionId, data: msg });
+        sess.sender.send('cli:exit', { sessionId, ...exitEvent });
+      }
+      cliSessions.delete(sessionId);
+      return;
+    }
+
+    sess.respawnCount += 1;
+    const delayMs = Math.min(1000 * Math.pow(2, sess.respawnCount - 1), 30000);
+    const notif = `\r\n\x1b[33m  [Claude exited (code ${exitEvent.exitCode}) — restarting in ${delayMs / 1000}s (${sess.respawnCount}/${MAX_RESPAWNS})]\x1b[0m\r\n`;
+    sess.scrollback.push(notif);
+    if (sess.sender && !sess.sender.isDestroyed()) {
+      sess.sender.send('cli:data', { sessionId, data: notif });
+    }
+
+    setTimeout(() => {
+      const sessNow = cliSessions.get(sessionId);
+      if (!sessNow || sessNow.explicitlyTerminated) return;
+
+      const launch = getCliLaunchConfig(tool);
+      try {
+        const newPty = pty.spawn(launch.file, launch.args, {
+          name: 'xterm-color',
+          cols: 120,
+          rows: 32,
+          cwd: sessNow.cwd,
+          env,
+        });
+        sessNow.ptyProcess = newPty;
+        attachPtyHandlers(sessionId, newPty, tool, env);
+
+        if (launch.bootstrapInput) {
+          setTimeout(() => { try { newPty.write(launch.bootstrapInput); } catch (_) {} }, 250);
+        }
+
+        const ok = `\r\n\x1b[32m  [Claude restarted]\x1b[0m\r\n`;
+        sessNow.scrollback.push(ok);
+        if (sessNow.sender && !sessNow.sender.isDestroyed()) {
+          sessNow.sender.send('cli:data', { sessionId, data: ok });
+        }
+      } catch (e) {
+        const sessErr = cliSessions.get(sessionId);
+        if (sessErr) {
+          const errMsg = `\r\n\x1b[31m  [Respawn failed: ${e.message}]\x1b[0m\r\n`;
+          sessErr.scrollback.push(errMsg);
+          if (sessErr.sender && !sessErr.sender.isDestroyed()) {
+            sessErr.sender.send('cli:data', { sessionId, data: errMsg });
+            sessErr.sender.send('cli:exit', { sessionId, ...exitEvent });
+          }
+        }
+        cliSessions.delete(sessionId);
+      }
+    }, delayMs);
+  });
 }
 
 async function ensureCliToolsInstalled() {
@@ -1124,6 +1287,10 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
   // ~/.claude and ~/.codex. If the bundle install hasn't started yet (very
   // early click), kick it off now. We always wait — never spawn the CLI
   // against an empty cred dir, otherwise the user gets a login prompt.
+  // Ensure credentials are ready before spawning.
+  // If the admin ran `claude login`, the bundle check is a no-op (returns
+  // already-installed immediately). If no host login exists, the bundle
+  // installs its own credentials as a fallback.
   try {
     if (!cliBundleReadyPromise) {
       try { cliBundle.init(app); } catch (_) {}
@@ -1133,18 +1300,23 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
     }
     const bundleRes = await cliBundleReadyPromise;
     if (!bundleRes || bundleRes.ok !== true) {
-      return {
-        ok: false,
-        installed: false,
-        message: `Credential bundle not installed (${bundleRes && bundleRes.errorCode || 'unknown'}). Open Admin → Repair CLI Credentials, or reinstall.`,
-        bundleError: bundleRes || null,
-      };
+      // If the admin has run `claude login`, credentials are on disk and the
+      // bundle is irrelevant — proceed anyway. Only block if we have nothing.
+      const { claudeCreds } = (cliBundle.getStatus() || {}).files || {};
+      if (!claudeCreds) {
+        return {
+          ok: false,
+          installed: false,
+          message: 'No Claude credentials found. Run `claude login` in a terminal, or use Admin → Repair CLI Credentials.',
+          bundleError: bundleRes || null,
+        };
+      }
     }
   } catch (e) {
     return {
       ok: false,
       installed: false,
-      message: `Credential bundle check failed: ${e?.message || String(e)}`,
+      message: `Credential check failed: ${e?.message || String(e)}`,
     };
   }
 
@@ -1177,21 +1349,40 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
   }
 
   const sessionId = `cli-${++cliSessionCounter}`;
-  // CLI auth comes from on-disk credentials unpacked by cli-bundle into
-  // ~/.claude/.credentials.json and ~/.codex/auth.json. Strip any env-var
-  // overrides the user may have set globally — otherwise Claude/Codex CLI
-  // will prefer the env var over our bundled creds and prompt for login.
   const env = { ...process.env, TERM: 'xterm-256color' };
-  for (const k of [
-    'ANTHROPIC_API_KEY',
-    'ANTHROPIC_AUTH_TOKEN',
-    'CLAUDE_API_KEY',
-    'CLAUDE_CODE_OAUTH_TOKEN',
-    'OPENAI_API_KEY',
-    'OPENAI_AUTH_TOKEN',
-    'CODEX_API_KEY',
-  ]) {
-    delete env[k];
+
+  // Auth priority (highest → lowest):
+  //
+  //  1. ANTHROPIC_API_KEY in the system environment — a real API key never
+  //     expires and requires zero maintenance. If the admin has set one, use
+  //     it and leave all env vars intact.
+  //
+  //  2. On-disk credentials from `claude login` — Claude CLI handles silent
+  //     token refresh automatically. alreadyInstalled() now preserves these
+  //     so the bundle never overwrites a prior `claude login`.
+  //
+  //  3. Bundled credentials (cli-bundle fallback) — only used on machines
+  //     where neither of the above exists.
+  //
+  // In cases 2 and 3 we strip env-var keys so the CLI reads from disk
+  // instead of a stale env var.
+  const hasExplicitApiKey = !!(
+    process.env.ANTHROPIC_API_KEY
+    || process.env.ANTHROPIC_AUTH_TOKEN
+    || process.env.CLAUDE_CODE_OAUTH_TOKEN
+  );
+  if (!hasExplicitApiKey) {
+    for (const k of [
+      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_AUTH_TOKEN',
+      'CLAUDE_API_KEY',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+      'OPENAI_API_KEY',
+      'OPENAI_AUTH_TOKEN',
+      'CODEX_API_KEY',
+    ]) {
+      delete env[k];
+    }
   }
   const requestedCwd = options && typeof options === 'object'
     ? (options.cwd || options.projectRoot || '')
@@ -1235,37 +1426,20 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
   cliSessions.set(sessionId, {
     ptyProcess: ptyProcessRef,
     sender: event.sender,
+    scrollback: [],
+    scrollbackBytes: 0,
+    tool,
+    cwd,
+    env,
+    createdAt: Date.now(),
+    lastActive: Date.now(),
+    detached: false,
+    lastDetached: 0,
+    respawnCount: 0,
+    explicitlyTerminated: false,
   });
 
-  ptyProcessRef.onData((data) => {
-    if (!event.sender.isDestroyed()) {
-      event.sender.send('cli:data', { sessionId, data });
-    }
-    // Also relay to backend for mobile companion
-    if (backendPort) {
-      const postData = JSON.stringify({ sessionId, data });
-      const req = http.request({
-        hostname: '127.0.0.1',
-        port: backendPort,
-        path: '/terminal/cli/data',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-        },
-      });
-      req.on('error', () => {});
-      req.write(postData);
-      req.end();
-    }
-  });
-
-  ptyProcessRef.onExit((exitEvent) => {
-    if (!event.sender.isDestroyed()) {
-      event.sender.send('cli:exit', { sessionId, ...exitEvent });
-    }
-    cliSessions.delete(sessionId);
-  });
+  attachPtyHandlers(sessionId, ptyProcessRef, tool, env);
 
   return {
     ok: true,
@@ -1292,9 +1466,52 @@ ipcMain.handle('cli:resize', (event, sessionId, cols, rows) => {
 });
 
 ipcMain.handle('cli:close', (event, sessionId) => {
+  // Detach the renderer without killing the PTY — page refresh path.
+  // The PTY stays alive so the client can reattach on reconnect.
+  const sess = cliSessions.get(sessionId);
+  if (sess) {
+    sess.sender = null;
+    sess.detached = true;
+    sess.lastDetached = Date.now();
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('cli:reattach', (event, sessionId) => {
+  const sess = cliSessions.get(sessionId);
+  if (!sess) return { ok: false };
+  sess.sender = event.sender;
+  sess.detached = false;
+  sess.lastActive = Date.now();
+  return { ok: true, sessionId, scrollback: [...sess.scrollback] };
+});
+
+ipcMain.handle('cli:terminate', (_event, sessionId) => {
   closeCliSession(sessionId);
   return { ok: true };
 });
+
+ipcMain.handle('cli:list', () => {
+  return Array.from(cliSessions.entries()).map(([id, sess]) => ({
+    sessionId: id,
+    tool: sess.tool,
+    detached: sess.detached,
+    createdAt: sess.createdAt,
+    lastActive: sess.lastActive,
+  }));
+});
+
+// Reap sessions that have been orphaned for more than 30 minutes
+setInterval(() => {
+  const ORPHAN_TIMEOUT_MS = 30 * 60 * 1000;
+  const now = Date.now();
+  for (const [id, sess] of cliSessions) {
+    if (sess.detached && (now - sess.lastDetached) > ORPHAN_TIMEOUT_MS) {
+      try { sess.ptyProcess.kill(); } catch (_) {}
+      cliSessions.delete(id);
+    }
+  }
+}, 60 * 1000);
 
 // ─── CLI auth bundle (Claude/Codex credentials unpack) ─────────
 ipcMain.handle('cli-bundle:status', () => {
@@ -1358,6 +1575,13 @@ app.whenReady().then(async () => {
         } else if (res.status === 'installed') {
           console.log('[cli-bundle] installed CLI credentials into ~/.claude and ~/.codex');
         }
+
+        // After the bundle is settled, run a credential freshness check.
+        // This detects the rare case where the OAuth refresh token itself has
+        // expired (months/years after install). We warn the renderer so the
+        // admin sees a notification before users hit a login prompt.
+        _scheduleCredentialFreshnessCheck();
+
         return res;
       }).catch((err) => {
         console.error('[cli-bundle] unexpected error:', err);

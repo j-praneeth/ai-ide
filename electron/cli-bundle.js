@@ -604,6 +604,32 @@ function fileLooksOk(p, requiredKeys, kind /* 'json' | 'toml' */) {
 
 function alreadyInstalled(meta) {
   const c = ctx();
+
+  // ── Host-credentials priority check ──────────────────────────────────────
+  // If the admin already ran `claude login` on this machine, their credentials
+  // contain a refresh token that Claude CLI will silently renew indefinitely.
+  // Never overwrite those with the bundle — doing so would put us back on the
+  // rebuild-on-expiry treadmill. The bundle is a fallback for machines where
+  // no login has been performed yet.
+  const existingCreds = readJsonIfExists(c.files.claudeCreds);
+  if (existingCreds) {
+    // Claude Code stores OAuth creds under several possible top-level keys
+    const oauth = existingCreds.claudeAiOauth
+      || existingCreds.oauth
+      || existingCreds.oauthAccount
+      || existingCreds;
+    const hasRefreshToken = !!(
+      oauth.refreshToken
+      || oauth.refresh_token
+      || oauth.oauthRefreshToken
+    );
+    if (hasRefreshToken) {
+      logInfo(null, 'skipping bundle install — host credentials (claude login) found', {});
+      return true;
+    }
+  }
+
+  // ── Standard marker-based check (for machines without a prior claude login) ──
   const marker = readMarker();
   if (!marker) return false;
   if (marker.schema_version !== SCHEMA_VERSION) return false;
@@ -817,11 +843,69 @@ function getStatus() {
   };
 }
 
+// ── Credential freshness check ─────────────────────────────────────────────
+// Reads ~/.claude/.credentials.json and reports how long until the access
+// token expires.  The access token renews automatically via Claude CLI's
+// built-in refresh — this is only for detecting when the refresh token itself
+// may have been invalidated (credentials file not updated in >2 h after expiry).
+function checkTokenFreshness() {
+  const c = _ctx;
+  if (!c) return { ok: false, reason: 'not-initialized' };
+
+  try {
+    const raw = fs.readFileSync(c.files.claudeCreds, 'utf8');
+    const creds = JSON.parse(raw);
+    const oauth = creds.claudeAiOauth || creds.oauth || creds;
+
+    const expiresAt = oauth.expiresAt || oauth.expires_at || oauth.accessTokenExpiry;
+    if (!expiresAt) return { ok: true, reason: 'no-expiry-field' };
+
+    // Handle both millisecond and second timestamps
+    const expiresMs = typeof expiresAt === 'number'
+      ? (expiresAt > 1e12 ? expiresAt : expiresAt * 1000)
+      : Date.now() + 3600000;
+
+    const msLeft = expiresMs - Date.now();
+    const hoursLeft = msLeft / 3600000;
+
+    if (msLeft > 0) {
+      // Access token still valid (Claude CLI refreshes it automatically)
+      return { ok: true, reason: 'valid', hoursLeft: Math.round(hoursLeft * 10) / 10 };
+    }
+
+    // Access token expired — check if Claude CLI has refreshed it recently
+    const stat = fs.statSync(c.files.claudeCreds);
+    const hoursSinceModified = (Date.now() - stat.mtimeMs) / 3600000;
+
+    if (hoursSinceModified < 2) {
+      // File was updated recently — Claude CLI is actively refreshing
+      return { ok: true, reason: 'recently-refreshed' };
+    }
+
+    // File is stale: access token expired AND not refreshed in >2 h
+    // This likely means the refresh token itself may be invalid
+    logWarn(null, 'Claude credential file stale — refresh token may be expired', {
+      hoursSinceExpiry: Math.round(-hoursLeft * 10) / 10,
+      hoursSinceModified: Math.round(hoursSinceModified * 10) / 10,
+    });
+    return {
+      ok: false,
+      reason: 'stale',
+      hoursSinceExpiry: Math.round(-hoursLeft * 10) / 10,
+      hoursSinceModified: Math.round(hoursSinceModified * 10) / 10,
+      message: 'Claude credentials are stale. The refresh token may have expired. Claude will show a login prompt on next use.',
+    };
+  } catch (e) {
+    return { ok: false, reason: 'read-error', message: e.message };
+  }
+}
+
 module.exports = {
   init,
   ensureInstalled,
   forceReinstall,
   getStatus,
+  checkTokenFreshness,
   ERR,
   // Exposed for tests only:
   _internal: { aesGcmDecrypt, aesGcmEncrypt, deriveKBuild, deriveKMachine, validateEnvelope, mergeClaudeSettings },

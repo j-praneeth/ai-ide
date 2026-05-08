@@ -19,7 +19,12 @@
       "Bash(python -m py_compile terminal.py security/middleware.py security/auth.py admin_config.py)",
       "Bash(echo \"exit: $?\")",
       "Bash(git -C E:/ai-ide status --short)",
-      "Bash(git -C E:/ai-ide check-ignore -v .env.build.example)"
+      "Bash(git -C E:/ai-ide check-ignore -v .env.build.example)",
+      "PowerShell(Get-ChildItem -Path \"E:\\\\ai-ide\" -Force | Select-Object Name, @{Name=\"Type\"; Expression={if\\($_.PSIsContainer\\){\"DIR\"}else{\"FILE\"}}} | Format-Table -AutoSize)",
+      "Bash(Get-ChildItem -Path \"E:\\\\ai-ide\\\\backend\" -Depth 1)",
+      "Bash(Select-Object Name)",
+      "Bash(Sort-Object)",
+      "Bash(find \"E:\\\\\\\\ai-ide\\\\\\\\frontend\\\\\\\\src\\\\\\\\components\" -name \"*.js\" -o -name \"*.jsx\")"
     ]
   }
 }

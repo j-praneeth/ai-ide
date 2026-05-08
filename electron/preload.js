@@ -68,6 +68,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   writeCliSession: (sessionId, data) => ipcRenderer.invoke('cli:write', sessionId, data),
   resizeCliSession: (sessionId, cols, rows) => ipcRenderer.invoke('cli:resize', sessionId, cols, rows),
   closeCliSession: (sessionId) => ipcRenderer.invoke('cli:close', sessionId),
+  reattachCliSession: (sessionId) => ipcRenderer.invoke('cli:reattach', sessionId),
+  terminateCliSession: (sessionId) => ipcRenderer.invoke('cli:terminate', sessionId),
+  listCliSessions: () => ipcRenderer.invoke('cli:list'),
   onCliData: (listener) => {
     const wrapped = (_event, payload) => listener(payload);
     ipcRenderer.on('cli:data', wrapped);
@@ -77,6 +80,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const wrapped = (_event, payload) => listener(payload);
     ipcRenderer.on('cli:exit', wrapped);
     return () => ipcRenderer.removeListener('cli:exit', wrapped);
+  },
+  onCliAuthRequired: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('cli:auth-required', wrapped);
+    return () => ipcRenderer.removeListener('cli:auth-required', wrapped);
+  },
+  onClaudeCredentialWarning: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('claude:credential-warning', wrapped);
+    return () => ipcRenderer.removeListener('claude:credential-warning', wrapped);
   },
 
   // Project root changes (used to restart CLI sessions in the active workspace)
