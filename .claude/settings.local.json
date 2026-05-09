@@ -25,7 +25,23 @@
       "Bash(Select-Object Name)",
       "Bash(Sort-Object)",
       "Bash(find \"E:\\\\\\\\ai-ide\\\\\\\\frontend\\\\\\\\src\\\\\\\\components\" -name \"*.js\" -o -name \"*.jsx\")",
-      "Bash(Get-ChildItem -Path \"E:\\\\ai-ide\" -Directory)"
+      "Bash(Get-ChildItem -Path \"E:\\\\ai-ide\" -Directory)",
+      "Bash(Get-ChildItem -Path E:\\\\ai-ide\\\\backend -Recurse -Name)",
+      "Bash(pip install *)",
+      "PowerShell(python -c \"from winpty import PtyProcess; print\\('pywinpty OK, PtyProcess:', PtyProcess\\)\")",
+      "Bash(Get-ChildItem *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Stop-Process *)",
+      "PowerShell(Start-Sleep -Seconds 2; try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8000/health\" -TimeoutSec 5; Write-Host \"Backend healthy:\" $r.StatusCode } catch { Write-Host \"Backend not responding yet: $_\" })",
+      "PowerShell($r = Invoke-WebRequest -Uri \"http://127.0.0.1:8000/openapi.json\" -TimeoutSec 5; $r.Content | Select-String \"ws/pty\" | Select-Object -First 3)",
+      "PowerShell($r = Invoke-WebRequest -Uri \"http://127.0.0.1:8000/openapi.json\" -TimeoutSec 5; $r.Content | Select-String \"pty\")",
+      "PowerShell(python -c \"import shutil; print\\('pwsh:', shutil.which\\('pwsh'\\)\\); print\\('powershell:', shutil.which\\('powershell'\\)\\)\")",
+      "PowerShell(Start-Sleep -Seconds 4; $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8000/health\" -TimeoutSec 8; Write-Host \"Backend status:\" $r.StatusCode)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd E:\\\\ai-ide\\\\backend; python main.py' -WindowStyle Normal)",
+      "PowerShell(netstat *)",
+      "PowerShell(Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd E:\\\\ai-ide\\\\frontend; npm start' -WindowStyle Normal)",
+      "PowerShell(Get-ChildItem \"E:\\\\ai-ide\" | Where-Object { $_.Name -ne 'node_modules' } | Format-Table Name, PSIsContainer -AutoSize)"
     ]
   }
 }

@@ -1,7 +1,9 @@
 from fastapi import APIRouter
 from pathlib import Path
+from pydantic import BaseModel
 import os
-from typing import Optional, Tuple, Any
+import sys
+from typing import Optional, Tuple, Any, List
 
 router = APIRouter()
 
@@ -64,6 +66,93 @@ def open_folder(path: str):
     return {"status": "opened", "path": str(PROJECT_ROOT), "name": PROJECT_ROOT.name}
 
 
+class ResolvePathRequest(BaseModel):
+    folder_name: str
+    entries: List[str] = []
+
+
+_SKIP_DIRS = {
+    'node_modules', '.git', '__pycache__', 'venv', '.venv', 'env', '.env',
+    'dist', 'build', '$Recycle.Bin', 'Windows', 'Program Files',
+    'Program Files (x86)', 'System Volume Information', 'PerfLogs',
+    'Recovery', 'ProgramData', 'AppData', 'Temp', 'tmp',
+}
+
+
+def _search_for_folder(root: Path, folder_name: str, entry_set: set, max_depth: int):
+    """BFS search for a directory named folder_name inside root up to max_depth."""
+    matches = []
+    if max_depth <= 0:
+        return matches
+    try:
+        for p in root.iterdir():
+            if not p.is_dir() or p.name in _SKIP_DIRS or p.name.startswith('$'):
+                continue
+            if p.name == folder_name:
+                score = 0
+                if entry_set:
+                    try:
+                        actual = {c.name for c in p.iterdir()}
+                        score = len(entry_set & actual)
+                    except Exception:
+                        pass
+                matches.append((score, str(p)))
+            elif max_depth > 1:
+                matches.extend(_search_for_folder(p, folder_name, entry_set, max_depth - 1))
+    except PermissionError:
+        pass
+    return matches
+
+
+@router.post("/resolve-path")
+def resolve_path_from_name(body: ResolvePathRequest):
+    """Auto-detect the absolute path of a browser-opened folder by its name + file listing."""
+    name = (body.folder_name or "").strip()
+    if not name or '/' in name or '\\' in name:
+        return {"found": False, "path": None}
+
+    entry_set = set(body.entries or [])
+    home = Path.home()
+
+    # Ordered search roots: most-likely locations first, drive roots last
+    roots = []
+    for d in [home, home / "Desktop", home / "Documents", home / "Downloads"]:
+        if d.exists():
+            roots.append((d, 3))
+    for dev in ["projects", "source", "src", "code", "dev", "repos", "workspace", "work", "sites"]:
+        d = home / dev
+        if d.exists():
+            roots.append((d, 3))
+
+    if sys.platform == "win32":
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive = Path(f"{letter}:\\")
+            try:
+                if drive.exists():
+                    roots.append((drive, 2))
+            except OSError:
+                pass
+    else:
+        roots.append((Path("/"), 2))
+
+    all_matches = []
+    for root, depth in roots:
+        all_matches.extend(_search_for_folder(root, name, entry_set, depth))
+
+    if not all_matches:
+        return {"found": False, "path": None}
+
+    # Rank: most file overlap first, then shortest path (less nesting = more likely)
+    all_matches.sort(key=lambda x: (-x[0], len(x[1])))
+    best_path = all_matches[0][1]
+
+    # Also set as the project root
+    global PROJECT_ROOT
+    PROJECT_ROOT = Path(best_path)
+
+    return {"found": True, "path": best_path}
+
+
 @router.get("/list-folders")
 def list_folders(path: str = "~"):
     """List subdirectories of a given path for the Open Folder browser."""
@@ -76,10 +165,7 @@ def list_folders(path: str = "~"):
     try:
         for p in sorted(target.iterdir(), key=lambda x: x.name.lower()):
             if p.is_dir() and not p.name.startswith('.'):
-                folders.append({
-                    "name": p.name,
-                    "path": str(p),
-                })
+                folders.append({"name": p.name, "path": str(p)})
     except PermissionError:
         pass
 
@@ -92,23 +178,11 @@ def list_folders(path: str = "~"):
     }
 
 # Directories and files to skip in the tree
-SKIP_DIRS = {
-    'node_modules', '.git', '__pycache__', '.next', '.cache',
-    'venv', 'env', '.env', 'dist', 'build', '.idea', '.vscode',
-    '.cursor', 'coverage', '.pytest_cache', '.mypy_cache',
-    'egg-info', '.tox', '.nox', 'target', 'vendor',
-}
-
-SKIP_FILES = {
-    '.DS_Store', 'Thumbs.db', '.gitkeep',
-}
-
 MAX_TREE_DEPTH = 10
 
 
 def _list_dir(dir_path, show_hidden=False):
-    """List immediate children of a directory (one level only). Fast.
-    show_hidden: if True, include files/folders whose names start with '.' (hidden)."""
+    """List all children of a directory — nothing is filtered or skipped."""
     items = []
     try:
         entries = sorted(dir_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
@@ -116,19 +190,12 @@ def _list_dir(dir_path, show_hidden=False):
         return []
 
     for p in entries:
-        if not show_hidden and p.name.startswith(".") and p.name not in ('.env', '.gitignore', '.editorconfig'):
-            continue
-        if p.name in SKIP_FILES and not (show_hidden and p.name.startswith('.')):
-            continue
-
         if p.is_dir():
-            if p.name in SKIP_DIRS:
-                continue
             items.append({
                 "name": p.name,
                 "type": "folder",
-                "children": [],  # Lazy — loaded on expand
-                "hasChildren": True,  # Always show chevron; actual children loaded on expand
+                "children": [],
+                "hasChildren": True,
             })
         else:
             try:
@@ -333,8 +400,10 @@ def search_files(query: str, case_sensitive: bool = False):
     max_results = 200
 
     for root_dir, dirs, files in os.walk(root):
-        # Skip hidden/known directories
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith('.')]
+        # Skip dirs that are useless to search (node_modules, caches, build output)
+        _SEARCH_SKIP = {'node_modules', '__pycache__', '.git', 'dist', 'build',
+                        '.next', '.cache', 'venv', '.venv', 'coverage', 'vendor'}
+        dirs[:] = [d for d in dirs if d not in _SEARCH_SKIP and not d.startswith('.')]
 
         for file in files:
             if file in SKIP_FILES or file.startswith('.'):

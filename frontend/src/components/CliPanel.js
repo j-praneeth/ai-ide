@@ -7,28 +7,37 @@ import { getAuthToken } from '../lib/auth';
 import { startSsoLogin as startSsoLoginFlow } from '../lib/sso';
 
 const TERM_THEME = {
-  background: '#08090d',
-  foreground: '#c9d1d9',
-  cursor: '#f59e0b',
-  cursorAccent: '#000000',
-  selectionBackground: '#253551',
-  black: '#0d1117',
-  red: '#f87171',
-  green: '#34d399',
-  yellow: '#fbbf24',
-  blue: '#82aaff',
-  magenta: '#c792ea',
-  cyan: '#89ddff',
-  white: '#c9d1d9',
+  background: '#1E1E1E',
+  foreground: '#D4D4D4',
+  cursor: '#AEAFAD',
+  cursorAccent: '#1E1E1E',
+  selectionBackground: 'rgba(55, 148, 255, 0.25)',
+  black: '#1E1E1E',
+  red: '#CD3131',
+  green: '#0DBC79',
+  yellow: '#E5E510',
+  blue: '#2472C8',
+  magenta: '#BC3FBC',
+  cyan: '#11A8CD',
+  white: '#E5E5E5',
+  brightBlack: '#666666',
+  brightRed: '#F14C4C',
+  brightGreen: '#23D18B',
+  brightYellow: '#F5F543',
+  brightBlue: '#3B8EEA',
+  brightMagenta: '#D670D6',
+  brightCyan: '#29B8DB',
+  brightWhite: '#E5E5E5',
 };
 
 const TERM_OPTIONS = {
   theme: TERM_THEME,
-  fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace",
+  fontFamily: "'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace",
   fontSize: 13,
   lineHeight: 1.4,
   cursorBlink: true,
   cursorStyle: 'bar',
+  scrollback: 5000,
 };
 
 const CLI_LABELS = { claude: 'Claude CLI', codex: 'Codex CLI', powershell: 'PowerShell', cmd: 'Command Prompt' };
@@ -53,6 +62,7 @@ export default function CliPanel({ visible }) {
   const selectedCliRef = useRef(null);
   const unsubscribeDataRef = useRef(null);
   const unsubscribeExitRef = useRef(null);
+  const roRef = useRef(null);
 
   const [selectedCli, setSelectedCli] = useState(() => {
     try {
@@ -220,7 +230,26 @@ export default function CliPanel({ visible }) {
 
     setTimeout(() => {
       try { fit.fit(); } catch (_) {}
-    }, 100);
+    }, 60);
+
+    // ResizeObserver — auto-refit whenever the container changes size (panel drag, etc.)
+    // requestAnimationFrame prevents "ResizeObserver loop" browser warnings.
+    if (roRef.current) roRef.current.disconnect();
+    let rafId = null;
+    const ro = new ResizeObserver(() => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        if (!fitAddonRef.current) return;
+        try { fitAddonRef.current.fit(); } catch (_) {}
+        const dims = fitAddonRef.current.proposeDimensions?.();
+        if (dims && sessionIdRef.current && window.electronAPI?.resizeCliSession) {
+          window.electronAPI.resizeCliSession(sessionIdRef.current, dims.cols, dims.rows);
+        }
+        rafId = null;
+      });
+    });
+    ro.observe(containerRef.current);
+    roRef.current = ro;
   }, [connectCliSession, selectedCli]);
 
   useEffect(() => {
@@ -239,6 +268,7 @@ export default function CliPanel({ visible }) {
   useEffect(() => () => {
     if (unsubscribeDataRef.current) unsubscribeDataRef.current();
     if (unsubscribeExitRef.current) unsubscribeExitRef.current();
+    if (roRef.current) { roRef.current.disconnect(); roRef.current = null; }
   }, []);
 
   // Soft-detach on unmount (page refresh, panel hide): keep PTY alive
@@ -343,20 +373,25 @@ export default function CliPanel({ visible }) {
   }
 
   return (
-    <div className="cli-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-deep)' }}>
-      <div className="cli-header" style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>CLI Tool:</span>
+    <div className="cli-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#1E1E1E' }}>
+      <div className="cli-header" style={{
+        height: 36, padding: '0 10px', borderBottom: '1px solid var(--border)',
+        display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+        background: 'var(--bg-surface)',
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>CLI</span>
         <select
           value={selectedCli}
           onChange={handleCliChange}
           style={{
-            background: 'var(--bg-surface)',
+            background: 'var(--bg-elevated)',
             color: 'var(--text-primary)',
             border: '1px solid var(--border)',
-            padding: '4px 8px',
-            borderRadius: '4px',
+            padding: '3px 6px',
+            borderRadius: 3,
             outline: 'none',
-            fontSize: '13px'
+            fontSize: 12,
+            cursor: 'pointer',
           }}
         >
           <option value="claude">Claude CLI</option>
@@ -370,22 +405,20 @@ export default function CliPanel({ visible }) {
         </select>
       </div>
       {authWarning && (
-        <div style={{ padding: '6px 12px', background: '#7c3c00', borderBottom: '1px solid #a05000', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <span style={{ fontSize: 12, color: '#fbbf24', flex: 1, lineHeight: 1.4 }}>
+        <div style={{ padding: '5px 12px', background: 'rgba(255,180,0,0.08)', borderBottom: '1px solid rgba(255,180,0,0.15)', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <span style={{ fontSize: 11, color: '#CCA700', flex: 1, lineHeight: 1.4 }}>
             {authWarning.message}
             {authWarning.url && (
-              <> &nbsp;<a href={authWarning.url} target="_blank" rel="noreferrer" style={{ color: '#fde68a', textDecoration: 'underline' }}>Open login page</a></>
+              <> &nbsp;<a href={authWarning.url} target="_blank" rel="noreferrer" style={{ color: '#E5C000', textDecoration: 'underline' }}>Open login page</a></>
             )}
           </span>
-          <button
-            type="button"
-            onClick={() => setAuthWarning(null)}
-            style={{ background: 'none', border: 'none', color: '#fbbf24', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: '0 4px' }}
-            aria-label="Dismiss"
-          >×</button>
+          <button type="button" onClick={() => setAuthWarning(null)}
+            style={{ background: 'none', border: 'none', color: '#CCA700', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 4px' }}
+            aria-label="Dismiss">×</button>
         </div>
       )}
-      <div className="cli-body" ref={containerRef} style={{ flex: 1, padding: '4px' }} />
+      {/* padding: 0 — xterm manages its own internal padding */}
+      <div className="cli-body" ref={containerRef} style={{ flex: 1, padding: 0, overflow: 'hidden' }} />
     </div>
   );
 }

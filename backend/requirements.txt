@@ -8,6 +8,7 @@ qrcode[pil]>=7.4.2
 pymongo[srv]>=4.7.2
 PyJWT>=2.8.0
 python-dotenv>=1.0.0
+pywinpty>=2.0.0; sys_platform == 'win32'
 # Optional: for semantic code search (AI features)
 # sentence-transformers>=2.2.2
 # faiss-cpu>=1.7.4

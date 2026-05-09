@@ -3,11 +3,6 @@ import axios from 'axios';
 import { API_URL as API } from '../config';
 import { IS_ELECTRON } from '../config';
 
-/**
- * OpenFolderDialog — system file picker only (no project folder URL input).
- * - Electron: native folder picker, then open that path on the backend.
- * - Web: showDirectoryPicker() only; folder is used via the handle (tree/read/write in frontend).
- */
 export default function OpenFolderDialog({ visible, onClose, onOpen }) {
   const [unsupported, setUnsupported] = useState(false);
 
@@ -19,6 +14,7 @@ export default function OpenFolderDialog({ visible, onClose, onOpen }) {
 
     const run = async () => {
       try {
+        // Electron: native OS dialog — always gives full path
         if (IS_ELECTRON && window.electronAPI?.openFolderDialog) {
           const folderPath = await window.electronAPI.openFolderDialog();
           if (folderPath) {
@@ -33,12 +29,51 @@ export default function OpenFolderDialog({ visible, onClose, onOpen }) {
           return;
         }
 
+        // Web browser: showDirectoryPicker doesn't give path, but we can
+        // read top-level entry names and ask the backend to find the folder.
         if (typeof window.showDirectoryPicker !== 'function') {
           setUnsupported(true);
           return;
         }
 
         const handle = await window.showDirectoryPicker();
+
+        // Collect up to 20 top-level entry names for backend matching
+        const entries = [];
+        try {
+          for await (const [name] of handle.entries()) {
+            entries.push(name);
+            if (entries.length >= 20) break;
+          }
+        } catch (_) {}
+
+        // Ask the backend to find the folder's absolute path by name + entries
+        let resolvedPath = null;
+        try {
+          const res = await axios.post(`${API}/files/resolve-path`, {
+            folder_name: handle.name,
+            entries,
+          });
+          if (res.data.found && res.data.path) {
+            resolvedPath = res.data.path;
+          }
+        } catch (_) {}
+
+        if (resolvedPath) {
+          // Backend already set PROJECT_ROOT; call open-folder to confirm name
+          try {
+            const res = await axios.post(`${API}/files/open-folder`, null, {
+              params: { path: resolvedPath },
+            });
+            if (!res.data.error) {
+              onOpen(res.data.path, res.data.name, handle);
+              onClose();
+              return;
+            }
+          } catch (_) {}
+        }
+
+        // Fallback: open with handle only (terminal will use home dir)
         onOpen(null, handle.name, handle);
         onClose();
       } catch (err) {
@@ -51,6 +86,7 @@ export default function OpenFolderDialog({ visible, onClose, onOpen }) {
   }, [visible, onClose, onOpen]);
 
   if (!visible) return null;
+
   if (unsupported) {
     return (
       <div className="open-folder-overlay" onClick={onClose}>
@@ -64,5 +100,6 @@ export default function OpenFolderDialog({ visible, onClose, onOpen }) {
       </div>
     );
   }
+
   return null;
 }

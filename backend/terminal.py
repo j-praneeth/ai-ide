@@ -8,8 +8,25 @@ import platform
 import getpass
 import re
 import shutil
+import sys as _sys
+import threading as _threading
 import time
 import uuid
+
+# ── PTY support ────────────────────────────────────────────────────────
+if _sys.platform == 'win32':
+    try:
+        from winpty import PtyProcess as _PtyProcess
+        _WINPTY_OK = True
+    except ImportError:
+        _WINPTY_OK = False
+else:
+    import pty as _pty
+    import select as _select
+    import termios as _termios
+    import fcntl as _fcntl
+    import struct as _struct
+    _WINPTY_OK = False
 
 router = APIRouter()
 
@@ -636,6 +653,221 @@ async def _session_janitor() -> None:
                     s.process.terminate()
                 except Exception:
                     pass
+
+
+@router.websocket("/ws/pty/{session_id}")
+async def terminal_pty_ws(
+    websocket: WebSocket,
+    session_id: str,
+    shell: str = None,
+    cols: int = 80,
+    rows: int = 24,
+    cwd: str = None,
+):
+    """Real PTY terminal over WebSocket — identical to VS Code's integrated terminal."""
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    # Use caller-supplied cwd if valid, otherwise fall back to the workspace root
+    if not (cwd and os.path.isdir(cwd)):
+        cwd = _get_project_root_dir()
+    env = {k: str(v) for k, v in _build_env().items()}
+    env.update({"TERM": "xterm-256color", "COLORTERM": "truecolor"})
+
+    if IS_WINDOWS:
+        if not _WINPTY_OK:
+            await websocket.send_text(
+                "\r\n\x1b[31mpywinpty is not installed.\x1b[0m\r\n"
+                "Run:  pip install pywinpty\r\n"
+            )
+            await websocket.close()
+            return
+
+        if shell == "cmd":
+            exe = os.environ.get("COMSPEC", "cmd.exe")
+            # /k runs the command then stays open; pushd cd's into the project root
+            cwd_cmd = cwd.replace('"', '')  # strip any stray quotes for safety
+            cmd = f'{exe} /k pushd "{cwd_cmd}"'
+        else:
+            # Prefer powershell.exe (path has no spaces, always works with winpty).
+            # pwsh.exe lives in "C:\Program Files\..." which winpty misparses.
+            ps = shutil.which("powershell")
+            exe = ps if (ps and " " not in ps) else "powershell.exe"
+            # -NoExit keeps the shell open after the startup -Command.
+            # Set-Location with -LiteralPath handles paths with special chars.
+            # Double '' escapes a literal ' inside a PS single-quoted string.
+            cwd_ps = cwd.replace("'", "''")
+            cmd = f"{exe} -NoExit -Command \"Set-Location -LiteralPath '{cwd_ps}'\""
+
+        try:
+            pty_proc = _PtyProcess.spawn(
+                cmd,
+                dimensions=(rows, cols),
+                cwd=cwd,
+                env=env,
+            )
+        except Exception as exc:
+            await websocket.send_text(
+                f"\r\n\x1b[31mFailed to start terminal: {exc}\x1b[0m\r\n"
+            )
+            await websocket.close()
+            return
+
+        send_q: asyncio.Queue = asyncio.Queue(maxsize=1000)
+
+        def _reader():
+            while True:
+                try:
+                    data = pty_proc.read(4096)
+                    if data:
+                        asyncio.run_coroutine_threadsafe(send_q.put(data), loop)
+                    elif not pty_proc.isalive():
+                        asyncio.run_coroutine_threadsafe(send_q.put(None), loop)
+                        break
+                except EOFError:
+                    asyncio.run_coroutine_threadsafe(send_q.put(None), loop)
+                    break
+                except Exception:
+                    asyncio.run_coroutine_threadsafe(send_q.put(None), loop)
+                    break
+
+        _threading.Thread(target=_reader, daemon=True).start()
+
+        async def _forward():
+            while True:
+                chunk = await send_q.get()
+                if chunk is None:
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+                    break
+                try:
+                    await websocket.send_text(chunk)
+                except Exception:
+                    break
+
+        fwd_task = asyncio.create_task(_forward())
+
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                    if msg.get("type") == "resize":
+                        pty_proc.setwinsize(int(msg["rows"]), int(msg["cols"]))
+                    elif msg.get("type") == "input":
+                        pty_proc.write(msg["data"])
+                except (json.JSONDecodeError, KeyError):
+                    pty_proc.write(raw)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            fwd_task.cancel()
+            try:
+                pty_proc.terminate(force=True)
+            except Exception:
+                pass
+
+    else:
+        # Unix PTY via built-in pty module
+        if shell == "bash":
+            cmd = [shutil.which("bash") or "/bin/bash", "-l"]
+        else:
+            cmd = [os.environ.get("SHELL", shutil.which("zsh") or "/bin/bash"), "-l"]
+
+        master_fd, slave_fd = _pty.openpty()
+        winsize = _struct.pack("HHHH", rows, cols, 0, 0)
+        _fcntl.ioctl(slave_fd, _termios.TIOCSWINSZ, winsize)
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+                cwd=cwd,
+                env=env,
+            )
+            os.close(slave_fd)
+        except Exception as exc:
+            try:
+                os.close(master_fd)
+            except Exception:
+                pass
+            try:
+                os.close(slave_fd)
+            except Exception:
+                pass
+            await websocket.send_text(
+                f"\r\n\x1b[31mFailed to start terminal: {exc}\x1b[0m\r\n"
+            )
+            await websocket.close()
+            return
+
+        send_q: asyncio.Queue = asyncio.Queue(maxsize=1000)
+
+        def _reader():
+            while True:
+                try:
+                    r, _, _ = _select.select([master_fd], [], [], 0.05)
+                    if r:
+                        data = os.read(master_fd, 4096)
+                        if data:
+                            asyncio.run_coroutine_threadsafe(
+                                send_q.put(data.decode("utf-8", errors="replace")), loop
+                            )
+                except Exception:
+                    asyncio.run_coroutine_threadsafe(send_q.put(None), loop)
+                    break
+                if proc.poll() is not None:
+                    asyncio.run_coroutine_threadsafe(send_q.put(None), loop)
+                    break
+
+        _threading.Thread(target=_reader, daemon=True).start()
+
+        async def _forward():
+            while True:
+                chunk = await send_q.get()
+                if chunk is None:
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+                    break
+                try:
+                    await websocket.send_text(chunk)
+                except Exception:
+                    break
+
+        fwd_task = asyncio.create_task(_forward())
+
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                    if msg.get("type") == "resize":
+                        winsize = _struct.pack(
+                            "HHHH", int(msg["rows"]), int(msg["cols"]), 0, 0
+                        )
+                        _fcntl.ioctl(master_fd, _termios.TIOCSWINSZ, winsize)
+                    elif msg.get("type") == "input":
+                        os.write(master_fd, msg["data"].encode("utf-8"))
+                except (json.JSONDecodeError, KeyError):
+                    os.write(master_fd, raw.encode("utf-8"))
+        except WebSocketDisconnect:
+            pass
+        finally:
+            fwd_task.cancel()
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                os.close(master_fd)
+            except Exception:
+                pass
 
 
 @router.get("/cli/sessions")

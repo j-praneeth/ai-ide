@@ -105,6 +105,7 @@ function App() {
   const [showNewFilePrompt, setShowNewFilePrompt] = useState(false);
   const [showOpenFolder, setShowOpenFolder] = useState(false);
   const [projectName, setProjectName] = useState('Nebula');
+  const [projectRoot, setProjectRoot] = useState('');
   const [webFolderHandle, setWebFolderHandle] = useState(null);
   const [sidebarWidth, setSidebarWidth] = useState(270);
   const sidebarResizingRef = useRef(false);
@@ -154,11 +155,10 @@ function App() {
   // Load workspace info and file tree on startup
   useEffect(() => {
     loadTree();
-    // Fetch workspace name so the title bar shows the real project name
+    // Fetch workspace info so the title bar and terminal use the real project path
     axios.get(`${API}/files/workspace`).then(res => {
-      if (res.data.name) {
-        setProjectName(res.data.name);
-      }
+      if (res.data.name) setProjectName(res.data.name);
+      if (res.data.path) setProjectRoot(res.data.path);
     }).catch(() => {});
   }, [loadTree]);
 
@@ -720,6 +720,7 @@ function App() {
     setOriginalContents({});
     setModifiedFiles(new Set());
     setProjectName(folderName || 'Nebula');
+    if (folderPath) setProjectRoot(folderPath);
     setWebFolderHandle(handle || null);
     if (handle) {
       listDirFromHandle(handle, '', showHiddenFiles).then(setTree).catch(console.error);
@@ -1054,6 +1055,7 @@ function App() {
                   visible={showTerminal}
                   onClose={() => setShowTerminal(false)}
                   onResize={terminalHeight}
+                  projectRoot={projectRoot}
                 />
               </div>
             )}

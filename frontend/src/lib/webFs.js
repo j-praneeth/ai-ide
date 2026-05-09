@@ -3,16 +3,9 @@
  * Used when Open Folder in browser: we only have a handle, no path.
  */
 
-const SKIP_DIRS = new Set([
-  'node_modules', '.git', '__pycache__', '.next', '.cache', 'venv', 'env',
-  'dist', 'build', '.idea', '.vscode', '.cursor', 'coverage',
-]);
-
 export async function listDirFromHandle(handle, basePath = '', showHidden = false) {
   const nodes = [];
   for await (const [name, entry] of handle.entries()) {
-    if (!showHidden && name.startsWith('.') && name !== '.env' && name !== '.gitignore') continue;
-    if (entry.kind === 'directory' && SKIP_DIRS.has(name)) continue;
     const path = basePath ? `${basePath}/${name}` : name;
     const isDir = entry.kind === 'directory';
     nodes.push({
