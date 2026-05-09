@@ -310,7 +310,7 @@ export default function TerminalPanel({ visible, onClose, onResize, projectRoot 
         return remaining[Math.min(idx, remaining.length - 1)].id;
       });
     }
-  }, [terminals, shellName, shellDisplayName, onClose]);
+  }, [terminals, onClose]);
 
   const killActive = useCallback(() => {
     closeTerminal(activeTermId);
