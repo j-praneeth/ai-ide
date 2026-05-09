@@ -34,6 +34,7 @@ DEFAULT_CORS_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
+    "null",  # file:// origin sent by Electron packaged app
 ]
 
 def _get_cors_origins():

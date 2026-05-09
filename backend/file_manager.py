@@ -406,7 +406,7 @@ def search_files(query: str, case_sensitive: bool = False):
         dirs[:] = [d for d in dirs if d not in _SEARCH_SKIP and not d.startswith('.')]
 
         for file in files:
-            if file in SKIP_FILES or file.startswith('.'):
+            if file.startswith('.'):
                 continue
 
             full_path = os.path.join(root_dir, file)
