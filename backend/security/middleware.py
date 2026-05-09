@@ -17,6 +17,7 @@ _ALLOWLIST_PREFIXES: tuple[str, ...] = (
     "/health",
     "/auth/status",
     "/auth/login",
+    "/auth/claude-token",  # Electron fetches fresh access token before spawning CLI
     "/download",
     "/docs",
     "/openapi.json",

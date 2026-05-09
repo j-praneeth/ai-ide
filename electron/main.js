@@ -439,6 +439,59 @@ function _scheduleCredentialFreshnessCheck() {
   setInterval(runCheck, CHECK_INTERVAL_MS);
 }
 
+// ── Backend-mediated Claude token refresh ─────────────────────────────────
+// The backend holds the master refresh token in MongoDB and handles rotation.
+// We fetch a fresh access token from the backend before every CLI spawn and
+// every 45 minutes in the background, so the user is never prompted to log in.
+
+function _getNebulaBackendUrl() {
+  const isProduction = !isDev && app.isPackaged;
+  if (isProduction) {
+    return (process.env.NEBULA_AUTH_URL || 'https://nebula-ide-server.up.railway.app').replace(/\/$/, '');
+  }
+  return `http://127.0.0.1:${backendPort}`;
+}
+
+function _fetchClaudeTokenFromBackend() {
+  return new Promise((resolve, reject) => {
+    try {
+      const base = _getNebulaBackendUrl();
+      const urlStr = `${base}/auth/claude-token`;
+      const isHttps = urlStr.startsWith('https://');
+      const mod = isHttps ? https : http;
+      const req = mod.get(urlStr, { timeout: 15000 }, (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            if (data.ok && data.accessToken) resolve(data);
+            else reject(new Error(data.error || 'Backend returned no access token'));
+          } catch (e) { reject(new Error(`Bad JSON from token endpoint: ${e.message}`)); }
+        });
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('Token fetch timed out')); });
+    } catch (e) { reject(e); }
+  });
+}
+
+async function _applyFreshClaudeToken() {
+  try {
+    const data = await _fetchClaudeTokenFromBackend();
+    cliBundle.patchAccessToken(data.accessToken, data.expiresAt);
+    console.log('[claude-token] Access token refreshed from backend.');
+  } catch (e) {
+    console.warn('[claude-token] Fresh token fetch failed (bundled creds will be used):', e.message);
+  }
+}
+
+// Refresh token every 45 minutes so the on-disk access token never expires mid-session.
+function _startClaudeTokenRefreshLoop() {
+  const INTERVAL_MS = 45 * 60 * 1000;
+  setInterval(() => { _applyFreshClaudeToken(); }, INTERVAL_MS);
+}
+
 // Detects OAuth re-auth URLs that Claude CLI prints when the refresh token expires.
 // Matches Claude AI and Anthropic auth domains.
 const CLAUDE_AUTH_URL_RE = /https:\/\/(?:claude\.ai|auth\.anthropic\.com|accounts\.anthropic\.com)\/[^\s\r\n"'<>]+/i;
@@ -1320,6 +1373,11 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
     };
   }
 
+  // Fetch a fresh access token from the backend and patch it on disk so Claude
+  // CLI never starts against an expired token. Non-fatal: if the backend is
+  // unreachable the bundled credentials are used as-is.
+  await _applyFreshClaudeToken();
+
   let launch = getCliLaunchConfig(tool);
 
   if (!launch.installed) {
@@ -1581,6 +1639,11 @@ app.whenReady().then(async () => {
         // expired (months/years after install). We warn the renderer so the
         // admin sees a notification before users hit a login prompt.
         _scheduleCredentialFreshnessCheck();
+
+        // Start the 45-minute background loop that keeps the on-disk access
+        // token fresh via the backend. This means users are never prompted to
+        // log in regardless of how long the app stays open.
+        _startClaudeTokenRefreshLoop();
 
         return res;
       }).catch((err) => {

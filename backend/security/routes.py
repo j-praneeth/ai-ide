@@ -25,6 +25,52 @@ from .middleware import get_request_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+
+# ── Claude token distribution ──────────────────────────────────────────────────
+
+@router.get("/claude-token")
+def get_claude_token():
+    """
+    Returns a guaranteed-fresh Claude access token.
+    No auth required — called by the Electron app before spawning Claude CLI.
+    The backend holds the master refresh token and handles rotation automatically.
+    """
+    from .claude_token import get_fresh_access_token
+    try:
+        data = get_fresh_access_token()
+        return {"ok": True, **data}
+    except Exception as e:
+        logger.warning("Claude token refresh failed: %s", e)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+
+
+@router.post("/claude-credentials")
+async def seed_claude_credentials(request: Request):
+    """
+    Admin-only. POST the full claudeAiOauth object (from ~/.claude/.credentials.json)
+    to seed or update the master credentials in MongoDB.
+
+    Body: { "oauth": { "refreshToken": "...", "accessToken": "...", "expiresAt": 123... } }
+    """
+    from .claude_token import save_oauth
+    from .middleware import get_request_user
+
+    user = get_request_user(request)
+    if not user or user.role != ROLE_SUPER_ADMIN:
+        return JSONResponse({"error": "Forbidden"}, status_code=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    oauth = body.get("oauth") if isinstance(body, dict) else None
+    if not isinstance(oauth, dict) or not oauth.get("refreshToken"):
+        return JSONResponse({"error": "Body must be { oauth: { refreshToken, ... } }"}, status_code=400)
+
+    save_oauth(oauth)
+    return {"ok": True, "message": "Claude master credentials updated."}
+
 _SSO_CODE_TTL_SECONDS = 180
 _sso_codes: dict[str, dict] = {}
 

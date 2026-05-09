@@ -42,7 +42,8 @@
       "PowerShell(netstat *)",
       "PowerShell(Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd E:\\\\ai-ide\\\\frontend; npm start' -WindowStyle Normal)",
       "PowerShell(Get-ChildItem \"E:\\\\ai-ide\" | Where-Object { $_.Name -ne 'node_modules' } | Format-Table Name, PSIsContainer -AutoSize)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(Select-Object Name, PSIsContainer)"
     ]
   }
 }

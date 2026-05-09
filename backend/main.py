@@ -56,6 +56,12 @@ async def lifespan(app: FastAPI):
             print("DEBUG: No initial admin seeded (already exists or env vars missing)")
     except Exception as e:
         print(f"DEBUG: Failed to seed initial admin during startup: {e}")
+
+    try:
+        from security.claude_token import seed_from_env
+        seed_from_env()
+    except Exception as e:
+        print(f"DEBUG: Claude token seed failed: {e}")
     yield
 
 app = FastAPI(title="AI IDE Backend", lifespan=lifespan)

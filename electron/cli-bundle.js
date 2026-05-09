@@ -605,31 +605,7 @@ function fileLooksOk(p, requiredKeys, kind /* 'json' | 'toml' */) {
 function alreadyInstalled(meta) {
   const c = ctx();
 
-  // ── Host-credentials priority check ──────────────────────────────────────
-  // If the admin already ran `claude login` on this machine, their credentials
-  // contain a refresh token that Claude CLI will silently renew indefinitely.
-  // Never overwrite those with the bundle — doing so would put us back on the
-  // rebuild-on-expiry treadmill. The bundle is a fallback for machines where
-  // no login has been performed yet.
-  const existingCreds = readJsonIfExists(c.files.claudeCreds);
-  if (existingCreds) {
-    // Claude Code stores OAuth creds under several possible top-level keys
-    const oauth = existingCreds.claudeAiOauth
-      || existingCreds.oauth
-      || existingCreds.oauthAccount
-      || existingCreds;
-    const hasRefreshToken = !!(
-      oauth.refreshToken
-      || oauth.refresh_token
-      || oauth.oauthRefreshToken
-    );
-    if (hasRefreshToken) {
-      logInfo(null, 'skipping bundle install — host credentials (claude login) found', {});
-      return true;
-    }
-  }
-
-  // ── Standard marker-based check (for machines without a prior claude login) ──
+  // ── Standard marker-based check ──
   const marker = readMarker();
   if (!marker) return false;
   if (marker.schema_version !== SCHEMA_VERSION) return false;
@@ -900,12 +876,38 @@ function checkTokenFreshness() {
   }
 }
 
+// ── Access-token patch ─────────────────────────────────────────────────────
+// Overwrites only the accessToken + expiresAt fields inside claudeAiOauth in the
+// on-disk credentials file. Called by main.js after fetching a fresh token from
+// the backend so Claude CLI always starts with a non-expired access token.
+function patchAccessToken(accessToken, expiresAtMs) {
+  const c = _ctx;
+  if (!c) return false;
+  try {
+    const raw = fs.readFileSync(c.files.claudeCreds, 'utf8');
+    const creds = JSON.parse(raw);
+    if (creds.claudeAiOauth && typeof creds.claudeAiOauth === 'object') {
+      creds.claudeAiOauth.accessToken = accessToken;
+      creds.claudeAiOauth.expiresAt = expiresAtMs;
+    } else {
+      creds.claudeAiOauth = { accessToken, expiresAt: expiresAtMs };
+    }
+    fs.writeFileSync(c.files.claudeCreds, JSON.stringify(creds, null, 2), { mode: 0o600 });
+    log('info', null, 'Claude access token patched on disk', {});
+    return true;
+  } catch (e) {
+    log('warn', null, 'patchAccessToken failed', { error: e.message });
+    return false;
+  }
+}
+
 module.exports = {
   init,
   ensureInstalled,
   forceReinstall,
   getStatus,
   checkTokenFreshness,
+  patchAccessToken,
   ERR,
   // Exposed for tests only:
   _internal: { aesGcmDecrypt, aesGcmEncrypt, deriveKBuild, deriveKMachine, validateEnvelope, mergeClaudeSettings },
