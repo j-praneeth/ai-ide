@@ -154,7 +154,7 @@ export default function TerminalPanel({ visible, onClose, onResize, projectRoot 
   const [viewTab, setViewTab] = useState('terminals');
   const [splitMode, setSplitMode] = useState(false);
   const [problems] = useState([]);
-  const [outputLogs, setOutputLogs] = useState([]);
+  const [outputLogs] = useState([]);
   const [showShellMenu, setShowShellMenu] = useState(false);
 
   const nextId = useRef(2);
@@ -310,7 +310,7 @@ export default function TerminalPanel({ visible, onClose, onResize, projectRoot 
         return remaining[Math.min(idx, remaining.length - 1)].id;
       });
     }
-  }, [terminals, shellName, shellDisplayName]);
+  }, [terminals, shellName, shellDisplayName, onClose]);
 
   const killActive = useCallback(() => {
     closeTerminal(activeTermId);
