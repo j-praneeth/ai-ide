@@ -181,32 +181,57 @@ def list_folders(path: str = "~"):
 MAX_TREE_DEPTH = 10
 
 
+_MAX_FILE_LIST = 2000  # max entries returned per directory
+
 def _list_dir(dir_path, show_hidden=False):
-    """List all children of a directory — nothing is filtered or skipped."""
-    items = []
+    """
+    List directory contents efficiently.
+
+    Shows everything including node_modules, .git, venv, __pycache__.
+    Performance strategy:
+      - Separate dirs and files in one pass (is_dir() is free — cached by scandir)
+      - Never call stat() on folders (no hasChildren probe — always True)
+      - Only call stat() on files, and only up to the cap
+      - Sort each group by name only (no extra syscalls)
+    """
+    dirs = []
+    files = []
+
     try:
-        entries = sorted(dir_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        for p in dir_path.iterdir():
+            if not show_hidden and p.name.startswith('.'):
+                continue
+            if p.is_dir():
+                dirs.append(p.name)
+            else:
+                files.append(p.name)
     except PermissionError:
         return []
 
-    for p in entries:
-        if p.is_dir():
-            items.append({
-                "name": p.name,
-                "type": "folder",
-                "children": [],
-                "hasChildren": True,
-            })
-        else:
-            try:
-                size = p.stat().st_size
-            except Exception:
-                size = 0
-            items.append({
-                "name": p.name,
-                "type": "file",
-                "size": size,
-            })
+    dirs.sort(key=str.lower)
+    files.sort(key=str.lower)
+
+    items = []
+
+    for name in dirs[:_MAX_FILE_LIST]:
+        items.append({
+            "name": name,
+            "type": "folder",
+            "children": [],
+            "hasChildren": True,
+        })
+
+    remaining = _MAX_FILE_LIST - len(items)
+    for name in files[:remaining]:
+        try:
+            size = (dir_path / name).stat().st_size
+        except Exception:
+            size = 0
+        items.append({
+            "name": name,
+            "type": "file",
+            "size": size,
+        })
 
     return items
 
@@ -257,6 +282,9 @@ def read_file(path: str):
         return {"error": "Not a file"}
 
     try:
+        size = file_path.stat().st_size
+        if size > 2 * 1024 * 1024:  # 2 MB hard limit
+            return {"error": f"File too large to open in editor ({size // 1024} KB). Use a terminal to view it."}
         return {"content": file_path.read_text(encoding='utf-8')}
     except UnicodeDecodeError:
         return {"error": "Cannot read binary file"}

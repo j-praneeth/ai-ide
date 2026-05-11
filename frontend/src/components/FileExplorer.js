@@ -145,19 +145,6 @@ const TreeNode = React.memo(function TreeNode({ node, basePath, depth, openFile,
       <span className="tree-label">{node.name}</span>
     </div>
   );
-}, (prev, next) => {
-  // Only re-render this node if something relevant to IT changed
-  const fp = prev.basePath ? `${prev.basePath}/${prev.node.name}` : prev.node.name;
-  return (
-    prev.node === next.node &&
-    prev.selectedFile === next.selectedFile &&
-    prev.expandedFolders.has(fp) === next.expandedFolders.has(fp) &&
-    prev.lazyChildren?.[fp] === next.lazyChildren?.[fp] &&
-    prev.isDropTarget === next.isDropTarget &&
-    prev.dropTarget === next.dropTarget &&
-    prev.toggleFolder === next.toggleFolder &&
-    prev.openFile === next.openFile
-  );
 });
 
 export default function FileExplorer({ tree, treeLoading, openFile, selectedFile, onRefresh, showHiddenFiles, onToggleShowHidden, triggerNewFile, onNewFileDone, onOpenFolder, onLoadChildren }) {

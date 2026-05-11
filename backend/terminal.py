@@ -964,9 +964,11 @@ async def terminal_pty_ws(
                         )
                         _fcntl.ioctl(master_fd, _termios.TIOCSWINSZ, winsize)
                     elif msg.get("type") == "input":
-                        os.write(master_fd, msg["data"].encode("utf-8"))
+                        data = msg["data"].encode("utf-8")
+                        await asyncio.to_thread(os.write, master_fd, data)
                 except (json.JSONDecodeError, KeyError):
-                    os.write(master_fd, raw.encode("utf-8"))
+                    data = raw.encode("utf-8")
+                    await asyncio.to_thread(os.write, master_fd, data)
         except WebSocketDisconnect:
             pass
         finally:
