@@ -71,6 +71,34 @@ async def seed_claude_credentials(request: Request):
     save_oauth(oauth)
     return {"ok": True, "message": "Claude master credentials updated."}
 
+@router.post("/claude-credentials-internal")
+async def sync_claude_credentials_internal(request: Request):
+    """
+    Localhost-only (no JWT needed). Called by Electron when Claude CLI rotates the
+    refresh token on disk, so the new token is synced back to MongoDB before it expires.
+    """
+    from .claude_token import save_oauth, clear_cache
+
+    client_host = (request.client.host if request.client else "") or ""
+    if client_host not in ("127.0.0.1", "::1", "localhost", ""):
+        logger.warning("claude-credentials-internal rejected from %s", client_host)
+        return JSONResponse({"error": "Forbidden"}, status_code=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    oauth = body.get("oauth") if isinstance(body, dict) else None
+    if not isinstance(oauth, dict) or not oauth.get("refreshToken"):
+        return JSONResponse({"error": "Body must be { oauth: { refreshToken, ... } }"}, status_code=400)
+
+    save_oauth(oauth)
+    clear_cache()
+    logger.info("Claude credentials synced via internal endpoint (refresh token rotation).")
+    return {"ok": True}
+
+
 _SSO_CODE_TTL_SECONDS = 180
 _sso_codes: dict[str, dict] = {}
 

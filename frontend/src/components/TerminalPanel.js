@@ -61,11 +61,19 @@ function initTerminal(container, sessionId, shell, projectRoot) {
   let wsUrl = `${wsBase}/terminal/ws/pty/${sessionId}?shell=${encodeURIComponent(shell || 'powershell')}&cols=80&rows=24`;
   if (projectRoot) wsUrl += `&cwd=${encodeURIComponent(projectRoot)}`;
 
-  // ── Input: forward every keystroke to the PTY (registered once) ───
-  term.onData(data => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'input', data }));
+  // ── Input: batch keystrokes into 20ms bursts to reduce WS message count ──
+  let inputBuf = '';
+  let inputTimer = null;
+  function flushInput() {
+    if (inputBuf && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input', data: inputBuf }));
+      inputBuf = '';
     }
+    inputTimer = null;
+  }
+  term.onData(data => {
+    inputBuf += data;
+    if (!inputTimer) inputTimer = setTimeout(flushInput, 20);
   });
 
   // ── Copy/paste keyboard shortcuts ────────────────────────────────
@@ -113,7 +121,17 @@ function initTerminal(container, sessionId, shell, projectRoot) {
       ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
     };
 
-    ws.onmessage = (e) => { term.write(e.data); };
+    // ── Output: batch incoming chunks into one write per animation frame ──
+    let outBuf = '';
+    let writeScheduled = false;
+    function flushOutput() {
+      if (outBuf) { term.write(outBuf); outBuf = ''; }
+      writeScheduled = false;
+    }
+    ws.onmessage = (e) => {
+      outBuf += e.data;
+      if (!writeScheduled) { writeScheduled = true; requestAnimationFrame(flushOutput); }
+    };
 
     ws.onerror = () => {};
 
@@ -170,17 +188,12 @@ export default function TerminalPanel({ visible, onClose, onResize, projectRoot 
       const sessionId = `pty-${id}-${Date.now()}`;
       const inst = initTerminal(el, sessionId, terminal?.shell, projectRoot);
       instances.current.set(id, inst);
-      setTimeout(() => {
-        try { inst.fitAndResize(); } catch (_) {}
-      }, 60);
+      requestAnimationFrame(() => { requestAnimationFrame(() => { try { inst.fitAndResize(); } catch (_) {} }); });
 
-      let rafId = null;
+      let resizeTimer = null;
       const ro = new ResizeObserver(() => {
-        if (rafId) cancelAnimationFrame(rafId);
-        rafId = requestAnimationFrame(() => {
-          try { inst.fitAndResize(); } catch (_) {}
-          rafId = null;
-        });
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => { try { inst.fitAndResize(); } catch (_) {} }, 80);
       });
       ro.observe(el);
       roMap.current.set(id, ro);

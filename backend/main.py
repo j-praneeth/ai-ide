@@ -58,10 +58,23 @@ async def lifespan(app: FastAPI):
         print(f"DEBUG: Failed to seed initial admin during startup: {e}")
 
     try:
+        from security.claude_token import reconcile_disk_credentials
+        reconcile_disk_credentials()
+    except Exception as e:
+        print(f"DEBUG: Startup credential reconciliation failed: {e}")
+
+    try:
         from security.claude_token import seed_from_env
         seed_from_env()
     except Exception as e:
         print(f"DEBUG: Claude token seed failed: {e}")
+
+    try:
+        from security.claude_token import start_disk_credential_watcher
+        start_disk_credential_watcher(interval_seconds=60)
+    except Exception as e:
+        print(f"DEBUG: Credential watcher failed to start: {e}")
+
     yield
 
 app = FastAPI(title="AI IDE Backend", lifespan=lifespan)

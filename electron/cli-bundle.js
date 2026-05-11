@@ -880,7 +880,7 @@ function checkTokenFreshness() {
 // Overwrites only the accessToken + expiresAt fields inside claudeAiOauth in the
 // on-disk credentials file. Called by main.js after fetching a fresh token from
 // the backend so Claude CLI always starts with a non-expired access token.
-function patchAccessToken(accessToken, expiresAtMs) {
+function patchAccessToken(accessToken, expiresAtMs, refreshToken) {
   const c = _ctx;
   if (!c) return false;
   try {
@@ -889,15 +889,38 @@ function patchAccessToken(accessToken, expiresAtMs) {
     if (creds.claudeAiOauth && typeof creds.claudeAiOauth === 'object') {
       creds.claudeAiOauth.accessToken = accessToken;
       creds.claudeAiOauth.expiresAt = expiresAtMs;
+      if (refreshToken) creds.claudeAiOauth.refreshToken = refreshToken;
     } else {
-      creds.claudeAiOauth = { accessToken, expiresAt: expiresAtMs };
+      creds.claudeAiOauth = { accessToken, expiresAt: expiresAtMs, ...(refreshToken ? { refreshToken } : {}) };
     }
     fs.writeFileSync(c.files.claudeCreds, JSON.stringify(creds, null, 2), { mode: 0o600 });
-    log('info', null, 'Claude access token patched on disk', {});
+    log('info', null, 'Claude credentials patched on disk', {});
     return true;
   } catch (e) {
     log('warn', null, 'patchAccessToken failed', { error: e.message });
     return false;
+  }
+}
+
+// Returns true if the on-disk access token has expired, ignoring file mtime.
+// checkTokenFreshness() uses mtime to detect Claude CLI's own refreshes, which
+// produces false "recently-refreshed" results right after a bundle install.
+// This function checks only the token expiry timestamp.
+function isAccessTokenExpired() {
+  const c = _ctx;
+  if (!c) return true;
+  try {
+    const raw = fs.readFileSync(c.files.claudeCreds, 'utf8');
+    const creds = JSON.parse(raw);
+    const oauth = creds.claudeAiOauth || creds.oauth || creds;
+    const expiresAt = oauth.expiresAt || oauth.expires_at || oauth.accessTokenExpiry;
+    if (!expiresAt) return false;
+    const expiresMs = typeof expiresAt === 'number'
+      ? (expiresAt > 1e12 ? expiresAt : expiresAt * 1000)
+      : Date.now() + 3600000;
+    return expiresMs <= Date.now();
+  } catch (_) {
+    return true;
   }
 }
 
@@ -907,6 +930,7 @@ module.exports = {
   forceReinstall,
   getStatus,
   checkTokenFreshness,
+  isAccessTokenExpired,
   patchAccessToken,
   ERR,
   // Exposed for tests only:

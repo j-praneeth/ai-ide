@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import {
   VscChevronRight,
@@ -55,16 +55,24 @@ function getFileIcon(name) {
   return <span className="file-icon" style={{ color: '#6a6a6a' }}>F</span>;
 }
 
-function TreeNode({ node, basePath, depth, openFile, selectedFile, expandedFolders, toggleFolder, lazyChildren, showHiddenFiles, onContextMenu, onDragStart, onDragOver, onDragLeave, onDrop, isDropTarget, dropTarget }) {
+const TreeNode = React.memo(function TreeNode({ node, basePath, depth, openFile, selectedFile, expandedFolders, toggleFolder, lazyChildren, showHiddenFiles, onContextMenu, onDragStart, onDragOver, onDragLeave, onDrop, isDropTarget, dropTarget }) {
   const fullPath = basePath ? `${basePath}/${node.name}` : node.name;
   const isExpanded = expandedFolders.has(fullPath);
   const isSelected = selectedFile === fullPath;
 
-  const children = lazyChildren?.[fullPath] || node.children || [];
   const hasContent = node.hasChildren !== false;
   const childDropTarget = dropTarget;
 
-        if (node.type === 'folder') {
+  // Sort children once per children-array change, not on every render
+  const children = useMemo(() => {
+    const raw = lazyChildren?.[fullPath] || node.children || [];
+    return [...raw].sort((a, b) => {
+      if (a.type === b.type) return a.name.localeCompare(b.name);
+      return a.type === 'folder' ? -1 : 1;
+    });
+  }, [lazyChildren, fullPath, node.children]);
+
+  if (node.type === 'folder') {
     return (
       <div className="tree-node">
         <div
@@ -89,12 +97,7 @@ function TreeNode({ node, basePath, depth, openFile, selectedFile, expandedFolde
         </div>
         {isExpanded && children.length > 0 && (
           <div className="tree-children">
-            {children
-              .sort((a, b) => {
-                if (a.type === b.type) return a.name.localeCompare(b.name);
-                return a.type === 'folder' ? -1 : 1;
-              })
-              .map(child => (
+            {children.map(child => (
                 <TreeNode
                   key={child.name}
                   node={child}
@@ -142,11 +145,28 @@ function TreeNode({ node, basePath, depth, openFile, selectedFile, expandedFolde
       <span className="tree-label">{node.name}</span>
     </div>
   );
-}
+}, (prev, next) => {
+  // Only re-render this node if something relevant to IT changed
+  const fp = prev.basePath ? `${prev.basePath}/${prev.node.name}` : prev.node.name;
+  return (
+    prev.node === next.node &&
+    prev.selectedFile === next.selectedFile &&
+    prev.expandedFolders.has(fp) === next.expandedFolders.has(fp) &&
+    prev.lazyChildren?.[fp] === next.lazyChildren?.[fp] &&
+    prev.isDropTarget === next.isDropTarget &&
+    prev.dropTarget === next.dropTarget &&
+    prev.toggleFolder === next.toggleFolder &&
+    prev.openFile === next.openFile
+  );
+});
 
 export default function FileExplorer({ tree, treeLoading, openFile, selectedFile, onRefresh, showHiddenFiles, onToggleShowHidden, triggerNewFile, onNewFileDone, onOpenFolder, onLoadChildren }) {
   const [expandedFolders, setExpandedFolders] = useState(new Set());
   const [lazyChildren, setLazyChildren] = useState({});
+  // Ref so toggleFolder never needs lazyChildren in its dep array — avoids
+  // recreating the callback (and re-rendering all nodes) on every child load.
+  const lazyChildrenRef = useRef(lazyChildren);
+  useEffect(() => { lazyChildrenRef.current = lazyChildren; }, [lazyChildren]);
   const [showNewFileInput, setShowNewFileInput] = useState(false);
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [newItemName, setNewItemName] = useState('');
@@ -236,15 +256,15 @@ export default function FileExplorer({ tree, treeLoading, openFile, selectedFile
         next.delete(path);
       } else {
         next.add(path);
-        if (!lazyChildren[path]) {
+        if (!lazyChildrenRef.current[path]) {
           if (onLoadChildren) {
             onLoadChildren(path).then(data => {
-              if (Array.isArray(data)) setLazyChildren(prev => ({ ...prev, [path]: data }));
+              if (Array.isArray(data)) setLazyChildren(c => ({ ...c, [path]: data }));
             }).catch(() => {});
           } else {
             axios.get(`${API}/files/tree-children`, { params: { path, show_hidden: showHiddenFiles } })
               .then(res => {
-                if (Array.isArray(res.data)) setLazyChildren(prev => ({ ...prev, [path]: res.data }));
+                if (Array.isArray(res.data)) setLazyChildren(c => ({ ...c, [path]: res.data }));
               })
               .catch(() => {});
           }
@@ -252,7 +272,7 @@ export default function FileExplorer({ tree, treeLoading, openFile, selectedFile
       }
       return next;
     });
-  }, [lazyChildren, showHiddenFiles, onLoadChildren]);
+  }, [showHiddenFiles, onLoadChildren]);
 
   const handleContextMenu = useCallback((e, path, type) => {
     setContextMenu({ x: e.clientX, y: e.clientY, path, type });
@@ -332,6 +352,14 @@ export default function FileExplorer({ tree, treeLoading, openFile, selectedFile
     setExpandedFolders(new Set());
     setLazyChildren({});
   }, []);
+
+  const sortedTree = useMemo(() =>
+    [...tree].sort((a, b) => {
+      if (a.type === b.type) return a.name.localeCompare(b.name);
+      return a.type === 'folder' ? -1 : 1;
+    }),
+    [tree]
+  );
 
   return (
     <div className="file-explorer">
@@ -426,12 +454,7 @@ export default function FileExplorer({ tree, treeLoading, openFile, selectedFile
                 </div>
               </div>
             )}
-            {tree
-              .sort((a, b) => {
-                if (a.type === b.type) return a.name.localeCompare(b.name);
-                return a.type === 'folder' ? -1 : 1;
-              })
-              .map(node => (
+            {sortedTree.map(node => (
                 <TreeNode
                   key={node.name}
                   node={node}

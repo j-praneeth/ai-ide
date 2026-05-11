@@ -136,6 +136,13 @@ function App() {
 
   // Load file tree (optionally include hidden files); from backend or from web folder handle
   const loadTree = useCallback(async () => {
+    // Show cached tree immediately so the explorer feels instant
+    if (!webFolderHandle) {
+      try {
+        const cached = sessionStorage.getItem('nebula_tree_cache');
+        if (cached) setTree(JSON.parse(cached));
+      } catch (_) {}
+    }
     setTreeLoading(true);
     try {
       if (webFolderHandle) {
@@ -144,6 +151,7 @@ function App() {
       } else {
         const res = await axios.get(`${API}/files/tree`, { params: { show_hidden: showHiddenFiles } });
         setTree(res.data);
+        try { sessionStorage.setItem('nebula_tree_cache', JSON.stringify(res.data)); } catch (_) {}
       }
     } catch (err) {
       console.error('Failed to load file tree:', err);

@@ -9,6 +9,7 @@ import getpass
 import re
 import shutil
 import sys as _sys
+import tempfile
 import threading as _threading
 import time
 import uuid
@@ -264,7 +265,7 @@ def _extract_cd(command):
     return None, command
 
 
-def _build_env():
+def _build_env(config_dir: str | None = None):
     """Build environment variables for subprocess, platform-aware."""
     env = {**os.environ}
     if not IS_WINDOWS:
@@ -276,6 +277,8 @@ def _build_env():
         parts = [p for p in current.split(os.pathsep) if p]
         if npm_bin not in parts:
             env[path_key] = os.pathsep.join([npm_bin, *parts])
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
     return env
 
 
@@ -297,6 +300,54 @@ def _get_npm_global_bin_dir():
         return prefix if IS_WINDOWS else os.path.join(prefix, "bin")
     except Exception:
         return None
+
+
+def _prepare_session_config(session_id: str) -> str | None:
+    """Create a per-session CLAUDE_CONFIG_DIR and write fresh master OAuth credentials into it.
+
+    Returns the directory path, or None if credentials aren't available (admin hasn't set them up yet).
+    Each session gets its own isolated dir so multiple web users never share auth state.
+    """
+    try:
+        from security.claude_token import get_fresh_access_token
+        data = get_fresh_access_token()
+    except Exception:
+        return None
+
+    config_dir = os.path.join(tempfile.gettempdir(), "nebula-cli", session_id)
+    try:
+        os.makedirs(config_dir, exist_ok=True)
+        creds = {
+            "claudeAiOauth": {
+                "accessToken": data["accessToken"],
+                "refreshToken": data["refreshToken"],
+                "expiresAt": data["expiresAt"],
+            }
+        }
+        with open(os.path.join(config_dir, ".credentials.json"), "w") as f:
+            json.dump(creds, f)
+        return config_dir
+    except Exception:
+        return None
+
+
+def _refresh_session_credentials(config_dir: str) -> None:
+    """Rewrite credentials in an existing session config dir (called on respawn)."""
+    try:
+        from security.claude_token import get_fresh_access_token
+        data = get_fresh_access_token()
+        creds = {
+            "claudeAiOauth": {
+                "accessToken": data["accessToken"],
+                "refreshToken": data["refreshToken"],
+                "expiresAt": data["expiresAt"],
+            }
+        }
+        os.makedirs(config_dir, exist_ok=True)
+        with open(os.path.join(config_dir, ".credentials.json"), "w") as f:
+            json.dump(creds, f)
+    except Exception:
+        pass
 
 
 def _find_git_bash():
@@ -530,8 +581,11 @@ _MAX_RESPAWNS = 5
 
 
 class _ClaudeSession:
-    def __init__(self, process: subprocess.Popen, tool: str, cwd: str):
+    def __init__(self, process: subprocess.Popen, tool: str, cwd: str,
+                 master_fd: int | None = None, config_dir: str | None = None):
         self.process = process
+        self.master_fd = master_fd      # non-None when spawned with a PTY (Linux/macOS)
+        self.config_dir = config_dir    # per-session CLAUDE_CONFIG_DIR
         self.scrollback: collections.deque = collections.deque(maxlen=_SCROLLBACK_MAX)
         self.waiters: list[asyncio.Queue] = []
         self.tool = tool
@@ -540,6 +594,29 @@ class _ClaudeSession:
         self.last_active = time.time()
         self.reader_task: asyncio.Task | None = None
         self.explicitly_terminated = False
+
+    def write_input(self, data: bytes) -> None:
+        """Write raw bytes to the CLI process (PTY master fd or stdin pipe)."""
+        if self.master_fd is not None:
+            try:
+                os.write(self.master_fd, data)
+            except OSError:
+                pass
+        elif self.process and self.process.stdin:
+            try:
+                self.process.stdin.write(data)
+                self.process.stdin.flush()
+            except Exception:
+                pass
+
+    def resize_pty(self, cols: int, rows: int) -> None:
+        if self.master_fd is None:
+            return
+        try:
+            _fcntl.ioctl(self.master_fd, _termios.TIOCSWINSZ,
+                         _struct.pack("HHHH", rows, cols, 0, 0))
+        except Exception:
+            pass
 
     def _broadcast(self, text: str) -> None:
         self.scrollback.append(text)
@@ -560,19 +637,24 @@ class _ClaudeSession:
         respawn_count = 0
 
         while True:
-            # ── read stdout until the process exits ──────────────────
+            # ── read output until the process exits ──────────────────
             try:
                 while True:
-                    data = await asyncio.to_thread(self.process.stdout.read, 1024)
+                    if self.master_fd is not None:
+                        data = await asyncio.to_thread(os.read, self.master_fd, 65536)
+                    else:
+                        data = await asyncio.to_thread(self.process.stdout.read, 32768)
                     if not data:
                         break
                     text = data.decode("utf-8", errors="replace")
                     self._broadcast(text)
                     self.last_active = time.time()
+            except OSError:
+                pass  # PTY slave closed on process exit
             except Exception:
                 pass
 
-            exit_code = self.process.poll()
+            exit_code = self.process.poll() if self.process else 0
 
             # Explicit kill or clean exit (/exit command) → stop loop
             if self.explicitly_terminated or exit_code == 0:
@@ -598,19 +680,37 @@ class _ClaudeSession:
                 break
 
             try:
+                # Close stale PTY fd before spawning new one
+                if self.master_fd is not None:
+                    try:
+                        os.close(self.master_fd)
+                    except Exception:
+                        pass
+                    self.master_fd = None
+
                 status = _get_cli_status(self.tool)
-                env = _build_env()
+                if self.config_dir:
+                    _refresh_session_credentials(self.config_dir)
+                env = _build_env(config_dir=self.config_dir)
                 cmd = _build_cli_shell_command(self.tool, status)
-                self.process = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    shell=False,
-                    bufsize=0,
-                    env=env,
-                    cwd=self.cwd,
-                )
+
+                if not IS_WINDOWS:
+                    master_fd, slave_fd = _pty.openpty()
+                    self.process = subprocess.Popen(
+                        cmd,
+                        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                        close_fds=True, env=env, cwd=self.cwd,
+                    )
+                    os.close(slave_fd)
+                    self.master_fd = master_fd
+                else:
+                    self.process = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        shell=False, bufsize=0, env=env, cwd=self.cwd,
+                    )
                 self._broadcast("\r\n\x1b[32m  [Claude restarted]\x1b[0m\r\n")
             except Exception as exc:
                 self._broadcast(
@@ -648,11 +748,22 @@ async def _session_janitor() -> None:
         ]
         for sid in dead:
             s = _claude_sessions.pop(sid, None)
-            if s and s.process.poll() is None:
-                try:
-                    s.process.terminate()
-                except Exception:
-                    pass
+            if s:
+                if s.process and s.process.poll() is None:
+                    try:
+                        s.process.terminate()
+                    except Exception:
+                        pass
+                if s.master_fd is not None:
+                    try:
+                        os.close(s.master_fd)
+                    except Exception:
+                        pass
+                if s.config_dir and os.path.isdir(s.config_dir):
+                    try:
+                        shutil.rmtree(s.config_dir, ignore_errors=True)
+                    except Exception:
+                        pass
 
 
 @router.websocket("/ws/pty/{session_id}")
@@ -712,12 +823,12 @@ async def terminal_pty_ws(
             await websocket.close()
             return
 
-        send_q: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        send_q: asyncio.Queue = asyncio.Queue(maxsize=5000)
 
         def _reader():
             while True:
                 try:
-                    data = pty_proc.read(4096)
+                    data = pty_proc.read(65536)
                     if data:
                         asyncio.run_coroutine_threadsafe(send_q.put(data), loop)
                     elif not pty_proc.isalive():
@@ -805,14 +916,14 @@ async def terminal_pty_ws(
             await websocket.close()
             return
 
-        send_q: asyncio.Queue = asyncio.Queue(maxsize=1000)
+        send_q: asyncio.Queue = asyncio.Queue(maxsize=5000)
 
         def _reader():
             while True:
                 try:
-                    r, _, _ = _select.select([master_fd], [], [], 0.05)
+                    r, _, _ = _select.select([master_fd], [], [], 0.1)
                     if r:
-                        data = os.read(master_fd, 4096)
+                        data = os.read(master_fd, 65536)
                         if data:
                             asyncio.run_coroutine_threadsafe(
                                 send_q.put(data.decode("utf-8", errors="replace")), loop
@@ -880,15 +991,34 @@ def list_cli_sessions():
             "cwd": s.cwd,
             "created_at": s.created_at,
             "last_active": s.last_active,
-            "alive": s.process.poll() is None,
+            "alive": (s.process.poll() is None) if s.process else False,
         }
         for sid, s in _claude_sessions.items()
     ]
 
 
 @router.websocket("/ws/cli")
-async def cli_websocket(websocket: WebSocket, tool: str = "claude", session_id: str = None):
+async def cli_websocket(
+    websocket: WebSocket,
+    tool: str = "claude",
+    session_id: str = None,
+    token: str = None,
+):
     await websocket.accept()
+
+    # ── Auth: validate JWT when users exist ────────────────────────
+    try:
+        from security.auth import get_user_for_token, has_users
+        auth_required = os.environ.get("NEBULA_AUTH_REQUIRED", "true").lower() == "true"
+        if auth_required and has_users():
+            if not token or not get_user_for_token(token):
+                await websocket.send_text(
+                    "\r\n\x1b[31m  Authentication required. Please log in.\x1b[0m\r\n"
+                )
+                await websocket.close()
+                return
+    except Exception:
+        pass  # DB down or auth module not loaded → allow through
 
     # ── Reattach to an existing session or spawn a new one ─────────
     session: _ClaudeSession | None = None
@@ -896,7 +1026,8 @@ async def cli_websocket(websocket: WebSocket, tool: str = "claude", session_id: 
 
     if session_id and session_id in _claude_sessions:
         s = _claude_sessions[session_id]
-        if s.process.poll() is None:
+        alive = (s.process.poll() is None) if s.process else False
+        if alive:
             session = s
             is_new = False
         else:
@@ -906,36 +1037,56 @@ async def cli_websocket(websocket: WebSocket, tool: str = "claude", session_id: 
         status = _get_cli_status(tool)
         if not status["installed"]:
             await websocket.send_text(
-                f"\r\n{status['label']} is not installed.\r\n"
-                f"Run: npm install -g {status['package_name']}\r\n\r\n"
+                f"\r\n\x1b[31m  {status['label']} is not installed on the server.\x1b[0m\r\n"
+                f"\x1b[33m  Run: npm install -g {status['package_name']}\x1b[0m\r\n\r\n"
             )
-            for note in status["notes"]:
-                await websocket.send_text(f"{note}\r\n")
             await websocket.close()
             return
 
-        env = _build_env()
+        # Generate session_id before spawning so the config dir can use it
+        new_session_id = uuid.uuid4().hex[:12]
+        config_dir = _prepare_session_config(new_session_id)
+
+        env = _build_env(config_dir=config_dir)
         cwd = _get_project_root_dir()
         cmd = _build_cli_shell_command(tool, status)
 
+        master_fd = None
         try:
-            process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                shell=False,
-                bufsize=0,
-                env=env,
-                cwd=cwd,
-            )
+            if not IS_WINDOWS:
+                # Use a real PTY so Claude Code runs in interactive/TUI mode
+                master_fd, slave_fd = _pty.openpty()
+                try:
+                    _fcntl.ioctl(slave_fd, _termios.TIOCSWINSZ,
+                                 _struct.pack("HHHH", 24, 80, 0, 0))
+                except Exception:
+                    pass
+                process = subprocess.Popen(
+                    cmd,
+                    stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                    close_fds=True, env=env, cwd=cwd,
+                )
+                os.close(slave_fd)
+            else:
+                process = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    shell=False, bufsize=0, env=env, cwd=cwd,
+                )
         except Exception as e:
-            await websocket.send_text(f"Failed to start terminal shell: {e}\r\n")
+            if master_fd is not None:
+                try:
+                    os.close(master_fd)
+                except Exception:
+                    pass
+            await websocket.send_text(f"\r\n\x1b[31m  Failed to start {status['label']}: {e}\x1b[0m\r\n")
             await websocket.close()
             return
 
-        session_id = uuid.uuid4().hex[:12]
-        session = _ClaudeSession(process, tool, cwd)
+        session_id = new_session_id
+        session = _ClaudeSession(process, tool, cwd, master_fd=master_fd, config_dir=config_dir)
         _claude_sessions[session_id] = session
         session.reader_task = asyncio.create_task(session.run_reader())
         _ensure_janitor()
@@ -952,7 +1103,7 @@ async def cli_websocket(websocket: WebSocket, tool: str = "claude", session_id: 
             return
 
     # ── Subscribe to live output via a per-connection queue ─────────
-    q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    q: asyncio.Queue = asyncio.Queue(maxsize=2000)
     session.waiters.append(q)
 
     async def pump_to_ws() -> None:
@@ -977,17 +1128,27 @@ async def cli_websocket(websocket: WebSocket, tool: str = "claude", session_id: 
     try:
         while True:
             data = await websocket.receive_text()
+            session.last_active = time.time()
+
+            # Handle JSON control messages (resize, etc.)
+            try:
+                msg = json.loads(data)
+                if isinstance(msg, dict):
+                    if msg.get("type") == "resize":
+                        cols = max(10, int(msg.get("cols", 80)))
+                        rows = max(2, int(msg.get("rows", 24)))
+                        session.resize_pty(cols, rows)
+                        continue
+            except (ValueError, TypeError):
+                pass
+
             # Check if reader decided the process is permanently gone
-            if session.process.poll() is not None and not session.waiters:
+            alive = (session.process.poll() is None) if session.process else False
+            if not alive and not session.waiters:
                 _claude_sessions.pop(session_id, None)
                 break
-            session.last_active = time.time()
-            if session.process.stdin:
-                try:
-                    session.process.stdin.write(data.encode("utf-8"))
-                    session.process.stdin.flush()
-                except Exception:
-                    break
+
+            session.write_input(data.encode("utf-8"))
     except WebSocketDisconnect:
         pass  # Keep the process alive — client will reconnect
     finally:

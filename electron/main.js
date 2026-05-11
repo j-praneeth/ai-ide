@@ -21,6 +21,10 @@ let cliToolsInstallPromise = null;
 // failed). `cli:start` awaits this before spawning so the CLI never launches
 // against a missing ~/.claude/.credentials.json or ~/.codex/auth.json.
 let cliBundleReadyPromise = null;
+// Tracks the last refresh token written by _applyFreshClaudeToken so the
+// credential watcher can distinguish our own writes from CLI-rotation events.
+let _lastBackendRefreshToken = null;
+let _credWatcher = null;
 
 const SCROLLBACK_MAX_BYTES = 512 * 1024; // 512 KB per session
 
@@ -479,10 +483,86 @@ function _fetchClaudeTokenFromBackend() {
 async function _applyFreshClaudeToken() {
   try {
     const data = await _fetchClaudeTokenFromBackend();
-    cliBundle.patchAccessToken(data.accessToken, data.expiresAt);
-    console.log('[claude-token] Access token refreshed from backend.');
+    // Mark this refresh token as ours BEFORE writing to disk, so the file watcher
+    // ignores the change we're about to make (avoids a spurious sync loop).
+    if (data.refreshToken) _lastBackendRefreshToken = data.refreshToken;
+    cliBundle.patchAccessToken(data.accessToken, data.expiresAt, data.refreshToken);
+    console.log('[claude-token] Claude credentials refreshed from backend.');
+    return { ok: true };
   } catch (e) {
     console.warn('[claude-token] Fresh token fetch failed (bundled creds will be used):', e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+// Watch ~/.claude/.credentials.json for changes made by an external Claude CLI
+// session (e.g., when the developer runs `claude` in CMD and Anthropic rotates
+// the refresh token). When a rotation is detected we POST the new credentials to
+// the local backend so MongoDB stays in sync, allowing the next Electron
+// token refresh to succeed.
+//
+// If the file does not exist yet (first boot before bundle install), retry
+// every 10 s until it appears rather than silently giving up.
+function _startCredentialWatcher() {
+  const credsPath = path.join(app.getPath('home'), '.claude', '.credentials.json');
+
+  if (!fs.existsSync(credsPath)) {
+    console.log('[claude-token] Credentials file not found yet, will retry watcher in 10 s.');
+    setTimeout(() => _startCredentialWatcher(), 10_000);
+    return;
+  }
+
+  if (_credWatcher) {
+    try { _credWatcher.close(); } catch (_) {}
+  }
+
+  let _debounce = null;
+  try {
+    _credWatcher = fs.watch(credsPath, { persistent: false }, () => {
+      if (_debounce) return;
+      _debounce = setTimeout(async () => {
+        _debounce = null;
+        try {
+          const raw = fs.readFileSync(credsPath, 'utf8');
+          const creds = JSON.parse(raw);
+          const oauth = creds.claudeAiOauth || creds.oauth || creds;
+          const newRefresh = ((oauth.refreshToken || oauth.refresh_token) || '').trim();
+
+          if (!newRefresh) return;
+          // If this matches what we last wrote, we caused this change — skip sync.
+          if (_lastBackendRefreshToken && newRefresh === _lastBackendRefreshToken) return;
+
+          console.log('[claude-token] External refresh token rotation detected, syncing to backend.');
+          _lastBackendRefreshToken = newRefresh;
+
+          if (!backendPort) return;
+          const body = JSON.stringify({
+            oauth: {
+              accessToken: ((oauth.accessToken || oauth.access_token) || '').trim(),
+              refreshToken: newRefresh,
+              expiresAt: oauth.expiresAt || oauth.expires_at || 0,
+            },
+          });
+          const req = http.request({
+            hostname: '127.0.0.1',
+            port: backendPort,
+            path: '/auth/claude-credentials-internal',
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+          }, (res) => {
+            console.log(`[claude-token] Credential sync → ${res.statusCode}`);
+          });
+          req.on('error', (e) => console.warn('[claude-token] Credential sync error:', e.message));
+          req.write(body);
+          req.end();
+        } catch (e) {
+          console.warn('[claude-token] Credential watcher read error:', e.message);
+        }
+      }, 500);
+    });
+    console.log('[claude-token] Watching for credential rotation:', credsPath);
+  } catch (e) {
+    console.warn('[claude-token] Could not start credential watcher:', e.message);
   }
 }
 
@@ -1374,9 +1454,23 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
   }
 
   // Fetch a fresh access token from the backend and patch it on disk so Claude
-  // CLI never starts against an expired token. Non-fatal: if the backend is
-  // unreachable the bundled credentials are used as-is.
-  await _applyFreshClaudeToken();
+  // CLI never starts against an expired token.
+  const _tokenResult = await _applyFreshClaudeToken();
+  if (!_tokenResult.ok) {
+    // isAccessTokenExpired() checks the token timestamp directly — unlike
+    // checkTokenFreshness() it is not fooled by a recently-written file that
+    // still contains a stale token (e.g. right after a fresh bundle install).
+    if (cliBundle.isAccessTokenExpired()) {
+      return {
+        ok: false,
+        installed: true,
+        message: `Claude credentials are expired and could not be refreshed from the server (${_tokenResult.error || 'server unreachable'}). Open the Admin panel → Repair CLI auth, or ask your Nebula administrator to reseed the master credentials.`,
+      };
+    }
+    // Access token is not yet expired — let Claude CLI proceed; it can use the
+    // token as-is or refresh with its own refresh token.
+    console.warn('[claude-token] Backend refresh failed but access token is still valid, proceeding.');
+  }
 
   let launch = getCliLaunchConfig(tool);
 
@@ -1644,6 +1738,11 @@ app.whenReady().then(async () => {
         // token fresh via the backend. This means users are never prompted to
         // log in regardless of how long the app stays open.
         _startClaudeTokenRefreshLoop();
+
+        // Watch the on-disk credentials file so that if the developer runs
+        // Claude CLI in a separate terminal and Anthropic rotates the refresh
+        // token, we automatically sync the new token to MongoDB.
+        _startCredentialWatcher();
 
         return res;
       }).catch((err) => {

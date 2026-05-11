@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
-import { API_URL as API } from '../config';
+import { API_URL as API, AUTH_URL as AUTH } from '../config';
 import { getAuthUser } from '../lib/auth';
 import UsagePanel from './UsagePanel';
 
@@ -51,6 +51,13 @@ export default function AdminPanel() {
   const [bundleError, setBundleError] = useState('');
   const [bundleSuccess, setBundleSuccess] = useState('');
   const [bundleRepairing, setBundleRepairing] = useState(false);
+
+  const [credsStatus, setCredsStatus] = useState(null); // null | 'ok' | 'missing'
+  const [credsStatusMsg, setCredsStatusMsg] = useState('');
+  const [credsJson, setCredsJson] = useState('');
+  const [credsSaving, setCredsSaving] = useState(false);
+  const [credsError, setCredsError] = useState('');
+  const [credsSuccess, setCredsSuccess] = useState('');
 
   const refreshUsers = useCallback(async () => {
     if (!isAdmin) return;
@@ -135,6 +142,58 @@ export default function AdminPanel() {
     }
   };
 
+  const checkServerCreds = useCallback(async () => {
+    setCredsStatus(null);
+    setCredsStatusMsg('Checking…');
+    try {
+      const res = await axios.get(`${AUTH}/auth/claude-token`);
+      if (res.data?.ok && res.data?.accessToken) {
+        setCredsStatus('ok');
+        setCredsStatusMsg('Server has valid Claude credentials.');
+      } else {
+        setCredsStatus('missing');
+        setCredsStatusMsg(`Server returned: ${res.data?.error || 'no access token'}`);
+      }
+    } catch (e) {
+      setCredsStatus('missing');
+      setCredsStatusMsg(e?.response?.data?.error || e.message || 'Failed to reach server');
+    }
+  }, []);
+
+  const seedMasterCredentials = async () => {
+    setCredsError('');
+    setCredsSuccess('');
+    let parsed;
+    try {
+      parsed = JSON.parse(credsJson.trim());
+    } catch (_) {
+      setCredsError('Invalid JSON — paste the full contents of ~/.claude/.credentials.json');
+      return;
+    }
+    // Support pasting the full .credentials.json or just the claudeAiOauth object
+    const oauth = parsed.claudeAiOauth || parsed.oauth || parsed;
+    if (!oauth?.refreshToken) {
+      setCredsError('No refreshToken found. Paste the full ~/.claude/.credentials.json file.');
+      return;
+    }
+    setCredsSaving(true);
+    try {
+      const res = await axios.post(`${AUTH}/auth/claude-credentials`, { oauth });
+      if (res.data?.ok) {
+        setCredsSuccess('Master credentials updated. New users will receive fresh tokens.');
+        setCredsJson('');
+        checkServerCreds();
+        setTimeout(() => setCredsSuccess(''), 4000);
+      } else {
+        setCredsError(res.data?.error || 'Update failed');
+      }
+    } catch (e) {
+      setCredsError(e?.response?.data?.error || e.message || 'Update failed');
+    } finally {
+      setCredsSaving(false);
+    }
+  };
+
   if (!isAdmin) {
     return (
       <div style={{ padding: 12, color: 'var(--text-muted)', fontSize: 12 }}>
@@ -192,6 +251,52 @@ export default function AdminPanel() {
 
         {tab === 'configurations' && (
           <div style={{ padding: 12 }}>
+            <div style={card}>
+              <div style={{ fontSize: 13, fontWeight: 900, color: 'var(--text-primary)', marginBottom: 8 }}>
+                Master Claude Credentials
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                The server holds a master Claude OAuth token that is distributed to all users at CLI start, so credentials never expire. Paste the contents of <code>~/.claude/.credentials.json</code> from the admin&apos;s machine (after running <code>claude login</code>) to seed or refresh the server credentials.
+              </div>
+
+              {credsStatus && (
+                <div style={{ marginTop: 8, fontSize: 12, fontWeight: 700, color: credsStatus === 'ok' ? 'var(--accent)' : 'var(--error, #e5534b)' }}>
+                  {credsStatus === 'ok' ? '✓ ' : '✗ '}{credsStatusMsg}
+                </div>
+              )}
+              {!credsStatus && credsStatusMsg && (
+                <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{credsStatusMsg}</div>
+              )}
+
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                  Paste <code>~/.claude/.credentials.json</code> contents
+                </div>
+                <textarea
+                  value={credsJson}
+                  onChange={e => setCredsJson(e.target.value)}
+                  placeholder={'{\n  "claudeAiOauth": {\n    "accessToken": "...",\n    "refreshToken": "...",\n    "expiresAt": 1234567890000\n  }\n}'}
+                  style={{ ...inputStyle, height: 100, resize: 'vertical', fontFamily: 'monospace', fontSize: 11 }}
+                />
+              </div>
+
+              {(credsError || credsSuccess) && (
+                <div style={{ fontSize: 12, color: credsError ? 'var(--error, #e5534b)' : 'var(--accent)', fontWeight: 700, marginTop: 4 }}>
+                  {credsError || credsSuccess}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+                <button type="button" onClick={checkServerCreds}
+                  style={{ ...buttonStyle, padding: '8px 10px', background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}>
+                  Check Status
+                </button>
+                <button type="button" onClick={seedMasterCredentials} style={buttonStyle} disabled={credsSaving || !credsJson.trim()}>
+                  {credsSaving ? 'Saving…' : 'Update Credentials'}
+                </button>
+              </div>
+            </div>
+
             <div style={card}>
               <div style={{ fontSize: 13, fontWeight: 900, color: 'var(--text-primary)', marginBottom: 8 }}>
                 CLI Auth Bundle

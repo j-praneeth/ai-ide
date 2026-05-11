@@ -53,6 +53,177 @@ function _clearStoredSessionId(cli) {
   try { localStorage.removeItem(`nebula_cli_session_${cli}`); } catch (_) {}
 }
 
+// ── Browser WebSocket CLI (used when Electron IPC is not available) ──────────
+function BrowserCliPanel({ visible }) {
+  const containerRef = useRef(null);
+  const termRef = useRef(null);
+  const fitRef = useRef(null);
+  const wsRef = useRef(null);
+  const sessionIdRef = useRef(null);
+  const disposedRef = useRef(false);
+  const roRef = useRef(null);
+
+  const [selectedCli, setSelectedCli] = useState(() => {
+    try { return localStorage.getItem('nebula_selected_cli') || 'claude'; } catch (_) { return 'claude'; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem('nebula_selected_cli', selectedCli); } catch (_) {}
+  }, [selectedCli]);
+
+  const wsBase = AUTH.replace(/^http/, 'ws');
+
+  const sendResize = useCallback((ws, fit) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !fit) return;
+    try {
+      const dims = fit.proposeDimensions?.();
+      if (dims) ws.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }));
+    } catch (_) {}
+  }, []);
+
+  const connectWs = useCallback((cli) => {
+    if (disposedRef.current) return;
+    if (wsRef.current) {
+      try { wsRef.current.onclose = null; wsRef.current.close(); } catch (_) {}
+      wsRef.current = null;
+    }
+
+    const storedId = (() => { try { return localStorage.getItem(`nebula_ws_cli_${cli}`) || ''; } catch (_) { return ''; } })();
+    if (storedId && !sessionIdRef.current) sessionIdRef.current = storedId;
+
+    let retries = 0;
+    const MAX_RETRIES = 8;
+
+    function open() {
+      if (disposedRef.current) return;
+      const sid = sessionIdRef.current || '';
+      const tok = getAuthToken() || '';
+      const wsUrl = `${wsBase}/terminal/ws/cli?tool=${encodeURIComponent(cli)}`
+        + (sid ? `&session_id=${encodeURIComponent(sid)}` : '')
+        + (tok ? `&token=${encodeURIComponent(tok)}` : '');
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        retries = 0;
+        sendResize(ws, fitRef.current);
+      };
+
+      let outBuf = '';
+      let writeScheduled = false;
+      function flushOutput() {
+        if (outBuf && termRef.current) { termRef.current.write(outBuf); outBuf = ''; }
+        writeScheduled = false;
+      }
+      ws.onmessage = (e) => {
+        if (!termRef.current) return;
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'session_id') {
+            sessionIdRef.current = msg.session_id;
+            try { localStorage.setItem(`nebula_ws_cli_${cli}`, msg.session_id); } catch (_) {}
+            termRef.current.writeln('\x1b[32m  Connected.\x1b[0m\r\n');
+            try { fitRef.current?.fit(); } catch (_) {}
+            sendResize(ws, fitRef.current);
+            return;
+          }
+        } catch (_) {}
+        outBuf += e.data;
+        if (!writeScheduled) { writeScheduled = true; requestAnimationFrame(flushOutput); }
+      };
+
+      ws.onerror = () => {};
+
+      ws.onclose = () => {
+        if (disposedRef.current) return;
+        if (retries < MAX_RETRIES) {
+          retries++;
+          setTimeout(open, 1500);
+        } else {
+          termRef.current?.writeln('\r\n\x1b[31m  Could not connect to backend.\x1b[0m');
+        }
+      };
+    }
+
+    open();
+  }, [wsBase, sendResize]);
+
+  useEffect(() => {
+    if (!visible || termRef.current) return;
+
+    const term = new Terminal(TERM_OPTIONS);
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    if (containerRef.current) term.open(containerRef.current);
+    termRef.current = term;
+    fitRef.current = fit;
+
+    term.onData((data) => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(data);
+    });
+
+    requestAnimationFrame(() => { requestAnimationFrame(() => { try { fit.fit(); } catch (_) {} }); });
+    connectWs(selectedCli);
+
+    if (roRef.current) roRef.current.disconnect();
+    let resizeTimer = null;
+    const ro = new ResizeObserver(() => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        try { fit.fit(); } catch (_) {}
+        sendResize(wsRef.current, fit);
+      }, 80);
+    });
+    if (containerRef.current) ro.observe(containerRef.current);
+    roRef.current = ro;
+
+    return () => {
+      disposedRef.current = true;
+      ro.disconnect();
+      if (wsRef.current) { wsRef.current.onclose = null; try { wsRef.current.close(); } catch (_) {} }
+      term.dispose();
+    };
+  }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleCliChange = (e) => {
+    const newCli = e.target.value;
+    setSelectedCli(newCli);
+    sessionIdRef.current = null;
+    if (termRef.current) {
+      termRef.current.clear();
+      termRef.current.writeln(`\x1b[1;33m  ✦ Starting ${CLI_LABELS[newCli] || newCli}...\x1b[0m`);
+    }
+    connectWs(newCli);
+  };
+
+  if (!visible) return null;
+
+  return (
+    <div className="cli-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#1E1E1E' }}>
+      <div className="cli-header" style={{
+        height: 36, padding: '0 10px', borderBottom: '1px solid var(--border)',
+        display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+        background: 'var(--bg-surface)',
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>CLI</span>
+        <select
+          value={selectedCli}
+          onChange={handleCliChange}
+          style={{
+            background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+            border: '1px solid var(--border)', padding: '3px 6px',
+            borderRadius: 3, outline: 'none', fontSize: 12, cursor: 'pointer',
+          }}
+        >
+          <option value="claude">Claude CLI</option>
+          <option value="codex">Codex CLI</option>
+        </select>
+      </div>
+      <div ref={containerRef} style={{ flex: 1, padding: 0, overflow: 'hidden' }} />
+    </div>
+  );
+}
+
 export default function CliPanel({ visible }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
@@ -228,9 +399,7 @@ export default function CliPanel({ visible }) {
       });
     }
 
-    setTimeout(() => {
-      try { fit.fit(); } catch (_) {}
-    }, 60);
+    requestAnimationFrame(() => { requestAnimationFrame(() => { try { fit.fit(); } catch (_) {} }); });
 
     // ResizeObserver — auto-refit whenever the container changes size (panel drag, etc.)
     // requestAnimationFrame prevents "ResizeObserver loop" browser warnings.
@@ -339,16 +508,7 @@ export default function CliPanel({ visible }) {
   if (!visible) return null;
 
   if (!window.electronAPI?.startCliSession) {
-    return (
-      <div style={{ height: '100%', display: 'grid', placeItems: 'center', background: 'var(--bg-deep)', padding: 18 }}>
-        <div style={{ width: 560, maxWidth: '95vw', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 12, padding: 16 }}>
-          <div style={{ fontSize: 14, fontWeight: 900, color: 'var(--text-primary)' }}>CLI is available in the Desktop app</div>
-          <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-            The embedded CLI panel requires the Electron desktop build. In a browser build, local CLIs cannot be spawned.
-          </div>
-        </div>
-      </div>
-    );
+    return <BrowserCliPanel visible={visible} />;
   }
 
   if (!authToken) {

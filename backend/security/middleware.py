@@ -18,6 +18,8 @@ _ALLOWLIST_PREFIXES: tuple[str, ...] = (
     "/auth/status",
     "/auth/login",
     "/auth/claude-token",  # Electron fetches fresh access token before spawning CLI
+    "/auth/claude-credentials-internal",  # Electron syncs rotated refresh token (localhost-only, IP-checked in route)
+    "/auth/sso",
     "/download",
     "/docs",
     "/openapi.json",
