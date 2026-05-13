@@ -14,7 +14,7 @@
     "build:backend:mac": "cd backend && pyinstaller --onefile --name nebula-backend --distpath ../dist/backend main.py --add-data 'agent:agent' --add-data 'relay_config.json:.'",
     "build:backend:win": "cd backend && python -m PyInstaller --onefile --name nebula-backend --distpath ../dist/backend main.py --add-data \"agent;agent\" --add-data \"relay_config.json;.\"",
     "build:vault": "node scripts/build-cli-vault.mjs",
-    "build:packaged:mac": "node scripts/build-with-kek.mjs --mac",
+    "build:packaged:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false node scripts/build-with-kek.mjs --mac",
     "build:packaged:win": "node scripts/build-with-kek.mjs --win",
     "build:packaged:all": "node scripts/build-with-kek.mjs --mac --win",
     "prebuild": "npm run build:frontend",
@@ -34,12 +34,13 @@
       "provider": "github",
       "owner": "j-praneeth",
       "repo": "ai-ide",
-      "releaseType": "release"
+      "draft": true
     },
     "directories": {
       "output": "release",
       "buildResources": "assets"
     },
+    "afterPack": "scripts/afterPack.js",
     "asar": true,
     "asarUnpack": [
       "**/node_modules/node-pty/**/*"
@@ -106,7 +107,9 @@
       "category": "public.app-category.developer-tools",
       "darkModeSupport": true,
       "hardenedRuntime": false,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "identity": null,
+      "signIgnore": []
     },
     "dmg": {
       "title": "Nebula IDE",
