@@ -6,11 +6,11 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('agent', 'agent'), ('relay_config.json', '.')],
-    hiddenimports=[],
+    hiddenimports=['uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.on', 'uvicorn.lifespan.off', 'fastapi', 'fastapi.middleware.cors', 'starlette.middleware.cors', 'multipart', 'requests', 'file_manager', 'terminal', 'ai', 'agent', 'agent.orchestrator', 'agent.planner', 'agent.executor', 'agent.tools', 'agent.indexer', 'agent.diff_engine', 'mobile_bridge', 'relay_client', 'relay_config', 'websockets', 'websockets.asyncio', 'websockets.asyncio.client', 'websockets.legacy', 'websockets.legacy.client', 'certifi', 'qrcode'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['torch', 'transformers', 'sentence_transformers', 'numpy', 'scipy', 'matplotlib', 'tkinter'],
     noarchive=False,
     optimize=0,
 )
