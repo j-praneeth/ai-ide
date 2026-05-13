@@ -55,9 +55,7 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
   useEffect(() => {
     const fetchBranches = async () => {
       try {
-        const res = await axios.post(`${API}/terminal/run`, null, {
-          params: { command: 'git branch -a --no-color' }
-        });
+        const res = await axios.post(`${API}/terminal/run`, { command: 'git branch -a --no-color' });
         const output = (res.data.output || '').trim();
         if (res.data.exit_code === 0 && output) {
           const parsed = output.split('\n').map(line => {
@@ -105,17 +103,13 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
     }
     setSwitching(checkoutName);
     try {
-      const res = await axios.post(`${API}/terminal/run`, null, {
-        params: { command: `git checkout ${checkoutName}` }
-      });
+      const res = await axios.post(`${API}/terminal/run`, { command: `git checkout ${checkoutName}` });
       if (res.data.exit_code === 0) {
         if (onSwitch) onSwitch(checkoutName);
         onClose();
       } else {
         // Try creating branch if it doesn't exist locally
-        const res2 = await axios.post(`${API}/terminal/run`, null, {
-          params: { command: `git checkout -b ${checkoutName}` }
-        });
+        const res2 = await axios.post(`${API}/terminal/run`, { command: `git checkout -b ${checkoutName}` });
         if (res2.data.exit_code === 0) {
           if (onSwitch) onSwitch(checkoutName);
           onClose();
@@ -129,9 +123,7 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
     if (!filter) return;
     setSwitching(filter);
     try {
-      const res = await axios.post(`${API}/terminal/run`, null, {
-        params: { command: `git checkout -b ${filter}` }
-      });
+      const res = await axios.post(`${API}/terminal/run`, { command: `git checkout -b ${filter}` });
       if (res.data.exit_code === 0) {
         if (onSwitch) onSwitch(filter);
         onClose();
@@ -144,13 +136,9 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
     e.stopPropagation();
     if (!window.confirm(`Are you sure you want to delete branch '${branchName}'?`)) return;
     try {
-      await axios.post(`${API}/terminal/run`, null, {
-        params: { command: `git branch -D ${branchName}` }
-      });
+      await axios.post(`${API}/terminal/run`, { command: `git branch -D ${branchName}` });
       // Refresh list
-      const res = await axios.post(`${API}/terminal/run`, null, {
-        params: { command: 'git branch -a --no-color' }
-      });
+      const res = await axios.post(`${API}/terminal/run`, { command: 'git branch -a --no-color' });
       const output = (res.data.output || '').trim();
       if (res.data.exit_code === 0 && output) {
         const parsed = output.split('\n').map(line => {
@@ -227,9 +215,7 @@ export default function StatusBar({ activeFile, cursorPosition, encoding }) {
 
   const fetchGitInfo = useCallback(async () => {
     try {
-      const branchRes = await axios.post(`${API}/terminal/run`, null, {
-        params: { command: 'git branch --show-current' }
-      });
+      const branchRes = await axios.post(`${API}/terminal/run`, { command: 'git branch --show-current' });
       const branchName = (branchRes.data.output || '').trim();
       if (branchName && branchRes.data.exit_code === 0) {
         setBranch(branchName);
@@ -237,9 +223,7 @@ export default function StatusBar({ activeFile, cursorPosition, encoding }) {
         setBranch('');
       }
 
-      const statusRes = await axios.post(`${API}/terminal/run`, null, {
-        params: { command: 'git status --porcelain -uall' }
-      });
+      const statusRes = await axios.post(`${API}/terminal/run`, { command: 'git status --porcelain -uall' });
       const lines = (statusRes.data.output || '').trim().split('\n').filter(Boolean);
       setGitChanges(statusRes.data.exit_code === 0 ? lines.length : 0);
     } catch {

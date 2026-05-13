@@ -24,6 +24,7 @@ import {
 } from 'react-icons/vsc';
 import axios from 'axios';
 import { API_URL as API } from '../config';
+import { authFetch } from '../lib/auth';
 import { RunOnceScheduler } from '../lib/async';
 
 // VS Code uses 80ms batching for search result DOM updates
@@ -97,7 +98,7 @@ export default function SearchPanel({ onOpenFile }) {
 
     try {
       // fetch() with ReadableStream — streams SSE results without blocking
-      const response = await fetch(url, { signal: ctrl.signal });
+      const response = await authFetch(url, { signal: ctrl.signal });
       if (!response.ok || !response.body) {
         throw new Error('Stream unavailable');
       }

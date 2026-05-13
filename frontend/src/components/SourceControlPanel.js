@@ -23,9 +23,7 @@ import axios from 'axios';
 import { API_URL as API } from '../config';
 
 async function runCommand(command) {
-  const res = await axios.post(`${API}/terminal/run`, null, {
-    params: { command },
-  });
+  const res = await axios.post(`${API}/terminal/run`, { command });
   return { output: res.data.output ?? '', exit_code: res.data.exit_code ?? 0 };
 }
 

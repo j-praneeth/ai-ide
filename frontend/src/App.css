@@ -440,6 +440,15 @@
   outline: 1px dashed var(--accent-amber);
 }
 
+/* Git-ignored entries (git check-ignore) — Cursor/VS Code style */
+.tree-item.tree-git-ignored .tree-label {
+  color: var(--text-muted);
+}
+
+.tree-item.tree-git-ignored:not(.selected):hover .tree-label {
+  color: var(--text-secondary);
+}
+
 .file-context-menu {
   position: fixed;
   z-index: 10000;

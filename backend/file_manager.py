@@ -8,6 +8,7 @@ import json
 import re as _re
 import time as _time
 from typing import Optional, Tuple, Any, List
+import subprocess
 
 # Hard cap on how many directory entries we will ever iterate.
 # This prevents node_modules / .git from taking minutes to scan.
@@ -95,6 +96,10 @@ def open_folder(path: str, show_hidden: bool = False):
 class ResolvePathRequest(BaseModel):
     folder_name: str
     entries: List[str] = []
+
+
+class GitCheckIgnoreBody(BaseModel):
+    paths: List[str] = []
 
 
 _SKIP_DIRS = {
@@ -326,6 +331,48 @@ def get_tree_batch(paths: List[str], show_hidden: bool = False):
         result[p] = _list_dir(target, show_hidden=show_hidden)
     _perf_log(f"POST /files/tree-batch ({len(paths)} paths)", t0)
     return result
+
+
+@router.post("/git-check-ignore")
+def git_check_ignore(body: GitCheckIgnoreBody):
+    """Return which workspace-relative paths are ignored by git (same as VS Code dimmed files)."""
+    root, err = _require_project_root()
+    if err:
+        return {"ignored": []}
+
+    try:
+        gr = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if gr.returncode != 0:
+            return {"ignored": []}
+    except (FileNotFoundError, OSError):
+        return {"ignored": []}
+
+    safe: List[str] = []
+    for raw in (body.paths or [])[:3000]:
+        s = str(raw).replace("\\", "/").strip()
+        if not s or any(p == '..' for p in s.split('/')):
+            continue
+        safe.append(s)
+    if not safe:
+        return {"ignored": []}
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "check-ignore", "--stdin"],
+            input="\n".join(safe) + "\n",
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        ignored = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+        return {"ignored": ignored}
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {"ignored": []}
 
 
 @router.get("/tree-children")

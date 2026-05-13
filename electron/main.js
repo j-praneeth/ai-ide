@@ -500,10 +500,11 @@ function getIntegratedTerminalLaunch(shell) {
   }
   if (shell === 'bash') {
     const bash = fs.existsSync('/bin/bash') ? '/bin/bash' : 'bash';
-    return { file: bash, args: ['-i'] };
+    return { file: bash, args: ['-l', '-i'] };
   }
   const sh = process.env.SHELL || (fs.existsSync('/bin/zsh') ? '/bin/zsh' : '/bin/bash');
-  return { file: sh, args: ['-i'] };
+  // Login + interactive so PATH matches Terminal.app (pip, nvm, pyenv, etc.).
+  return { file: sh, args: ['-l', '-i'] };
 }
 
 function closeCliSession(sessionId) {
@@ -1649,6 +1650,35 @@ ipcMain.handle('term:kill', (event, sessionId) => {
   } catch (_) {}
   integratedTermSessions.delete(sessionId);
   return { ok: true };
+});
+
+ipcMain.handle('fs:read-project-file', async (_event, relPath) => {
+  const root = currentProjectRoot;
+  if (!root) return { ok: false, error: 'no_workspace' };
+  const rel = String(relPath || '').replace(/\\/g, '/').split('/').filter(Boolean);
+  let cur = path.resolve(root);
+  for (const seg of rel) {
+    if (seg === '..') return { ok: false, error: 'invalid_path' };
+    cur = path.join(cur, seg);
+  }
+  const abs = path.resolve(cur);
+  const rootRes = path.resolve(root);
+  const rootWithSep = rootRes.endsWith(path.sep) ? rootRes : rootRes + path.sep;
+  if (abs !== rootRes && !abs.startsWith(rootWithSep)) {
+    return { ok: false, error: 'invalid_path' };
+  }
+  try {
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+      return { ok: false, error: 'not_file' };
+    }
+    const size = fs.statSync(abs).size;
+    if (size > 2 * 1024 * 1024) {
+      return { ok: false, error: 'too_large' };
+    }
+    return { ok: true, content: fs.readFileSync(abs, 'utf8') };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
 });
 
 ipcMain.handle('auth:get-pending-callback', () => {

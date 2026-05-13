@@ -311,6 +311,12 @@ function App() {
       let content;
       if (webFolderHandle) {
         content = await getFileContentFromHandle(webFolderHandle, path);
+      } else if (typeof window !== 'undefined' && window.electronAPI?.readProjectFile) {
+        const res = await window.electronAPI.readProjectFile(path);
+        if (!res?.ok) {
+          throw new Error(res?.error || 'Failed to read file');
+        }
+        content = res.content;
       } else {
         const res = await axios.get(`${API}/files/read`, { params: { path }, timeout: 10000 });
         content = res.data.content;

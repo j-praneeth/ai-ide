@@ -1,4 +1,6 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request, Body
+from pydantic import BaseModel
+from typing import Optional
 import asyncio
 import collections
 import json
@@ -30,6 +32,13 @@ else:
     _WINPTY_OK = False
 
 router = APIRouter()
+
+
+class TerminalRunJSON(BaseModel):
+    """POST /terminal/run JSON body (avoids huge query strings for git commands)."""
+    command: str = ""
+    session: str = "default"
+    shell: Optional[str] = None
 
 # CLI auth is now handled by the desktop app (electron/cli-bundle.js): it
 # unpacks a shipped, encrypted credential bundle into ~/.claude and ~/.codex
@@ -556,8 +565,26 @@ def cli_status(tool: str = "claude"):
 
 
 @router.post("/run")
-def run_command(command: str, session: str = "default", shell: str = None):
-    """Run a terminal command with persistent cwd tracking per session."""
+def run_command(
+    session: str = "default",
+    shell: str = None,
+    command: str = None,
+    body: Optional[TerminalRunJSON] = Body(None),
+):
+    """Run a terminal command with persistent cwd tracking per session.
+    Prefer JSON body { \"command\": \"...\" } so long git diffs are not truncated by URL limits.
+    Legacy query ?command= is still supported.
+    """
+    if body is not None and body.command and str(body.command).strip():
+        cmd_src = str(body.command).strip()
+        session = (body.session or session or "default").strip() or "default"
+        if body.shell is not None:
+            shell = body.shell
+    elif command and str(command).strip():
+        cmd_src = str(command).strip()
+    else:
+        cmd_src = ""
+
     project_root = _get_project_root_dir()
 
     # Get current cwd for this session
@@ -568,7 +595,7 @@ def run_command(command: str, session: str = "default", shell: str = None):
 
     output = ""
     exit_code = 0
-    remaining = command.strip()
+    remaining = cmd_src
 
     # Handle shell builtins that need special treatment
     if remaining == 'pwd' or (IS_WINDOWS and remaining.lower() == 'cd'):
@@ -658,7 +685,7 @@ def run_command(command: str, session: str = "default", shell: str = None):
             break
 
     # Emit to mobile companion
-    _emit_terminal_event(command.strip(), output, exit_code, cwd)
+    _emit_terminal_event(cmd_src, output, exit_code, cwd)
 
     return {
         "output": output,

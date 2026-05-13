@@ -172,6 +172,7 @@ const TreeRow = memo(function TreeRow({
   flatItems, selectedFile, expandedFolders, loadingFolders,
   toggleFolder, openFile, onContextMenu, onDragStart,
   onDragOver, onDragLeave, onDrop, dropTarget, onMouseEnter, onMouseLeave,
+  gitIgnored,
 }) {
 
   const item = flatItems[index];
@@ -183,13 +184,14 @@ const TreeRow = memo(function TreeRow({
   const isLoading   = loadingFolders.has(path);
   const isDropTgt   = dropTarget === path;
   const paddingLeft = depth * INDENT_SIZE + 8;
+  const dimGit = !!(gitIgnored && gitIgnored[path]);
 
   if (node.type === 'folder') {
     const folderColor = getFolderColor(node.name);
     return (
       <div
         style={{ ...style, paddingLeft, display: 'flex', alignItems: 'center', cursor: 'pointer' }}
-        className={`tree-item tree-folder${isSelected ? ' selected' : ''}${isDropTgt ? ' tree-drop-target' : ''}`}
+        className={`tree-item tree-folder${isSelected ? ' selected' : ''}${isDropTgt ? ' tree-drop-target' : ''}${dimGit ? ' tree-git-ignored' : ''}`}
         onClick={() => toggleFolder(path)}
         onMouseEnter={() => onMouseEnter(path, node.type)}
         onMouseLeave={() => onMouseLeave(path)}
@@ -208,10 +210,10 @@ const TreeRow = memo(function TreeRow({
               : <VscChevronRight size={16} />
           }
         </span>
-        <span className="folder-icon" style={{ color: folderColor }}>
+        <span className="folder-icon" style={{ color: folderColor, opacity: dimGit ? 0.45 : 1 }}>
           {isExpanded ? '📂' : '📁'}
         </span>
-        <span className="tree-label">{node.name}</span>
+        <span className="tree-label" style={{ opacity: dimGit ? 0.5 : 1 }}>{node.name}</span>
       </div>
     );
   }
@@ -221,7 +223,7 @@ const TreeRow = memo(function TreeRow({
   return (
     <div
       style={{ ...style, paddingLeft, display: 'flex', alignItems: 'center', cursor: 'pointer' }}
-      className={`tree-item tree-file${isSelected ? ' selected' : ''}`}
+      className={`tree-item tree-file${isSelected ? ' selected' : ''}${dimGit ? ' tree-git-ignored' : ''}`}
       onClick={() => openFile(path)}
       onMouseEnter={() => onMouseEnter(path, node.type)}
       onMouseLeave={() => onMouseLeave(path)}
@@ -232,8 +234,8 @@ const TreeRow = memo(function TreeRow({
       <span className="tree-chevron" style={{ visibility: 'hidden' }}>
         <VscChevronRight size={16} />
       </span>
-      <span className="file-icon" style={{ color }}>{label}</span>
-      <span className="tree-label">{node.name}</span>
+      <span className="file-icon" style={{ color, opacity: dimGit ? 0.45 : 1 }}>{label}</span>
+      <span className="tree-label" style={{ opacity: dimGit ? 0.5 : 1 }}>{node.name}</span>
     </div>
   );
 });
@@ -247,6 +249,37 @@ export default function FileExplorer({
   const [expandedFolders, setExpandedFolders] = useState(new Set());
   const [lazyChildren,    setLazyChildren]    = useState({});
   const [loadingFolders,  setLoadingFolders]  = useState(new Set());
+
+  // Git-ignored paths (dimmed like VS Code) — batched via /files/git-check-ignore
+  const [gitIgnored, setGitIgnored] = useState({});
+  const gitIgnorePendingRef = useRef(new Set());
+  const gitIgnoreTimerRef = useRef(null);
+
+  const flushGitIgnoreCheck = useCallback(async () => {
+    const paths = Array.from(gitIgnorePendingRef.current);
+    gitIgnorePendingRef.current.clear();
+    if (!paths.length) return;
+    try {
+      const res = await axios.post(`${API}/files/git-check-ignore`, { paths });
+      const ignored = res.data?.ignored || [];
+      if (!ignored.length) return;
+      setGitIgnored(prev => {
+        const next = { ...prev };
+        for (const p of ignored) next[p] = true;
+        return next;
+      });
+    } catch (_) {}
+  }, []);
+
+  const queueGitIgnoreCheck = useCallback((paths) => {
+    if (!paths || !paths.length) return;
+    for (const p of paths) gitIgnorePendingRef.current.add(p);
+    if (gitIgnoreTimerRef.current) clearTimeout(gitIgnoreTimerRef.current);
+    gitIgnoreTimerRef.current = setTimeout(() => {
+      gitIgnoreTimerRef.current = null;
+      flushGitIgnoreCheck();
+    }, 120);
+  }, [flushGitIgnoreCheck]);
 
   // Stable refs — avoid stale closures in async callbacks (VS Code uses
   // module-level maps; we use refs for the same effect in React)
@@ -262,6 +295,12 @@ export default function FileExplorer({
     setExpandedFolders(new Set());
     lruCacheRef.current.clear();
     loadGenForPathRef.current.clear();
+    setGitIgnored({});
+    gitIgnorePendingRef.current.clear();
+    if (gitIgnoreTimerRef.current) {
+      clearTimeout(gitIgnoreTimerRef.current);
+      gitIgnoreTimerRef.current = null;
+    }
   }, [tree]);
 
   // UI state
@@ -345,6 +384,8 @@ export default function FileExplorer({
         lruCacheRef.current.set(path, data);
         setLazyChildren(c => ({ ...c, [path]: data }));
         perfLog(`Fetched children: "${path}" (${data.length} items)`, t0);
+        const relPaths = data.map(ch => (path ? `${path}/${ch.name}` : ch.name));
+        queueGitIgnoreCheck(relPaths);
       }
     }).catch(err => {
       if (err?.name !== 'CancellationError' && err?.code !== 'ERR_CANCELED') {
@@ -357,7 +398,7 @@ export default function FileExplorer({
         return next;
       });
     });
-  }, [showHiddenFiles, onLoadChildren]);
+  }, [showHiddenFiles, onLoadChildren, queueGitIgnoreCheck]);
 
   // Cancel all in-flight requests on unmount (createCancelablePromise equivalent)
   useEffect(() => {
@@ -367,6 +408,7 @@ export default function FileExplorer({
       inFlight.forEach(ctrl => { try { ctrl.abort(); } catch (_) {} });
       inFlight.clear();
       loadGenMap.clear();
+      if (gitIgnoreTimerRef.current) clearTimeout(gitIgnoreTimerRef.current);
     };
   }, []);
 
@@ -379,6 +421,11 @@ export default function FileExplorer({
     }),
     [tree]
   );
+
+  useEffect(() => {
+    if (!sortedTree.length) return;
+    queueGitIgnoreCheck(sortedTree.map(n => n.name));
+  }, [sortedTree, queueGitIgnoreCheck]);
 
   const flatItems = useMemo(() => {
     const t0 = performance.now();
@@ -658,11 +705,12 @@ export default function FileExplorer({
     dropTarget,
     onMouseEnter:  handleMouseEnter,
     onMouseLeave:  handleMouseLeave,
+    gitIgnored,
   }), [
     flatItems, selectedFile, expandedFolders, loadingFolders,
     toggleFolder, openFile, handleContextMenu, handleDragStart,
     handleDragOver, handleDragLeave, handleDrop, dropTarget,
-    handleMouseEnter, handleMouseLeave,
+    handleMouseEnter, handleMouseLeave, gitIgnored,
   ]);
 
   // ── Render ────────────────────────────────────────────────────────────────────
