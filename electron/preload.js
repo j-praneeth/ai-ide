@@ -154,4 +154,51 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Check if running in Electron
   isElectron: true,
+
+  // ── Auto-Update API ──────────────────────────────────────────
+  updates: {
+    checkForUpdates: () => ipcRenderer.invoke('update:check'),
+    restartAndInstall: () => ipcRenderer.invoke('update:restart-and-install'),
+
+    onChecking: (listener) => {
+      const w = (_, p) => listener(p);
+      ipcRenderer.on('update:checking', w);
+      return () => ipcRenderer.removeListener('update:checking', w);
+    },
+    onAvailable: (listener) => {
+      const w = (_, p) => listener(p);
+      ipcRenderer.on('update:available', w);
+      return () => ipcRenderer.removeListener('update:available', w);
+    },
+    onNotAvailable: (listener) => {
+      const w = (_, p) => listener(p);
+      ipcRenderer.on('update:not-available', w);
+      return () => ipcRenderer.removeListener('update:not-available', w);
+    },
+    onDownloadProgress: (listener) => {
+      const w = (_, p) => listener(p);
+      ipcRenderer.on('update:download-progress', w);
+      return () => ipcRenderer.removeListener('update:download-progress', w);
+    },
+    onDownloaded: (listener) => {
+      const w = (_, p) => listener(p);
+      ipcRenderer.on('update:downloaded', w);
+      return () => ipcRenderer.removeListener('update:downloaded', w);
+    },
+    onError: (listener) => {
+      const w = (_, p) => listener(p);
+      ipcRenderer.on('update:error', w);
+      return () => ipcRenderer.removeListener('update:error', w);
+    },
+  },
+
+  // ── Git utilities (reliable in packaged app) ─────────────────
+  gitCheckIgnore: (paths) => ipcRenderer.invoke('git:check-ignore', paths),
+
+  // ── Extension Host API ───────────────────────────────────────
+  extensions: {
+    install: (ext) => ipcRenderer.invoke('ext:install', ext),
+    uninstall: (id) => ipcRenderer.invoke('ext:uninstall', id),
+    getWebviewUrl: (id) => ipcRenderer.invoke('ext:get-webview-url', id),
+  },
 });

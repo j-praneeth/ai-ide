@@ -376,6 +376,69 @@ def git_check_ignore(body: GitCheckIgnoreBody):
         return {"ignored": []}
 
 
+def _run_git(root: Path, args: list, timeout: int = 10) -> tuple:
+    """Run a git command in root; returns (stdout, returncode)."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root)] + args,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return (r.stdout or ""), r.returncode
+    except (FileNotFoundError, OSError):
+        return "", -1
+    except subprocess.TimeoutExpired:
+        return "", -1
+
+
+@router.get("/git-status-bundle")
+def git_status_bundle():
+    """
+    Returns all SCM data needed by SourceControlPanel in a single request:
+      status   – git status --porcelain output
+      branch   – current branch name
+      upstream – upstream ref ('' if none)
+      ahead    – commits ahead of upstream
+      behind   – commits behind upstream
+    Latency is ~1× git overhead instead of 3–4× sequential calls.
+    """
+    root, err = _require_project_root()
+    if err:
+        return {"error": err.get("error", "no workspace"), "ok": False}
+
+    # Verify this is a git repo
+    _, rc = _run_git(root, ["rev-parse", "--git-dir"])
+    if rc != 0:
+        return {"ok": False, "error": "not a git repository"}
+
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        f_status   = ex.submit(_run_git, root, ["status", "--porcelain"])
+        f_branch   = ex.submit(_run_git, root, ["branch", "--show-current"])
+        f_upstream = ex.submit(_run_git, root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        f_ab       = ex.submit(_run_git, root, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+
+    status_out,   s_rc  = f_status.result()
+    branch_out,   _     = f_branch.result()
+    upstream_out, u_rc  = f_upstream.result()
+    ab_out,       ab_rc = f_ab.result()
+
+    ahead = behind = 0
+    if ab_rc == 0 and ab_out.strip():
+        parts = ab_out.strip().split()
+        if len(parts) == 2:
+            try: ahead, behind = int(parts[0]), int(parts[1])
+            except ValueError: pass
+
+    return {
+        "ok": True,
+        "status": status_out if s_rc == 0 else None,
+        "branch": branch_out.strip(),
+        "upstream": upstream_out.strip() if u_rc == 0 else "",
+        "ahead": ahead,
+        "behind": behind,
+    }
+
+
 @router.get("/tree-children")
 def get_tree_children(path: str, show_hidden: bool = False):
     """Return children of a subdirectory (lazy loading on expand). show_hidden: include dotfiles/dotdirs."""

@@ -89,6 +89,31 @@ def _normalize(ext: dict) -> dict:
     }
 
 
+@router.get("/extensions/vsix")
+async def download_vsix(publisher: str, name: str, version: str):
+    """Proxy a .vsix download from the VS Code Marketplace (avoids CORS)."""
+    url = f"https://marketplace.visualstudio.com/_apis/public/gallery/publishers/{publisher}/vsextensions/{name}/{version}/vspackage"
+    try:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "NebulaIDE/1.0"})
+            resp.raise_for_status()
+    except httpx.TimeoutException:
+        raise HTTPException(502, "Marketplace timeout")
+    except Exception as e:
+        raise HTTPException(502, f"Marketplace error: {e}")
+
+    from fastapi.responses import StreamingResponse
+    import io
+    return StreamingResponse(
+        io.BytesIO(resp.content),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{publisher}.{name}-{version}.vsix"',
+            "Content-Length": str(len(resp.content)),
+        },
+    )
+
+
 @router.post("/extensions/search")
 async def search_extensions(req: SearchRequest):
     try:

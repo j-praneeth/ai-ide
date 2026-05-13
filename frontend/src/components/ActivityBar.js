@@ -27,9 +27,43 @@ const BOTTOM_ITEMS = [
   { id: 'account', icon: VscAccount, label: 'Account' },
 ];
 
-export default function ActivityBar({ activePanel, onPanelChange, chatOpen, onToggleChat }) {
-  const showAccountMenu = (e) => {
-    const u = getAuthUser();
+/**
+ * ExtensionIcon — renders a small icon for a sidebar-capable extension.
+ * Falls back to first letter of publisher/name when no iconUrl is available.
+ */
+function ExtensionIcon({ ext }) {
+  const [imgError, setImgError] = React.useState(false);
+  if (ext.iconUrl && !imgError) {
+    return (
+      <img
+        src={ext.iconUrl}
+        alt={ext.displayName || ext.name}
+        style={{ width: 20, height: 20, borderRadius: 4, objectFit: 'contain' }}
+        onError={() => setImgError(true)}
+      />
+    );
+  }
+  // text fallback
+  const letter = (ext.displayName || ext.name || '?')[0].toUpperCase();
+  return (
+    <span style={{
+      width: 22, height: 22, borderRadius: 5,
+      background: 'var(--accent-bg)',
+      color: 'var(--accent)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: 12, fontWeight: 700,
+    }}>{letter}</span>
+  );
+}
+
+export default function ActivityBar({
+  activePanel,
+  onPanelChange,
+  chatOpen,
+  onToggleChat,
+  extensionApps = [],       // sidebar-capable installed extensions
+}) {
+  const showAccountMenu = (_e) => {
     const existing = document.getElementById('account-context-menu');
     if (existing) existing.remove();
 
@@ -44,11 +78,12 @@ export default function ActivityBar({ activePanel, onPanelChange, chatOpen, onTo
 
     const info = document.createElement('div');
     info.style.cssText = 'padding: 8px 10px; font-size: 11px; color: var(--text-muted); border-bottom: 1px solid var(--border); margin-bottom: 4px;';
-    info.textContent = u?.email ? `Signed in as ${u.email}` : 'Not signed in';
+    info.textContent = getAuthUser()?.email ? `Signed in as ${getAuthUser().email}` : 'Not signed in';
     menu.appendChild(info);
 
-    if (u) {
-      if (u.role === 'super_admin') {
+    const u2 = getAuthUser();
+    if (u2) {
+      if (u2.role === 'super_admin') {
         const adminBtn = document.createElement('div');
         adminBtn.style.cssText = 'padding: 7px 10px; font-size: 12px; color: var(--accent); cursor: pointer; border-radius: 3px; font-weight: 600;';
         adminBtn.textContent = 'Open Admin Panel';
@@ -99,14 +134,14 @@ export default function ActivityBar({ activePanel, onPanelChange, chatOpen, onTo
     }
   };
 
-  const isActive = (item) =>
-    (item.id === 'chat' && (chatOpen || activePanel === 'chat')) ||
-    (item.id !== 'chat' && activePanel === item.id);
+  const isActive = (id) =>
+    (id === 'chat' && (chatOpen || activePanel === 'chat')) ||
+    (id !== 'chat' && activePanel === id);
 
   const renderItem = (item) => (
     <button
       key={item.id}
-      className={`activity-bar-item ${isActive(item) ? 'active' : ''}`}
+      className={`activity-bar-item ${isActive(item.id) ? 'active' : ''}`}
       onClick={(e) => handleItemClick(e, item)}
       title={item.label}
     >
@@ -118,7 +153,28 @@ export default function ActivityBar({ activePanel, onPanelChange, chatOpen, onTo
     <div className="activity-bar-vertical">
       <div className="activity-bar-top">
         {TOP_ITEMS.map(renderItem)}
+
+        {/* Divider before extension apps */}
+        {extensionApps.length > 0 && (
+          <div className="activity-bar-divider" />
+        )}
+
+        {/* Dynamic extension sidebar icons */}
+        {extensionApps.map(ext => {
+          const panelId = `ext:${ext.id}`;
+          return (
+            <button
+              key={ext.id}
+              className={`activity-bar-item ${activePanel === panelId ? 'active' : ''}`}
+              onClick={() => onPanelChange(activePanel === panelId ? null : panelId)}
+              title={ext.displayName || ext.name}
+            >
+              <ExtensionIcon ext={ext} />
+            </button>
+          );
+        })}
       </div>
+
       <div className="activity-bar-bottom">
         {BOTTOM_ITEMS.map(renderItem)}
       </div>

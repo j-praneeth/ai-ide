@@ -30,7 +30,12 @@
     "appId": "com.nebula.ide",
     "productName": "Nebula IDE",
     "copyright": "Copyright © 2025 Nebula IDE Team",
-    "publish": null,
+    "publish": {
+      "provider": "github",
+      "owner": "j-praneeth",
+      "repo": "ai-ide",
+      "releaseType": "release"
+    },
     "directories": {
       "output": "release",
       "buildResources": "assets"
@@ -154,13 +159,15 @@
     }
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
     "concurrently": "^9.0.0",
     "electron": "33.0.0",
     "electron-builder": "^25.0.0",
-    "@electron/rebuild": "^3.6.0",
     "wait-on": "^8.0.0"
   },
   "dependencies": {
+    "adm-zip": "^0.5.17",
+    "electron-updater": "^6.8.3",
     "node-pty": "^1.1.0"
   },
   "repository": {

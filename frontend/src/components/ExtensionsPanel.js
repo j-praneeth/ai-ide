@@ -1,15 +1,29 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { VscExtensions, VscSearch, VscCloudDownload, VscSync, VscClose } from 'react-icons/vsc';
+import {
+  VscExtensions, VscSearch, VscCloudDownload, VscSync, VscClose,
+  VscCheck, VscTrash,
+} from 'react-icons/vsc';
 import axios from 'axios';
-
-const API = (window.BACKEND_URL || 'http://localhost:8000');
-const LS_KEY = 'nebula_extensions';
+import { extensionRegistry } from '../lib/extensionRegistry';
+import { API_URL as API } from '../config';
 const PAGE_SIZE = 20;
 
 const BUILTIN = [
-  { id: 'nebula.ai-assistant', name: 'AI Code Assistant', publisher: 'Nebula', description: 'Inline suggestions and chat-powered code editing powered by Claude.', version: '1.0.0', builtin: true },
-  { id: 'nebula.git-integration', name: 'Git Integration', publisher: 'Nebula', description: 'Source control, branch management, and diff view in the sidebar.', version: '1.0.0', builtin: true },
-  { id: 'nebula.terminal', name: 'Integrated Terminal', publisher: 'Nebula', description: 'Full-featured terminal with multi-session and split support.', version: '1.0.0', builtin: true },
+  {
+    id: 'nebula.ai-assistant', name: 'AI Code Assistant', displayName: 'AI Code Assistant',
+    publisher: 'Nebula', description: 'Inline suggestions and chat-powered code editing.', version: '1.0.0', builtin: true,
+    iconUrl: '', installs: 0, rating: 0, ratingCount: 0,
+  },
+  {
+    id: 'nebula.git-integration', name: 'Git Integration', displayName: 'Git Integration',
+    publisher: 'Nebula', description: 'Source control, branch management and diff view.', version: '1.0.0', builtin: true,
+    iconUrl: '', installs: 0, rating: 0, ratingCount: 0,
+  },
+  {
+    id: 'nebula.terminal', name: 'Integrated Terminal', displayName: 'Integrated Terminal',
+    publisher: 'Nebula', description: 'Full-featured terminal with multi-session support.', version: '1.0.0', builtin: true,
+    iconUrl: '', installs: 0, rating: 0, ratingCount: 0,
+  },
 ];
 
 const SORT_OPTIONS = [
@@ -24,49 +38,52 @@ const CATEGORIES = [
   'Debuggers', 'Formatters', 'Keymaps', 'SCM Providers', 'Other',
 ];
 
-function fmtInstalls(n) {
+function fmtN(n) {
   if (!n) return '0';
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
   if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'K';
   return String(n);
 }
 
-function StarRating({ rating, count }) {
-  const full = Math.round(rating);
+function Stars({ r, count }) {
+  const full = Math.round(r || 0);
   return (
-    <span className="ext-stars" title={`${rating} (${count} ratings)`}>
+    <span className="ext-stars" title={`${r} / 5`}>
       {[1,2,3,4,5].map(i => (
         <span key={i} style={{ color: i <= full ? '#e2c027' : 'var(--text-ghost)' }}>★</span>
       ))}
-      {count > 0 && <span className="ext-rating-count">({fmtInstalls(count)})</span>}
+      {count > 0 && <span className="ext-rating-count">({fmtN(count)})</span>}
     </span>
   );
 }
 
-function ExtCard({ ext, installed, onInstall, onUninstall, builtin }) {
+function ExtCard({ ext, installed, onInstall, onUninstall, builtin, installing }) {
   const [imgError, setImgError] = useState(false);
-
   return (
     <div className="ext-card">
       <div className="ext-card-icon">
-        {ext.iconUrl && !imgError ? (
-          <img src={ext.iconUrl} alt="" onError={() => setImgError(true)} />
-        ) : (
-          <VscExtensions size={32} style={{ color: 'var(--text-muted)' }} />
-        )}
+        {ext.iconUrl && !imgError
+          ? <img src={ext.iconUrl} alt="" onError={() => setImgError(true)} />
+          : <VscExtensions size={30} style={{ color: 'var(--text-muted)' }} />}
       </div>
       <div className="ext-card-body">
         <div className="ext-card-header">
           <span className="ext-card-name">{ext.displayName || ext.name}</span>
           {builtin && <span className="ext-builtin-badge">built-in</span>}
+          {!builtin && installed && (
+            <span className="ext-installed-badge"><VscCheck size={10} /> Installed</span>
+          )}
           {!builtin && (
             <button
               className={`ext-action-btn ${installed ? 'ext-action-uninstall' : 'ext-action-install'}`}
               onClick={() => installed ? onUninstall(ext.id) : onInstall(ext)}
+              disabled={installing}
               title={installed ? 'Uninstall' : 'Install'}
             >
-              {installed ? <VscClose size={12} /> : <VscCloudDownload size={12} />}
-              {installed ? 'Uninstall' : 'Install'}
+              {installing ? <VscSync size={11} className="spin" /> : installed
+                ? <><VscTrash size={11} /> Uninstall</>
+                : <><VscCloudDownload size={11} /> Install</>
+              }
             </button>
           )}
         </div>
@@ -75,11 +92,11 @@ function ExtCard({ ext, installed, onInstall, onUninstall, builtin }) {
           <span className="ext-publisher">{ext.publisher}</span>
           {ext.version && <span className="ext-version">v{ext.version}</span>}
           {ext.installs > 0 && (
-            <span className="ext-installs">
-              <VscCloudDownload size={11} /> {fmtInstalls(ext.installs)}
-            </span>
+            <span className="ext-installs"><VscCloudDownload size={10} /> {fmtN(ext.installs)}</span>
           )}
-          {ext.rating > 0 && <StarRating rating={ext.rating} count={ext.ratingCount} />}
+          {(ext.rating > 0 || ext.ratingCount > 0) && (
+            <Stars r={ext.rating} count={ext.ratingCount} />
+          )}
         </div>
       </div>
     </div>
@@ -97,14 +114,21 @@ export default function ExtensionsPanel() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [installed, setInstalled] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { return []; }
-  });
+  const [installing, setInstalling] = useState(new Set());
+
+  // Live installed list from registry
+  const [installed, setInstalled] = useState(() => extensionRegistry.getAll());
+
+  // Subscribe to registry changes
+  useEffect(() => {
+    const handler = () => setInstalled(extensionRegistry.getAll());
+    extensionRegistry.addEventListener('change', handler);
+    return () => extensionRegistry.removeEventListener('change', handler);
+  }, []);
 
   const debounceRef = useRef(null);
   const abortRef = useRef(null);
 
-  // Debounce search input
   useEffect(() => {
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
@@ -114,7 +138,6 @@ export default function ExtensionsPanel() {
     return () => clearTimeout(debounceRef.current);
   }, [search]);
 
-  // Fetch marketplace results
   const fetchMarketplace = useCallback(async () => {
     if (tab !== 'marketplace') return;
     if (abortRef.current) abortRef.current.abort();
@@ -133,7 +156,7 @@ export default function ExtensionsPanel() {
       setTotal(res.data.total || 0);
     } catch (e) {
       if (e.name === 'CanceledError' || e.name === 'AbortError') return;
-      setError('Failed to fetch extensions from Marketplace.');
+      setError('Could not reach VS Code Marketplace. Check your connection.');
       setResults([]);
     } finally {
       setLoading(false);
@@ -142,32 +165,29 @@ export default function ExtensionsPanel() {
 
   useEffect(() => { fetchMarketplace(); }, [fetchMarketplace]);
 
-  const installExt = useCallback((ext) => {
-    setInstalled(prev => {
-      const next = [...prev.filter(e => e.id !== ext.id), ext];
-      localStorage.setItem(LS_KEY, JSON.stringify(next));
-      return next;
-    });
+  const doInstall = useCallback(async (ext) => {
+    setInstalling(prev => new Set([...prev, ext.id]));
+    try {
+      extensionRegistry.install(ext);
+    } finally {
+      setInstalling(prev => { const n = new Set(prev); n.delete(ext.id); return n; });
+    }
   }, []);
 
-  const uninstallExt = useCallback((id) => {
-    setInstalled(prev => {
-      const next = prev.filter(e => e.id !== id);
-      localStorage.setItem(LS_KEY, JSON.stringify(next));
-      return next;
-    });
+  const doUninstall = useCallback((id) => {
+    extensionRegistry.uninstall(id);
   }, []);
 
   const installedIds = new Set([...BUILTIN.map(b => b.id), ...installed.map(e => e.id)]);
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
-  const installedFiltered = installed.filter(e => {
-    const q = debouncedSearch.toLowerCase();
-    if (!q) return true;
-    return (e.displayName || e.name || '').toLowerCase().includes(q)
-      || (e.description || '').toLowerCase().includes(q)
-      || (e.publisher || '').toLowerCase().includes(q);
-  });
+  const q = debouncedSearch.toLowerCase();
+  const installedFiltered = q
+    ? installed.filter(e =>
+        (e.displayName || e.name || '').toLowerCase().includes(q) ||
+        (e.description || '').toLowerCase().includes(q) ||
+        (e.publisher || '').toLowerCase().includes(q))
+    : installed;
 
   return (
     <div className="file-explorer ext-panel">
@@ -175,20 +195,24 @@ export default function ExtensionsPanel() {
         <span className="sidebar-title">EXTENSIONS</span>
       </div>
 
-      {/* Search Bar */}
+      {/* Search */}
       <div className="ext-search-row">
-        <div className="search-input-wrapper" style={{ flex: 1 }}>
-          <VscSearch size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+        <div className="search-input-wrapper" style={{ flex: 1, position: 'relative' }}>
+          <VscSearch size={12} style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
           <input
             className="search-input"
-            style={{ paddingLeft: 28 }}
+            style={{ paddingLeft: 26 }}
             placeholder="Search extensions…"
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
           {search && (
-            <button className="icon-btn" style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)' }} onClick={() => setSearch('')}>
-              <VscClose size={12} />
+            <button
+              className="icon-btn"
+              style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)' }}
+              onClick={() => setSearch('')}
+            >
+              <VscClose size={11} />
             </button>
           )}
         </div>
@@ -205,56 +229,59 @@ export default function ExtensionsPanel() {
         </button>
       </div>
 
-      {/* Installed Tab */}
+      {/* ─── Installed Tab ─── */}
       {tab === 'installed' && (
         <div className="ext-list">
           <div className="ext-group-label">Built-in</div>
           {BUILTIN.map(ext => (
             <ExtCard key={ext.id} ext={ext} installed builtin onInstall={() => {}} onUninstall={() => {}} />
           ))}
+
           {installed.length > 0 && (
             <>
-              <div className="ext-group-label" style={{ marginTop: 8 }}>Installed</div>
+              <div className="ext-group-label" style={{ marginTop: 8 }}>
+                Installed ({installedFiltered.length})
+              </div>
               {installedFiltered.length === 0 ? (
-                <div className="search-message">No installed extensions match.</div>
+                <div className="search-message">No extensions match your search.</div>
               ) : (
                 installedFiltered.map(ext => (
-                  <ExtCard key={ext.id} ext={ext} installed onInstall={installExt} onUninstall={uninstallExt} />
+                  <ExtCard
+                    key={ext.id}
+                    ext={ext}
+                    installed
+                    onInstall={doInstall}
+                    onUninstall={doUninstall}
+                    installing={installing.has(ext.id)}
+                  />
                 ))
               )}
             </>
           )}
+
           {installed.length === 0 && (
-            <div className="search-message" style={{ marginTop: 8 }}>
-              No additional extensions installed.
+            <div className="search-message" style={{ padding: '14px 12px', lineHeight: 1.6 }}>
+              No extensions installed yet.
               <br />
               <span
-                style={{ color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline' }}
+                className="ext-link"
                 onClick={() => setTab('marketplace')}
               >
-                Browse Marketplace →
+                Browse the Marketplace →
               </span>
             </div>
           )}
         </div>
       )}
 
-      {/* Marketplace Tab */}
+      {/* ─── Marketplace Tab ─── */}
       {tab === 'marketplace' && (
         <>
           <div className="ext-filters">
-            <select
-              className="ext-select"
-              value={sortBy}
-              onChange={e => { setSortBy(Number(e.target.value)); setPage(1); }}
-            >
+            <select className="ext-select" value={sortBy} onChange={e => { setSortBy(Number(e.target.value)); setPage(1); }}>
               {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
-            <select
-              className="ext-select"
-              value={category}
-              onChange={e => { setCategory(e.target.value); setPage(1); }}
-            >
+            <select className="ext-select" value={category} onChange={e => { setCategory(e.target.value); setPage(1); }}>
               {CATEGORIES.map(c => <option key={c} value={c}>{c || 'All Categories'}</option>)}
             </select>
           </div>
@@ -262,20 +289,18 @@ export default function ExtensionsPanel() {
           {error && (
             <div className="ext-error">
               {error}
-              <button className="icon-btn" onClick={fetchMarketplace} title="Retry">
-                <VscSync size={13} />
-              </button>
+              <button className="icon-btn" onClick={fetchMarketplace} title="Retry"><VscSync size={12} /></button>
             </div>
           )}
 
           <div className="ext-list">
             {loading && results.length === 0 && (
               <div className="ext-loading">
-                <VscSync size={16} className="spin" />
-                <span>Loading extensions…</span>
+                <VscSync size={14} className="spin" />
+                Loading from VS Code Marketplace…
               </div>
             )}
-            {!loading && results.length === 0 && !error && (
+            {!loading && !error && results.length === 0 && (
               <div className="search-message">No extensions found.</div>
             )}
             {results.map(ext => (
@@ -283,8 +308,9 @@ export default function ExtensionsPanel() {
                 key={ext.id}
                 ext={ext}
                 installed={installedIds.has(ext.id)}
-                onInstall={installExt}
-                onUninstall={uninstallExt}
+                onInstall={doInstall}
+                onUninstall={doUninstall}
+                installing={installing.has(ext.id)}
               />
             ))}
           </div>

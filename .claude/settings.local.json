@@ -48,7 +48,9 @@
       "Bash(cat ~/.zshrc 2>/dev/null | head -80)",
       "Bash(git count-objects *)",
       "Bash(python3 -c \"import json,sys; p=json.load\\(sys.stdin\\); print\\('Scripts:', list\\(p.get\\('scripts',{}\\).keys\\(\\)\\)\\); print\\('Deps count:', len\\(p.get\\('dependencies',{}\\)\\) + len\\(p.get\\('devDependencies',{}\\)\\)\\)\")",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:d[k] for k in ['name','version','dependencies','devDependencies'] if k in d}, indent=2\\)\\)\")",
+      "Bash(grep -n \"module.exports\\\\|^}$\" /Users/apple/Desktop/ai-ide/electron/main.js)"
     ]
   }
 }

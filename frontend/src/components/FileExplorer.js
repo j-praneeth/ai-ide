@@ -323,8 +323,15 @@ export default function FileExplorer({
     gitIgnorePendingRef.current.clear();
     if (!paths.length) return;
     try {
-      const res = await axios.post(`${API}/files/git-check-ignore`, { paths });
-      const ignored = res.data?.ignored || [];
+      let ignored = [];
+      // Prefer Electron IPC (works reliably in packaged app regardless of PATH)
+      if (window.electronAPI?.gitCheckIgnore) {
+        const res = await window.electronAPI.gitCheckIgnore(paths);
+        ignored = res?.ignored || [];
+      } else {
+        const res = await axios.post(`${API}/files/git-check-ignore`, { paths });
+        ignored = res.data?.ignored || [];
+      }
       if (!ignored.length) return;
       setGitIgnored(prev => {
         const next = { ...prev };

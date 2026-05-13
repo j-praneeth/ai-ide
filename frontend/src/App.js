@@ -8,6 +8,7 @@ import FileExplorer from './components/FileExplorer';
 import SearchPanel from './components/SearchPanel';
 import SourceControlPanel from './components/SourceControlPanel';
 import ExtensionsPanel from './components/ExtensionsPanel';
+import ExtensionAppPanel from './components/ExtensionAppPanel';
 import SettingsPanel from './components/SettingsPanel';
 import UsagePanel from './components/UsagePanel';
 import ChatPanel from './components/ChatPanel';
@@ -19,11 +20,12 @@ import OpenFolderDialog from './components/OpenFolderDialog';
 import MobileCompanionPopup from './components/MobileCompanionPopup';
 import CliPanel from './components/CliPanel';
 import AuthGate from './components/AuthGate';
-import { VscDeviceMobile, VscTerminal } from 'react-icons/vsc';
+import { VscDeviceMobile, VscTerminal, VscSync, VscRefresh } from 'react-icons/vsc';
 import { listDirFromHandle, getHandleForPath, getFileContentFromHandle, writeFileToHandle } from './lib/webFs';
 import { authFetch, getAuthUser } from './lib/auth';
 import { Throttler, SequencerByKey } from './lib/async';
 import { buildMatchRegex, firstMatchColumnsInLine } from './lib/searchMatch';
+import { extensionRegistry } from './lib/extensionRegistry';
 
 // Default HTTP timeout for axios (ms). Git / terminal / large trees can exceed a few seconds;
 // keep this generous so Source Control and search fallbacks do not spuriously time out.
@@ -124,6 +126,14 @@ function App() {
   const [workspaceKey, setWorkspaceKey] = useState(0);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [startupFolderName, setStartupFolderName] = useState('');
+
+  // ── Extension sidebar apps ───────────────────────────────────
+  const [extensionApps, setExtensionApps] = useState(() => extensionRegistry.getSidebarApps());
+
+  // ── Auto-update state ────────────────────────────────────────
+  const [updateState, setUpdateState] = useState(null); // null | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
+  const [updateProgress, setUpdateProgress] = useState(0);
+  const [updateVersion, setUpdateVersion] = useState('');
   const workspaceCtxRef = useRef({ projectRoot: '', webFolderHandle: null });
   const [sidebarWidth, setSidebarWidth] = useState(270);
   const sidebarResizingRef = useRef(false);
@@ -155,6 +165,28 @@ function App() {
 
   // Force explorer panel as default on every mount
   useEffect(() => { setSidebarPanel('explorer'); }, []);
+
+  // ── Sync sidebar extension apps from registry ────────────────
+  useEffect(() => {
+    const handler = () => setExtensionApps(extensionRegistry.getSidebarApps());
+    extensionRegistry.addEventListener('change', handler);
+    return () => extensionRegistry.removeEventListener('change', handler);
+  }, []);
+
+  // ── Auto-update IPC listeners (Electron only) ────────────────
+  useEffect(() => {
+    const api = window.electronAPI?.updates;
+    if (!api) return;
+    const unsubs = [
+      api.onChecking?.(() => setUpdateState('checking')),
+      api.onAvailable?.((info) => { setUpdateState('available'); setUpdateVersion(info?.version || ''); }),
+      api.onNotAvailable?.(() => setUpdateState(null)),
+      api.onDownloadProgress?.((p) => { setUpdateState('downloading'); setUpdateProgress(Math.round(p?.percent || 0)); }),
+      api.onDownloaded?.((info) => { setUpdateState('ready'); setUpdateVersion(info?.version || ''); }),
+      api.onError?.(() => setUpdateState(null)),
+    ].filter(Boolean);
+    return () => unsubs.forEach(fn => { try { fn(); } catch (_) {} });
+  }, []);
 
   useEffect(() => {
     workspaceCtxRef.current = { projectRoot, webFolderHandle };
@@ -1176,6 +1208,31 @@ function App() {
           </div>
         </div>
       )}
+      {/* ── Auto-update banner ── */}
+      {updateState === 'ready' && (
+        <div className="update-banner">
+          <VscRefresh size={14} style={{ flexShrink: 0 }} />
+          <span>Update <strong>{updateVersion}</strong> ready to install.</span>
+          <button
+            className="update-restart-btn"
+            onClick={() => window.electronAPI?.updates?.restartAndInstall?.()}
+          >
+            Restart to Update
+          </button>
+          <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => setUpdateState(null)} title="Dismiss">
+            <VscSync size={12} />
+          </button>
+        </div>
+      )}
+      {updateState === 'downloading' && (
+        <div className="update-banner update-banner-downloading">
+          <VscSync size={14} className="spin" style={{ flexShrink: 0 }} />
+          <span>Downloading update… {updateProgress}%</span>
+          <div className="update-progress-bar">
+            <div className="update-progress-fill" style={{ width: `${updateProgress}%` }} />
+          </div>
+        </div>
+      )}
       {/* Title Bar */}
       <div className="title-bar">
         <div className="title-bar-left">
@@ -1252,6 +1309,7 @@ function App() {
         <ActivityBar
           activePanel={sidebarPanel}
           onPanelChange={setSidebarPanel}
+          extensionApps={extensionApps}
         />
 
         {sidebarPanel && (
@@ -1295,6 +1353,12 @@ function App() {
             )}
             {sidebarPanel === 'extensions' && (
               <ExtensionsPanel />
+            )}
+            {sidebarPanel?.startsWith('ext:') && (
+              <ExtensionAppPanel
+                extensionId={sidebarPanel.slice(4)}
+                onClose={() => setSidebarPanel('explorer')}
+              />
             )}
             {sidebarPanel === 'settings' && (
               <SettingsPanel onSettingsChange={handleSettingsChange} />
