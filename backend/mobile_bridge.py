@@ -346,7 +346,7 @@ def get_remote_input():
     global _remote_input_queue
     events = list(_remote_input_queue)
     _remote_input_queue.clear()
-    return {"events": events}
+    return {"events": events, "client_count": len(_clients)}
 
 
 @router.post("/remote-input")

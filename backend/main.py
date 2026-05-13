@@ -1,5 +1,6 @@
 import sys
 import os
+import asyncio
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 # Import routers and other components
 from file_manager import router as file_router, set_project_root_path
+from file_watcher import router as watcher_router
 from terminal import router as terminal_router, cli_status, cli_websocket
 from ai import router as ai_router
 from mobile_bridge import router as mobile_router, set_backend_port, relay_qr
@@ -44,37 +46,37 @@ def _get_cors_origins():
     parts = [p.strip() for p in raw.split(",") if p.strip()]
     return parts or list(DEFAULT_CORS_ORIGINS)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("DEBUG: Application starting up...")
+async def _run_startup_tasks():
+    """Run all slow startup tasks in the background so the server accepts requests immediately."""
     try:
         from security.auth import seed_initial_super_admin_from_env
-        admin = seed_initial_super_admin_from_env()
-        if admin:
-            print(f"DEBUG: Initial Super Admin seeded: {admin.email}")
-        else:
-            print("DEBUG: No initial admin seeded (already exists or env vars missing)")
+        await asyncio.to_thread(seed_initial_super_admin_from_env)
     except Exception as e:
-        print(f"DEBUG: Failed to seed initial admin during startup: {e}")
+        logger.warning("Admin seed failed: %s", e)
 
     try:
         from security.claude_token import reconcile_disk_credentials
-        reconcile_disk_credentials()
+        await asyncio.to_thread(reconcile_disk_credentials)
     except Exception as e:
-        print(f"DEBUG: Startup credential reconciliation failed: {e}")
+        logger.warning("Credential reconciliation failed: %s", e)
 
     try:
         from security.claude_token import seed_from_env
-        seed_from_env()
+        await asyncio.to_thread(seed_from_env)
     except Exception as e:
-        print(f"DEBUG: Claude token seed failed: {e}")
+        logger.warning("Claude token seed failed: %s", e)
 
     try:
         from security.claude_token import start_disk_credential_watcher
-        start_disk_credential_watcher(interval_seconds=60)
+        await asyncio.to_thread(start_disk_credential_watcher, 60)
     except Exception as e:
-        print(f"DEBUG: Credential watcher failed to start: {e}")
+        logger.warning("Credential watcher failed to start: %s", e)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Fire-and-forget: startup tasks run in background; server is ready instantly.
+    asyncio.create_task(_run_startup_tasks())
     yield
 
 app = FastAPI(title="AI IDE Backend", lifespan=lifespan)
@@ -106,44 +108,10 @@ async def global_exception_handler(request: Request, exc: Exception):
         headers=headers
     )
 
-# Request logging middleware
-class LoggingMiddleware:
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        method = scope.get("method")
-        path = scope.get("path")
-        origin = None
-        for k, v in scope.get("headers", []):
-            if k == b"origin":
-                origin = v.decode("utf-8")
-                break
-                
-        print(f"DEBUG: Request: {method} {path} (Origin: {origin})")
-        
-        async def send_wrapper(message):
-            if message["type"] == "http.response.start":
-                print(f"DEBUG: Response: {message['status']} for {path}")
-            await send(message)
-
-        try:
-            await self.app(scope, receive, send_wrapper)
-        except Exception as e:
-            print(f"DEBUG: Exception in LoggingMiddleware for {path}: {e}")
-            raise
-
-# 1. Logging Middleware (Inner Layer)
-app.add_middleware(LoggingMiddleware)
-
-# 2. Auth Middleware (Middle Layer)
+# 1. Auth Middleware (Inner Layer)
 app.add_middleware(AuthMiddleware)
 
-# 3. CORS Middleware (Outer Layer)
+# 2. CORS Middleware (Outer Layer)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_cors_origins(),
@@ -155,6 +123,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(file_router, prefix="/files")
+app.include_router(watcher_router, prefix="/files")
 app.include_router(terminal_router, prefix="/terminal")
 app.include_router(ai_router, prefix="/ai")
 app.include_router(mobile_router, prefix="/mobile")

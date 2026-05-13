@@ -1,36 +1,34 @@
 from __future__ import annotations
 
+import os
 import logging
-from typing import Callable, Iterable, Optional
+import time
+import threading
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from .auth import get_user_for_token, has_users
 
-# Define logger at module level
 logger = logging.getLogger("security.middleware")
-
 
 _ALLOWLIST_PREFIXES: tuple[str, ...] = (
     "/favicon.ico",
     "/health",
     "/auth/status",
     "/auth/login",
-    "/auth/claude-token",  # Electron fetches fresh access token before spawning CLI
-    "/auth/claude-credentials-internal",  # Electron syncs rotated refresh token (localhost-only, IP-checked in route)
+    "/auth/claude-token",
+    "/auth/claude-credentials-internal",
     "/auth/sso",
     "/download",
     "/docs",
     "/openapi.json",
-    "/mobile",  # mobile companion uses its own session token
-    "/terminal/cli/data",  # Electron relays PTY data without auth headers
+    "/mobile",
+    "/terminal/cli/data",
 )
-
 
 def _is_allowlisted(path: str) -> bool:
     return any(path.startswith(p) for p in _ALLOWLIST_PREFIXES)
-
 
 def _extract_bearer_token(request: Request) -> str:
     auth = request.headers.get("authorization") or ""
@@ -38,6 +36,28 @@ def _extract_bearer_token(request: Request) -> str:
         return auth.split(" ", 1)[-1].strip()
     return request.headers.get("x-auth-token", "").strip()
 
+# Cache whether users exist to avoid a MongoDB round-trip on every request.
+# Refreshed every 30 seconds in the background.
+_users_exist_cache: bool | None = None
+_users_exist_lock = threading.Lock()
+_users_exist_last_checked: float = 0.0
+_USERS_CACHE_TTL = 30.0  # seconds
+
+def _get_users_exist() -> bool:
+    global _users_exist_cache, _users_exist_last_checked
+    now = time.monotonic()
+    with _users_exist_lock:
+        if _users_exist_cache is not None and (now - _users_exist_last_checked) < _USERS_CACHE_TTL:
+            return _users_exist_cache
+    try:
+        result = has_users()
+        with _users_exist_lock:
+            _users_exist_cache = result
+            _users_exist_last_checked = now
+        return result
+    except Exception as e:
+        logger.warning("has_users() failed, allowing access: %s", e)
+        return False  # DB down → allow through
 
 class AuthMiddleware:
     def __init__(self, app):
@@ -50,7 +70,6 @@ class AuthMiddleware:
 
         method = scope.get("method")
         path = scope.get("path") or ""
-        print(f"DEBUG: AuthMiddleware processing {method} {path}")
 
         if method == "OPTIONS":
             await self.app(scope, receive, send)
@@ -59,35 +78,13 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        try:
-            import os
-            auth_required = os.environ.get("NEBULA_AUTH_REQUIRED", "true").lower() == "true"
-            if not auth_required:
-                await self.app(scope, receive, send)
-                return
+        auth_required = os.environ.get("NEBULA_AUTH_REQUIRED", "true").lower() == "true"
+        if not auth_required:
+            await self.app(scope, receive, send)
+            return
 
-            # Check if users exist. If this fails (DB down), we fallback to allowing access
-            # so the frontend doesn't get a 503 and block the whole IDE.
-            try:
-                users_exist = has_users()
-            except Exception as e:
-                try:
-                    logger.warning("Auth check failed (DB likely down): %s. Allowing access.", e)
-                except NameError:
-                    print(f"WARNING: Auth check failed (DB likely down): {e}. Allowing access.")
-                await self.app(scope, receive, send)
-                return
-
-            if not users_exist:
-                # If no users exist, we still allow access so the user can use the IDE
-                # or reach the admin setup page.
-                await self.app(scope, receive, send)
-                return
-        except Exception as e:
-            try:
-                logger.error("Middleware error: %s", e)
-            except NameError:
-                print(f"CRITICAL: Middleware error (logger not defined): {e}")
+        # Cached check — no MongoDB round-trip on every request
+        if not _get_users_exist():
             await self.app(scope, receive, send)
             return
 

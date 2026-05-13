@@ -67,27 +67,32 @@ function getFileInfo(fullPath) {
 }
 
 const GRAPH_COLORS = [
-  '#3b82f6', // blue (primary)
-  '#60a5fa', // light blue
-  '#2563eb', // dark blue
-  '#9333ea', // purple
-  '#ec4899', // pink
-  '#f59e0b', // amber
+  '#3b82f6', // blue
   '#10b981', // green
+  '#f59e0b', // amber / yellow
+  '#ec4899', // pink
+  '#9333ea', // purple
+  '#ef4444', // red
+  '#06b6d4', // cyan
+  '#f97316', // orange
+  '#8b5cf6', // violet
+  '#14b8a6', // teal
+  '#d946ef', // fuchsia
+  '#84cc16', // lime
 ];
 
 function parseGraphLines(lines) {
   const entries = [];
 
   for (const line of lines) {
-    const match = line.match(/^([*\s|/\\]+)\s*([a-f0-9]{7,})\s+(.+)$/);
+    const match = line.match(/^([*|/\\ ]+)\s+([a-f0-9]{7,})\s+(.+)$/);
     if (!match) continue;
     const [, graphSymbols, hash, rest] = match;
     let message = rest;
     let branchName = '';
     let remoteRef = '';
-    
-    // Refs parsing
+
+    // Parse branch/remote refs from the parenthesised decoration
     const refParenMatch = rest.match(/\(([^)]+)\)/);
     if (refParenMatch) {
       const refsStr = refParenMatch[1];
@@ -96,21 +101,24 @@ function parseGraphLines(lines) {
         const refs = refsStr.split(/,\s*/);
         for (const r of refs) {
           if (r.startsWith('HEAD -> ')) {
-            branchName = r.replace(/^HEAD -> \s*/, '').trim();
-          } else if (r.includes('/') && (r.startsWith('origin/') || r.startsWith('upstream/'))) {
+            branchName = r.replace(/^HEAD -> /, '').trim();
+          } else if (r.startsWith('origin/') || r.startsWith('upstream/')) {
             remoteRef = r.trim();
           }
         }
       }
     }
 
-    // Advanced symbol analysis for rendering
-    // Each character position is a column
-    const symbols = graphSymbols.split('');
-    const colInfo = symbols.map((char, idx) => {
-      if (char === ' ') return null;
-      return { char, col: idx };
-    }).filter(Boolean);
+    // Map graph symbols to branch-lane columns.
+    // Each lane occupies 2 characters ("* ", "| ", "/ ", "\ ") so we divide
+    // the raw character index by 2 to get the logical lane number. This matches
+    // how git --graph lays out its output and gives Cursor-style per-branch colours.
+    const colInfo = [];
+    for (let i = 0; i < graphSymbols.length; i++) {
+      const char = graphSymbols[i];
+      if (char === ' ') continue;
+      colInfo.push({ char, col: Math.floor(i / 2) });
+    }
 
     entries.push({
       hash,
@@ -247,6 +255,7 @@ function GitGraphSVG({ colInfo, isLast, nextColInfo }) {
 
 export default function SourceControlPanel({ onOpenFile }) {
   const [branch, setBranch] = useState('');
+  const [hasUpstream, setHasUpstream] = useState(false);
   const [statusOutput, setStatusOutput] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -286,22 +295,30 @@ export default function SourceControlPanel({ onOpenFile }) {
   const fetchStatus = useCallback(async () => {
     setError(null);
     try {
-      const [statusRes, branchRes] = await Promise.all([
-        runCommand('git status --porcelain -uall'),
+      // Note: do NOT use -uall here — it recursively enumerates every untracked
+      // file in the workspace tree which can take minutes on large projects.
+      const [statusRes, branchRes, upstreamRes] = await Promise.all([
+        runCommand('git status --porcelain'),
         runCommand('git branch --show-current'),
+        runCommand("git rev-parse --abbrev-ref --symbolic-full-name '@{u}'"),
       ]);
       if (statusRes.exit_code !== 0) {
         setStatusOutput(null);
         setError(statusRes.output || 'Not a git repository');
         setBranch('');
+        setHasUpstream(false);
         return;
       }
       setStatusOutput(statusRes.output);
-      setBranch((branchRes.output || '').trim());
+      const currentBranch = (branchRes.output || '').trim();
+      setBranch(currentBranch);
+      // upstreamRes exit_code is 0 only when a tracking remote exists
+      setHasUpstream(upstreamRes.exit_code === 0 && !!upstreamRes.output.trim());
     } catch (err) {
       setStatusOutput(null);
       setError(err.message || 'Not a git repository');
       setBranch('');
+      setHasUpstream(false);
     } finally {
       setLoading(false);
     }
@@ -354,7 +371,12 @@ export default function SourceControlPanel({ onOpenFile }) {
   const handlePush = async () => {
     setLoading(true);
     try {
-      await runCommand('git push');
+      // When the branch has no remote tracking counterpart, set one up automatically
+      // so "Publish Branch" works identically to the button in VS Code / Cursor.
+      const pushCmd = !hasUpstream && branch
+        ? `git push --set-upstream origin ${branch}`
+        : 'git push';
+      await runCommand(pushCmd);
       await fetchStatus();
     } catch (err) { setError(err.output ?? err.message); }
     setLoading(false);
@@ -530,8 +552,8 @@ export default function SourceControlPanel({ onOpenFile }) {
               </div>
               
               <div className="scm-commit-btn-split">
-                <button 
-                  className="scm-commit-btn-main" 
+                <button
+                  className="scm-commit-btn-main"
                   onClick={handleCommit}
                   disabled={!canCommit || committing}
                 >
@@ -542,6 +564,19 @@ export default function SourceControlPanel({ onOpenFile }) {
                   <VscChevronDown size={14} />
                 </button>
               </div>
+
+              {/* Publish Branch — shown when the current branch has no remote upstream */}
+              {hasRepo && !hasUpstream && branch && (
+                <button
+                  className="scm-btn primary"
+                  style={{ margin: '6px 0 2px 0', width: '100%', display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}
+                  onClick={handlePush}
+                  disabled={loading}
+                >
+                  <VscCloud size={14} />
+                  <span>Publish Branch</span>
+                </button>
+              )}
             </div>
 
             {/* Changes sections */}

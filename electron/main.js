@@ -179,6 +179,25 @@ if (process.platform === 'win32') {
   );
 }
 
+// ─── Module-level caches (avoids repeated execSync blocks) ──────
+
+// undefined = not yet resolved; null = resolved but not found; string = path
+let _npmGlobalBinDirCache = undefined;
+let _npmGlobalBinDirPromise = null;
+
+// Map of command → resolved path | null
+const _commandPathCache = new Map();
+
+// Resolved python command
+let _systemPythonCache = undefined;
+
+// Whether a mobile WebSocket client is currently connected.
+// Used to gate PTY→HTTP relay so we don't fire HTTP requests when no mobile client exists.
+let _mobileClientCount = 0;
+
+function incrementMobileClients() { _mobileClientCount++; }
+function decrementMobileClients() { if (_mobileClientCount > 0) _mobileClientCount--; }
+
 // ─── Utility: Find a free port ──────────────────────────────────
 
 function findFreePort() {
@@ -237,73 +256,133 @@ function ensureCliPaths(env = process.env) {
 }
 
 function getNpmGlobalBinDir() {
-  try {
+  // Return cached value synchronously if available
+  if (_npmGlobalBinDirCache !== undefined) return _npmGlobalBinDirCache;
+  // Not resolved yet — return null so callers degrade gracefully;
+  // the async version (getNpmGlobalBinDirAsync) will populate the cache.
+  return null;
+}
+
+function getNpmGlobalBinDirAsync() {
+  if (_npmGlobalBinDirCache !== undefined) return Promise.resolve(_npmGlobalBinDirCache);
+  if (_npmGlobalBinDirPromise) return _npmGlobalBinDirPromise;
+
+  _npmGlobalBinDirPromise = new Promise((resolve) => {
     const npmCommand = getNpmCommand();
-    const prefix = execSync(`"${npmCommand}" config get prefix`, {
+    execFile(npmCommand, ['config', 'get', 'prefix'], {
       encoding: 'utf-8',
       timeout: 10000,
       windowsHide: true,
-    }).trim();
+      env: { ...process.env },
+    }, (err, stdout) => {
+      const prefix = (stdout || '').trim();
+      if (!err && prefix) {
+        _npmGlobalBinDirCache = process.platform === 'win32' ? prefix : path.join(prefix, 'bin');
+      } else {
+        _npmGlobalBinDirCache = null;
+      }
+      _npmGlobalBinDirPromise = null;
+      resolve(_npmGlobalBinDirCache);
+    });
+  });
 
-    if (!prefix) return null;
-    return process.platform === 'win32' ? prefix : path.join(prefix, 'bin');
+  return _npmGlobalBinDirPromise;
+}
+
+// Async command resolution — never blocks the main process.
+// Results are cached so subsequent calls are instant.
+async function resolveCommandPathAsync(command) {
+  const cached = _commandPathCache.get(command);
+  if (cached !== undefined) return cached;
+
+  try {
+    let result = null;
+    if (process.platform === 'win32') {
+      const { stdout } = await runFile('where', [command], {
+        timeout: 5000, env: { ...process.env },
+      });
+      const lines = (stdout || '').trim().split(/\r?\n/).filter(Boolean);
+      const exe = lines.find(l => {
+        const lower = l.toLowerCase();
+        return lower.endsWith('.cmd') || lower.endsWith('.bat') ||
+               lower.endsWith('.exe') || lower.endsWith('.ps1');
+      });
+      result = exe || lines[0] || null;
+    } else {
+      const { stdout } = await runFile('/bin/sh', ['-c', `command -v ${command}`], {
+        timeout: 5000, env: { ...process.env },
+      });
+      result = (stdout || '').trim() || null;
+    }
+    _commandPathCache.set(command, result);
+    return result;
   } catch (_) {
+    _commandPathCache.set(command, null);
     return null;
   }
 }
 
+// Synchronous wrappers read from cache only — safe because we pre-warm at startup.
 function commandExists(command) {
+  const cached = _commandPathCache.get(command);
+  if (cached !== undefined) return cached !== null;
+  // Cache miss: not yet warmed. Fall back to a quick sync check.
   try {
+    let output;
     if (process.platform === 'win32') {
-      execSync(`where ${command}`, {
-        stdio: 'pipe',
-        timeout: 5000,
-        windowsHide: true,
-        env: { ...process.env },
-      });
+      output = execSync(`where ${command}`, {
+        stdio: 'pipe', timeout: 5000, windowsHide: true, encoding: 'utf-8',
+      }).trim();
     } else {
-      execSync(`command -v ${command}`, {
-        stdio: 'pipe',
-        timeout: 5000,
-        windowsHide: true,
-        env: { ...process.env },
-      });
+      output = execSync(`command -v ${command} 2>/dev/null`, {
+        stdio: 'pipe', timeout: 5000, encoding: 'utf-8', shell: '/bin/sh',
+      }).trim();
     }
-    return true;
+    const resolved = output || null;
+    _commandPathCache.set(command, resolved);
+    return resolved !== null;
   } catch (_) {
+    _commandPathCache.set(command, null);
     return false;
   }
 }
 
 function resolveCommandPath(command) {
+  const cached = _commandPathCache.get(command);
+  if (cached !== undefined) return cached;
+  // Cache miss fallback — same sync logic as commandExists.
   try {
+    let output;
     if (process.platform === 'win32') {
-      const output = execSync(`where ${command}`, {
-        stdio: 'pipe',
-        timeout: 5000,
-        windowsHide: true,
-        env: { ...process.env },
-        encoding: 'utf-8',
+      output = execSync(`where ${command}`, {
+        stdio: 'pipe', timeout: 5000, windowsHide: true, encoding: 'utf-8',
       }).trim();
       const lines = output.split(/\r?\n/).filter(Boolean);
-      const winExecutable = lines.find(line => {
-        const lower = line.toLowerCase();
-        return lower.endsWith('.cmd') || lower.endsWith('.bat') || lower.endsWith('.exe') || lower.endsWith('.ps1');
+      const exe = lines.find(l => {
+        const lower = l.toLowerCase();
+        return lower.endsWith('.cmd') || lower.endsWith('.bat') ||
+               lower.endsWith('.exe') || lower.endsWith('.ps1');
       });
-      return winExecutable || lines[0] || null;
+      const result = exe || lines[0] || null;
+      _commandPathCache.set(command, result);
+      return result;
     }
-
-    const output = execSync(`command -v ${command}`, {
-      stdio: 'pipe',
-      timeout: 5000,
-      windowsHide: true,
-      env: { ...process.env },
-      encoding: 'utf-8',
+    output = execSync(`command -v ${command} 2>/dev/null`, {
+      stdio: 'pipe', timeout: 5000, encoding: 'utf-8', shell: '/bin/sh',
     }).trim();
-    return output || null;
+    const result = output || null;
+    _commandPathCache.set(command, result);
+    return result;
   } catch (_) {
+    _commandPathCache.set(command, null);
     return null;
   }
+}
+
+// Pre-warm the command cache for all CLI tools at startup (async, non-blocking).
+async function prewarmCommandCache() {
+  const commands = CLI_SPECS.map(s => s.command).filter(Boolean);
+  await Promise.all(commands.map(cmd => resolveCommandPathAsync(cmd).catch(() => {})));
 }
 
 function findGitBash() {
@@ -333,7 +412,7 @@ function getCliLaunchConfig(tool) {
     };
   }
 
-  const npmBin = getNpmGlobalBinDir();
+  const npmBin = _npmGlobalBinDirCache !== undefined ? _npmGlobalBinDirCache : null;
   if (npmBin) {
     prependToPath(npmBin, process.env);
   }
@@ -593,7 +672,7 @@ function attachPtyHandlers(sessionId, ptyProc, tool, env) {
         sess.sender.send('cli:data', { sessionId, data });
       }
 
-      // ── OAuth re-auth detection ──────────────────────────────────────
+      // ── OAuth re-auth detection ──────────────────────────────────
       // Claude CLI prints an auth URL when the refresh token expires.
       // We catch it, open the browser automatically, and notify the renderer
       // so it can show a non-blocking banner — no manual terminal action needed.
@@ -617,7 +696,9 @@ function attachPtyHandlers(sessionId, ptyProc, tool, env) {
         }, 10 * 60 * 1000);
       }
     }
-    if (backendPort) {
+    // Only relay PTY data to the backend (mobile companion) when a mobile client
+    // is actually connected. This eliminates HTTP overhead during normal IDE use.
+    if (backendPort && _mobileClientCount > 0) {
       const postData = JSON.stringify({ sessionId, data });
       const req = http.request({
         hostname: '127.0.0.1',
@@ -737,7 +818,8 @@ async function ensureCliToolsInstalled() {
 
   for (const cli of CLI_SPECS) {
     if (!cli.packageName) continue;
-    if (commandExists(cli.command)) {
+    const cliPath = await resolveCommandPathAsync(cli.command);
+    if (cliPath) {
       console.log(`${cli.label} already installed`);
       continue;
     }
@@ -814,20 +896,29 @@ function closeSplash() {
 
 // ─── Python Detection ───────────────────────────────────────────
 
-function findSystemPython() {
-  const candidates = process.platform === 'win32'
-    ? ['python', 'python3', 'py -3']
-    : ['python3', 'python'];
+async function findSystemPython() {
+  if (_systemPythonCache !== undefined) return _systemPythonCache;
 
-  for (const cmd of candidates) {
+  // On Windows: try 'python', 'python3', then the launcher 'py' with -3 flag.
+  // On Mac/Linux: try 'python3' first, then 'python'.
+  const candidates = process.platform === 'win32'
+    ? [['python', []], ['python3', []], ['py', ['-3']]]
+    : [['python3', []], ['python', []]];
+
+  for (const [cmd, extraArgs] of candidates) {
     try {
-      const version = execSync(`${cmd} --version 2>&1`, { encoding: 'utf-8', timeout: 5000 }).trim();
+      const { stdout } = await runFile(cmd, [...extraArgs, '--version'], {
+        timeout: 5000, env: { ...process.env },
+      });
+      const version = (stdout || '').trim();
       if (version.includes('Python 3')) {
         console.log(`Found system Python: ${cmd} (${version})`);
-        return cmd.split(' ')[0]; // return just the command
+        _systemPythonCache = cmd;
+        return _systemPythonCache;
       }
     } catch (_) {}
   }
+  _systemPythonCache = null;
   return null;
 }
 
@@ -925,10 +1016,10 @@ async function setupEmbeddedNode() {
     await downloadFile(zipUrl, zipPath);
 
     updateSplash('Extracting Node.js...');
-    execSync(
-      `powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${embeddedNodeDir}' -Force"`,
-      { timeout: 600000 }
-    );
+    await runFile('powershell', [
+      '-Command',
+      `Expand-Archive -Path '${zipPath}' -DestinationPath '${embeddedNodeDir}' -Force`,
+    ], { timeout: 600000, env: { ...process.env } });
 
     try { fs.unlinkSync(zipPath); } catch (_) {}
 
@@ -999,13 +1090,12 @@ async function setupEmbeddedPython() {
     updateSplash('Downloading Python runtime...');
     await downloadFile(zipUrl, zipPath);
 
-    // Extract zip
+    // Extract zip using PowerShell (async, non-blocking)
     updateSplash('Extracting Python...');
-    // Use PowerShell to extract on Windows
-    execSync(
-      `powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${embeddedPythonDir}' -Force"`,
-      { timeout: 60000 }
-    );
+    await runFile('powershell', [
+      '-Command',
+      `Expand-Archive -Path '${zipPath}' -DestinationPath '${embeddedPythonDir}' -Force`,
+    ], { timeout: 60000, env: { ...process.env } });
 
     // Enable pip: uncomment "import site" in python311._pth
     const pthFile = path.join(embeddedPythonDir, 'python311._pth');
@@ -1023,11 +1113,10 @@ async function setupEmbeddedPython() {
     updateSplash('Installing pip...');
     await downloadFile(pipUrl, getPipPath);
 
-    // Install pip
+    // Install pip (async)
     const newPythonExe = path.join(embeddedPythonDir, 'python.exe');
-    execSync(`"${newPythonExe}" "${getPipPath}" --no-warn-script-location`, {
-      timeout: 120000,
-      cwd: embeddedPythonDir,
+    await runFile(newPythonExe, [getPipPath, '--no-warn-script-location'], {
+      timeout: 120000, cwd: embeddedPythonDir, env: { ...process.env },
     });
 
     // Cleanup
@@ -1047,15 +1136,14 @@ async function setupEmbeddedPython() {
 
 // ─── Install Python dependencies ────────────────────────────────
 
-function installDependencies(pythonCmd, backendSourceDir) {
+async function installDependencies(pythonCmd, backendSourceDir) {
   const reqFile = path.join(backendSourceDir, 'requirements.txt');
   if (!fs.existsSync(reqFile)) return;
 
   // Check if deps already installed by testing a key import
   try {
-    execSync(`"${pythonCmd}" -c "import fastapi; import uvicorn"`, {
-      timeout: 10000,
-      stdio: 'pipe',
+    await runFile(pythonCmd, ['-c', 'import fastapi; import uvicorn'], {
+      timeout: 10000, env: { ...process.env },
     });
     console.log('Dependencies already installed');
     return;
@@ -1067,10 +1155,9 @@ function installDependencies(pythonCmd, backendSourceDir) {
   updateSplash('Installing dependencies (first-time only)...');
 
   try {
-    execSync(
-      `"${pythonCmd}" -m pip install --no-warn-script-location -r "${reqFile}"`,
-      { timeout: 300000, stdio: 'pipe' }
-    );
+    await runFile(pythonCmd, ['-m', 'pip', 'install', '--no-warn-script-location', '-r', reqFile], {
+      timeout: 300000, env: { ...process.env },
+    });
     console.log('Dependencies installed successfully');
   } catch (err) {
     console.error('Failed to install dependencies:', err.message);
@@ -1143,8 +1230,8 @@ async function startBackend(port, projectRoot = null) {
         return reject(new Error('Backend source files not found. The installation may be corrupted.'));
       }
 
-      // Try system Python first
-      pythonCmd = findSystemPython();
+      // Try system Python first (async — never blocks main process)
+      pythonCmd = await findSystemPython();
 
       // If no system Python on Windows, download embedded Python
       if (!pythonCmd) {
@@ -1164,9 +1251,9 @@ async function startBackend(port, projectRoot = null) {
         }
       }
 
-      // Install dependencies if needed
+      // Install dependencies if needed (async — never blocks main process)
       try {
-        installDependencies(pythonCmd, backendSourceDir);
+        await installDependencies(pythonCmd, backendSourceDir);
       } catch (err) {
         return reject(err);
       }
@@ -1213,9 +1300,9 @@ async function startBackend(port, projectRoot = null) {
       backendProcess = null;
     });
 
-    // Poll health endpoint as fallback
+    // Poll health endpoint — start quickly, retry every 200ms
     const startTime = Date.now();
-    const maxWait = 60000; // 60 seconds (more time for first-run setup)
+    const maxWait = 60000;
 
     const pollHealth = () => {
       if (Date.now() - startTime > maxWait) {
@@ -1227,21 +1314,22 @@ async function startBackend(port, projectRoot = null) {
         if (res.statusCode === 200) {
           resolve();
         } else {
-          setTimeout(pollHealth, 500);
+          setTimeout(pollHealth, 200);
         }
       });
 
       req.on('error', () => {
-        setTimeout(pollHealth, 500);
+        setTimeout(pollHealth, 200);
       });
 
-      req.setTimeout(2000, () => {
+      req.setTimeout(1000, () => {
         req.destroy();
-        setTimeout(pollHealth, 500);
+        setTimeout(pollHealth, 200);
       });
     };
 
-    setTimeout(pollHealth, 1500);
+    // First check after 100ms — PyInstaller binary is often ready by then
+    setTimeout(pollHealth, 100);
   });
 }
 
@@ -1395,6 +1483,76 @@ ipcMain.handle('open-folder-dialog', async () => {
 ipcMain.handle('project:set-root', async (_event, folderPath) => {
   const ok = setCurrentProjectRoot(folderPath);
   return { ok, projectRoot: currentProjectRoot };
+});
+
+// Explorer listing via Node fs — same caps as backend/file_manager._list_dir.
+// Avoids HTTP + Python + auth on every expand so the desktop app matches web
+// (File System Access API) responsiveness for directory reads.
+const _FS_SCAN_HARD_CAP = 3000;
+const _FS_MAX_FILE_LIST = 2000;
+
+function _resolveSafeProjectSubdir(rootRaw, relPathRaw) {
+  const root = path.resolve(rootRaw);
+  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return null;
+  const rel = String(relPathRaw || '').replace(/\\/g, '/').split('/').filter(Boolean);
+  let cur = root;
+  for (const seg of rel) {
+    if (seg === '..') return null;
+    cur = path.join(cur, seg);
+  }
+  const resolved = path.resolve(cur);
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+  if (resolved !== root && !resolved.startsWith(rootWithSep)) return null;
+  try {
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return null;
+  } catch (_) {
+    return null;
+  }
+  return resolved;
+}
+
+function _listDirNative(absDir, showHidden) {
+  const dirs = [];
+  const files = [];
+  let count = 0;
+  let entries;
+  try {
+    entries = fs.readdirSync(absDir, { withFileTypes: true });
+  } catch (_) {
+    return [];
+  }
+  for (const ent of entries) {
+    count += 1;
+    if (count > _FS_SCAN_HARD_CAP) break;
+    if (!showHidden && ent.name.startsWith('.')) continue;
+    try {
+      if (ent.isDirectory()) dirs.push(ent.name);
+      else if (ent.isFile()) files.push(ent.name);
+    } catch (_) {
+      /* ignore broken symlinks / permission */
+    }
+  }
+  dirs.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  files.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  const items = [];
+  for (const name of dirs.slice(0, _FS_MAX_FILE_LIST)) {
+    items.push({ name, type: 'folder', children: [], hasChildren: true });
+  }
+  const remaining = _FS_MAX_FILE_LIST - items.length;
+  for (const name of files.slice(0, remaining)) {
+    items.push({ name, type: 'file', size: 0 });
+  }
+  return items;
+}
+
+ipcMain.handle('fs:list-project-dir', async (_event, payload) => {
+  const relPath = payload && typeof payload.relPath === 'string' ? payload.relPath : '';
+  const showHidden = !!(payload && payload.showHidden);
+  const root = currentProjectRoot;
+  if (!root) return [];
+  const abs = _resolveSafeProjectSubdir(root, relPath);
+  if (!abs) return [];
+  return _listDirNative(abs, showHidden);
 });
 
 ipcMain.handle('auth:get-pending-callback', () => {
@@ -1754,16 +1912,40 @@ app.whenReady().then(async () => {
       cliBundleReadyPromise = Promise.resolve({ ok: false, errorCode: 'BUNDLE_INIT_FAIL', message: e?.message || String(e) });
     }
 
-    // Find a free port
+    // Find a free port — must happen before createWindow so preload IPC works
     backendPort = await findFreePort();
     console.log(`Using port ${backendPort} for backend`);
 
-    // Start the backend (handles all Python detection/setup)
-    await startBackend(backendPort, currentProjectRoot);
-    console.log('Backend started successfully');
+    // Start npm prefix resolution in background immediately (avoids blocking CLI launch later)
+    getNpmGlobalBinDirAsync().then(dir => {
+      if (dir) prependToPath(dir, process.env);
+    }).catch(() => {});
 
-    // Create the main window
+    // Pre-warm command cache for all CLI tools asynchronously so
+    // commandExists() / resolveCommandPath() never fall back to execSync.
+    prewarmCommandCache().catch(() => {});
+
+    // Create the window immediately — React app will show a loading state while
+    // waiting for backend readiness. This gives instant perceived startup.
     createWindow();
+
+    // Start the backend in parallel — the frontend retries requests until it's up
+    startBackend(backendPort, currentProjectRoot).then(() => {
+      console.log('Backend started successfully');
+      // Notify renderer that the backend is ready (triggers tree/workspace refresh)
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('backend:ready', { port: backendPort });
+        }
+      } catch (_) {}
+    }).catch((err) => {
+      console.error('Failed to start backend:', err);
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('backend:error', { message: err.message });
+        }
+      } catch (_) {}
+    });
 
     // Start screen streaming for mobile companion
     setTimeout(() => {
@@ -1900,6 +2082,8 @@ function startRemoteInputPoller() {
       res.on('end', () => {
         try {
           const data = JSON.parse(body);
+          // Track connected mobile client count to gate PTY relay overhead
+          _mobileClientCount = (typeof data.client_count === 'number') ? data.client_count : 0;
           if (data.events && data.events.length > 0) {
             for (const evt of data.events) {
               handleRemoteInput(evt);

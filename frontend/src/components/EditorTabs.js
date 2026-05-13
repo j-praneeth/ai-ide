@@ -50,13 +50,11 @@ export default function EditorTabs({ openFiles, activeFile, onSelectFile, onClos
                   e.stopPropagation();
                   onCloseFile(file);
                 }}
-                title="Close"
+                title={isModified ? 'Close (unsaved changes)' : 'Close'}
               >
-                {isModified ? (
-                  <VscCircleFilled size={10} />
-                ) : (
-                  <VscClose size={14} />
-                )}
+                {/* Always show X — unsaved dot is shown separately in the tab label.
+                    Clicking X on a modified file triggers the save-changes dialog. */}
+                <VscClose size={14} />
               </button>
             </div>
           );

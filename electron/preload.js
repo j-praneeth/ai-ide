@@ -52,6 +52,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Open a native folder picker dialog
   openFolderDialog: () => ipcRenderer.invoke('open-folder-dialog'),
 
+  // List a directory under the current project root (Node fs — fast path for explorer)
+  listProjectDir: (relPath, showHidden) =>
+    ipcRenderer.invoke('fs:list-project-dir', {
+      relPath: relPath == null ? '' : String(relPath),
+      showHidden: !!showHidden,
+    }),
+
   // SSO deep-link callback
   getPendingAuthCallback: () => ipcRenderer.invoke('auth:get-pending-callback'),
   onAuthCallback: (listener) => {
@@ -97,6 +104,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const wrapped = (_event, payload) => listener(payload);
     ipcRenderer.on('project:root-changed', wrapped);
     return () => ipcRenderer.removeListener('project:root-changed', wrapped);
+  },
+
+  // Backend lifecycle events — emitted when backend finishes starting up
+  onBackendReady: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('backend:ready', wrapped);
+    return () => ipcRenderer.removeListener('backend:ready', wrapped);
+  },
+  onBackendError: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('backend:error', wrapped);
+    return () => ipcRenderer.removeListener('backend:error', wrapped);
   },
 
   // CLI auth bundle status / repair (admin)

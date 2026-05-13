@@ -1,9 +1,25 @@
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pathlib import Path
 from pydantic import BaseModel
 import os
 import sys
+import json
+import re as _re
+import time as _time
 from typing import Optional, Tuple, Any, List
+
+# Hard cap on how many directory entries we will ever iterate.
+# This prevents node_modules / .git from taking minutes to scan.
+_SCAN_HARD_CAP = 3000
+
+# Performance logging helper
+def _perf_log(label: str, t0: float):
+    dt = (_time.perf_counter() - t0) * 1000
+    if dt > 100:
+        print(f"[PERF] {label}: {dt:.1f}ms  ⚠ SLOW", flush=True)
+    else:
+        print(f"[PERF] {label}: {dt:.1f}ms", flush=True)
 
 router = APIRouter()
 
@@ -51,8 +67,8 @@ def get_workspace():
 
 
 @router.post("/open-folder")
-def open_folder(path: str):
-    """Change the project root to a new folder."""
+def open_folder(path: str, show_hidden: bool = False):
+    """Change the project root to a new folder and return the top-level tree."""
     global PROJECT_ROOT
 
     target = Path(path).expanduser().resolve()
@@ -63,7 +79,17 @@ def open_folder(path: str):
         return {"error": f"Path is not a directory: {path}"}
 
     PROJECT_ROOT = target
-    return {"status": "opened", "path": str(PROJECT_ROOT), "name": PROJECT_ROOT.name}
+
+    t0 = _time.perf_counter()
+    tree = _list_dir(target, show_hidden=show_hidden, skip_size=True)
+    _perf_log("open-folder tree", t0)
+
+    return {
+        "status": "opened",
+        "path": str(PROJECT_ROOT),
+        "name": PROJECT_ROOT.name,
+        "tree": tree,
+    }
 
 
 class ResolvePathRequest(BaseModel):
@@ -133,11 +159,20 @@ def resolve_path_from_name(body: ResolvePathRequest):
             except OSError:
                 pass
     else:
-        roots.append((Path("/"), 2))
+        # Scan /Users (macOS) and /home (Linux) at depth 2 to catch other users'
+        # home directories, but never walk the entire filesystem root ("/").
+        for top in [Path("/Users"), Path("/home")]:
+            if top.exists():
+                roots.append((top, 2))
 
     all_matches = []
     for root, depth in roots:
-        all_matches.extend(_search_for_folder(root, name, entry_set, depth))
+        matches = _search_for_folder(root, name, entry_set, depth)
+        all_matches.extend(matches)
+        # Early-exit: a high-confidence match (overlapping entries) found under a
+        # common user directory — no need to scan the rest of the filesystem.
+        if any(score > 0 for score, _ in matches):
+            break
 
     if not all_matches:
         return {"found": False, "path": None}
@@ -183,33 +218,55 @@ MAX_TREE_DEPTH = 10
 
 _MAX_FILE_LIST = 2000  # max entries returned per directory
 
-def _list_dir(dir_path, show_hidden=False):
+def _list_dir(dir_path, show_hidden=False, skip_size=False):
     """
-    List directory contents efficiently.
+    List directory contents efficiently using os.scandir().
 
-    Shows everything including node_modules, .git, venv, __pycache__.
-    Performance strategy:
-      - Separate dirs and files in one pass (is_dir() is free — cached by scandir)
-      - Never call stat() on folders (no hasChildren probe — always True)
-      - Only call stat() on files, and only up to the cap
-      - Sort each group by name only (no extra syscalls)
+    Key performance properties:
+    - os.scandir() returns DirEntry objects whose is_dir() is FREE (from the OS
+      readdir dirent, no extra syscall), unlike Path.iterdir() on some platforms.
+    - follow_symlinks=False prevents following symlinks that may point to network
+      mounts or slow remote filesystems.
+    - Hard iteration cap (_SCAN_HARD_CAP) stops after N entries regardless of
+      directory size — node_modules has 50k entries, we never need to read all of
+      them just to display the first 2000.
+    - stat() is deferred: file sizes are obtained via DirEntry.stat() which is
+      cheaper than os.stat() because the data may already be cached from scandir.
+    - skip_size=True skips stat entirely (zero-cost mode for initial tree load).
     """
+    t0 = _time.perf_counter()
     dirs = []
     files = []
+    _file_entries = []
 
     try:
-        for p in dir_path.iterdir():
-            if not show_hidden and p.name.startswith('.'):
-                continue
-            if p.is_dir():
-                dirs.append(p.name)
-            else:
-                files.append(p.name)
-    except PermissionError:
+        count = 0
+        with os.scandir(str(dir_path)) as it:
+            for entry in it:
+                count += 1
+                if count > _SCAN_HARD_CAP:
+                    break
+                if not show_hidden and entry.name.startswith('.'):
+                    continue
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        dirs.append(entry.name)
+                    else:
+                        files.append(entry.name)
+                        _file_entries.append(entry)
+                except OSError:
+                    continue
+    except (PermissionError, OSError):
         return []
 
     dirs.sort(key=str.lower)
-    files.sort(key=str.lower)
+
+    # Sort files and their DirEntry objects in parallel
+    paired = sorted(zip(files, _file_entries), key=lambda x: x[0].lower())
+    if paired:
+        files, _file_entries = zip(*paired)
+    else:
+        files, _file_entries = [], []
 
     items = []
 
@@ -222,17 +279,20 @@ def _list_dir(dir_path, show_hidden=False):
         })
 
     remaining = _MAX_FILE_LIST - len(items)
-    for name in files[:remaining]:
-        try:
-            size = (dir_path / name).stat().st_size
-        except Exception:
-            size = 0
+    for i, name in enumerate(files[:remaining]):
+        size = 0
+        if not skip_size and i < len(_file_entries):
+            try:
+                size = _file_entries[i].stat(follow_symlinks=False).st_size
+            except OSError:
+                size = 0
         items.append({
             "name": name,
             "type": "file",
             "size": size,
         })
 
+    _perf_log(f"_list_dir({dir_path.name}) = {len(items)} items", t0)
     return items
 
 
@@ -241,12 +301,37 @@ def get_tree(show_hidden: bool = False):
     """Return the top-level directory listing (one level). Fast. show_hidden: include dotfiles/dotdirs."""
     if not PROJECT_ROOT:
         return []
-    return _list_dir(PROJECT_ROOT, show_hidden=show_hidden)
+    t0 = _time.perf_counter()
+    result = _list_dir(PROJECT_ROOT, show_hidden=show_hidden)
+    _perf_log("GET /files/tree", t0)
+    return result
+
+
+@router.post("/tree-batch")
+def get_tree_batch(paths: List[str], show_hidden: bool = False):
+    """Return children for multiple paths in a single request.
+    NOTE: This endpoint is deprecated. The frontend no longer pre-fetches all
+    root folders at mount time (lazy loading is preferred). Kept for backward
+    compatibility with older clients."""
+    t0 = _time.perf_counter()
+    root, err = _require_project_root()
+    if err:
+        return {}
+    result = {}
+    for p in paths[:100]:  # hard cap to prevent abuse
+        target = (root / p).resolve()
+        if not _is_within_root(target, root) or not target.is_dir():
+            result[p] = []
+            continue
+        result[p] = _list_dir(target, show_hidden=show_hidden)
+    _perf_log(f"POST /files/tree-batch ({len(paths)} paths)", t0)
+    return result
 
 
 @router.get("/tree-children")
 def get_tree_children(path: str, show_hidden: bool = False):
     """Return children of a subdirectory (lazy loading on expand). show_hidden: include dotfiles/dotdirs."""
+    t0 = _time.perf_counter()
     root, err = _require_project_root()
     if err:
         return []
@@ -260,7 +345,9 @@ def get_tree_children(path: str, show_hidden: bool = False):
     if not target.exists() or not target.is_dir():
         return []
 
-    return _list_dir(target, show_hidden=show_hidden)
+    result = _list_dir(target, show_hidden=show_hidden)
+    _perf_log(f"GET /files/tree-children?path={path}", t0)
+    return result
 
 
 @router.get("/read")
@@ -417,52 +504,91 @@ def move_path(path: str, dest: str):
         return {"error": str(e)}
 
 
+_SEARCH_SKIP = {
+    'node_modules', '__pycache__', '.git', 'dist', 'build',
+    '.next', '.cache', 'venv', '.venv', 'coverage', 'vendor',
+}
+
+
+def _search_generator(root, query: str, case_sensitive: bool, use_regex: bool, max_results: int):
+    """Generator that yields matching lines one at a time — mirrors ripgrep stdout streaming."""
+    count = 0
+    flags = 0 if case_sensitive else _re.IGNORECASE
+
+    if use_regex:
+        try:
+            pattern = _re.compile(query, flags)
+        except _re.error:
+            return
+        def matches(line): return bool(pattern.search(line))
+    else:
+        needle = query if case_sensitive else query.lower()
+        def matches(line): return needle in (line if case_sensitive else line.lower())
+
+    for root_dir, dirs, files in os.walk(str(root)):
+        dirs[:] = [d for d in dirs if d not in _SEARCH_SKIP and not d.startswith('.')]
+
+        for file in sorted(files):
+            if file.startswith('.'):
+                continue
+            full_path = os.path.join(root_dir, file)
+            rel_path = os.path.relpath(full_path, str(root))
+            try:
+                if os.path.getsize(full_path) > 1_000_000:
+                    continue
+            except OSError:
+                continue
+            try:
+                with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    for i, line in enumerate(f, 1):
+                        if matches(line):
+                            yield {'file': rel_path, 'line': i, 'text': line.strip()[:200]}
+                            count += 1
+                            if count >= max_results:
+                                return
+            except OSError:
+                continue
+
+
 @router.get("/search")
-def search_files(query: str, case_sensitive: bool = False):
-    """Search for text across all project files."""
+def search_files(query: str, case_sensitive: bool = False, use_regex: bool = False):
+    """Batch search — returns all results at once (kept for backwards compat)."""
     root, err = _require_project_root()
     if err:
         return {"results": [], "truncated": False}
 
-    results = []
-    max_results = 200
+    results = list(_search_generator(root, query, case_sensitive, use_regex, 200))
+    truncated = len(results) >= 200
+    return {"results": results, "truncated": truncated}
 
-    for root_dir, dirs, files in os.walk(root):
-        # Skip dirs that are useless to search (node_modules, caches, build output)
-        _SEARCH_SKIP = {'node_modules', '__pycache__', '.git', 'dist', 'build',
-                        '.next', '.cache', 'venv', '.venv', 'coverage', 'vendor'}
-        dirs[:] = [d for d in dirs if d not in _SEARCH_SKIP and not d.startswith('.')]
 
-        for file in files:
-            if file.startswith('.'):
-                continue
+@router.get("/search-stream")
+def search_files_stream(query: str, case_sensitive: bool = False, use_regex: bool = False):
+    """
+    SSE streaming search — mirrors VS Code's ripgrep stdout streaming.
 
-            full_path = os.path.join(root_dir, file)
-            rel_path = os.path.relpath(full_path, root)
+    Each match is emitted as an SSE event immediately, so the UI can
+    display results before the search completes. The frontend uses an
+    80 ms RunOnceScheduler to batch DOM updates (same as VS Code).
+    """
+    root, err = _require_project_root()
+    if err:
+        def empty():
+            yield 'data: {"done":true,"truncated":false}\n\n'
+        return StreamingResponse(empty(), media_type='text/event-stream')
 
-            # Skip binary/large files
-            try:
-                size = os.path.getsize(full_path)
-                if size > 1_000_000:  # Skip files > 1MB
-                    continue
-            except:
-                continue
+    def generate():
+        count = 0
+        for match in _search_generator(root, query, case_sensitive, use_regex, 500):
+            yield f'data: {json.dumps(match)}\n\n'
+            count += 1
+        yield f'data: {json.dumps({"done": True, "truncated": count >= 500})}\n\n'
 
-            try:
-                with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    for i, line in enumerate(f, 1):
-                        search_line = line if case_sensitive else line.lower()
-                        search_query = query if case_sensitive else query.lower()
-
-                        if search_query in search_line:
-                            results.append({
-                                "file": rel_path,
-                                "line": i,
-                                "text": line.strip()[:200],
-                            })
-                            if len(results) >= max_results:
-                                return {"results": results, "truncated": True}
-            except:
-                continue
-
-    return {"results": results, "truncated": False}
+    return StreamingResponse(
+        generate(),
+        media_type='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        },
+    )

@@ -1,11 +1,24 @@
 /**
  * Helpers for using File System Access API (showDirectoryPicker) in web.
  * Used when Open Folder in browser: we only have a handle, no path.
+ *
+ * Performance characteristics:
+ * - Uses hard caps to prevent infinite iteration on huge directories.
+ * - Skips hidden files early (before push) to reduce memory pressure.
+ * - Iterates at most _SCAN_HARD_CAP entries in any single directory.
+ * - Only reads one directory level — no recursion. Children are loaded
+ *   lazily on expand via loadChildrenFromHandle in App.js.
  */
+
+const _SCAN_HARD_CAP = 3000;
 
 export async function listDirFromHandle(handle, basePath = '', showHidden = false) {
   const nodes = [];
+  let count = 0;
   for await (const [name, entry] of handle.entries()) {
+    count++;
+    if (count > _SCAN_HARD_CAP) break;
+    if (!showHidden && name.startsWith('.')) continue;
     const path = basePath ? `${basePath}/${name}` : name;
     const isDir = entry.kind === 'directory';
     nodes.push({

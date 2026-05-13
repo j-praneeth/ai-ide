@@ -266,10 +266,18 @@ def _extract_cd(command):
 
 
 def _build_env(config_dir: str | None = None):
-    """Build environment variables for subprocess, platform-aware."""
-    env = {**os.environ}
-    if not IS_WINDOWS:
-        env["TERM"] = "xterm-256color"
+    """Build environment variables for subprocess using the cached login-shell env.
+
+    Using _get_shell_env() instead of os.environ directly means the full user
+    PATH (nvm shims, brew, pyenv, etc.) is available in every PTY session without
+    needing to run a login shell each time.
+
+    WARNING: Calls _get_shell_env() which may block on first call (login shell env
+    capture). Use _build_env_async() in async contexts to avoid blocking the event loop.
+    """
+    env = _get_shell_env()
+    env["TERM"] = "xterm-256color"
+    env["COLORTERM"] = "truecolor"
     npm_bin = _get_npm_global_bin_dir()
     if npm_bin:
         path_key = next((k for k in env.keys() if k.lower() == "path"), "PATH")
@@ -282,8 +290,49 @@ def _build_env(config_dir: str | None = None):
     return env
 
 
+async def _build_env_async(config_dir: str | None = None):
+    """Async version — never blocks the event loop. Runs shell env capture in a thread."""
+    env = await _get_shell_env_async()
+    env["TERM"] = "xterm-256color"
+    env["COLORTERM"] = "truecolor"
+    npm_bin = await asyncio.to_thread(_get_npm_global_bin_dir)
+    if npm_bin:
+        path_key = next((k for k in env.keys() if k.lower() == "path"), "PATH")
+        current = env.get(path_key, "")
+        parts = [p for p in current.split(os.pathsep) if p]
+        if npm_bin not in parts:
+            env[path_key] = os.pathsep.join([npm_bin, *parts])
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    return env
+
+
+_npm_global_bin_dir_cache: str | None = None
+_npm_global_bin_dir_resolved: bool = False
+
+# ── Performance logging helper ────────────────────────────────────────────────
+def _perf_log(label: str, t0: float):
+    dt = (time.perf_counter() - t0) * 1000
+    if dt > 100:
+        print(f"[PERF] {label}: {dt:.1f}ms  ⚠ SLOW", flush=True)
+    else:
+        print(f"[PERF] {label}: {dt:.1f}ms", flush=True)
+
+
+# ── Login shell environment cache (VS Code approach) ──────────────────────────
+# Captured once at startup via a login shell so terminal instances can start
+# with `-i` (interactive, not login) and still have the full PATH/env.
+# This avoids re-running ~/.zshrc / nvm / pyenv on every terminal open.
+_shell_env_cache: dict | None = None
+_shell_env_lock = _threading.Lock()
+
+
 def _get_npm_global_bin_dir():
-    """Return the npm global bin dir if npm is available."""
+    """Return the npm global bin dir if npm is available. Result is cached for the process lifetime."""
+    global _npm_global_bin_dir_cache, _npm_global_bin_dir_resolved
+    if _npm_global_bin_dir_resolved:
+        return _npm_global_bin_dir_cache
+    _npm_global_bin_dir_resolved = True
     npm_cmd = "npm.cmd" if IS_WINDOWS else "npm"
     try:
         result = subprocess.run(
@@ -297,9 +346,79 @@ def _get_npm_global_bin_dir():
         prefix = (result.stdout or "").strip()
         if not prefix:
             return None
-        return prefix if IS_WINDOWS else os.path.join(prefix, "bin")
+        _npm_global_bin_dir_cache = prefix if IS_WINDOWS else os.path.join(prefix, "bin")
     except Exception:
-        return None
+        _npm_global_bin_dir_cache = None
+    return _npm_global_bin_dir_cache
+
+
+def _capture_login_shell_env() -> dict:
+    """Run login shell once to capture full user environment (PATH, NVM_DIR, etc.).
+
+    This is the same strategy VS Code uses: pay the login-shell initialization
+    cost once, cache the result, then start all subsequent terminal instances as
+    interactive (non-login) shells which start in milliseconds.
+    """
+    if IS_WINDOWS:
+        # On Windows PATH is already correct; no need for shell env capture.
+        return dict(os.environ)
+
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    try:
+        result = subprocess.run(
+            [shell, "-l", "-c", "env"],
+            capture_output=True,
+            text=True,
+            timeout=30,           # generous for heavy .zshrc; still finite
+            env=dict(os.environ),
+        )
+        env = dict(os.environ)
+        if result.returncode == 0 and result.stdout:
+            for line in result.stdout.splitlines():
+                if '=' in line:
+                    key, _, val = line.partition('=')
+                    key = key.strip()
+                    if key and '\x00' not in key:
+                        env[key] = val
+        return env
+    except Exception:
+        return dict(os.environ)
+
+
+def _get_shell_env() -> dict:
+    """Return the cached login-shell environment, capturing it on first call."""
+    global _shell_env_cache
+    with _shell_env_lock:
+        if _shell_env_cache is not None:
+            return dict(_shell_env_cache)
+    env = _capture_login_shell_env()
+    with _shell_env_lock:
+        _shell_env_cache = env
+    return dict(env)
+
+
+async def _get_shell_env_async() -> dict:
+    """Async version — runs the capture in a thread so the event loop is never blocked.
+    Falls back to os.environ if the cache isn't ready yet."""
+    global _shell_env_cache
+    with _shell_env_lock:
+        if _shell_env_cache is not None:
+            return dict(_shell_env_cache)
+    env = await asyncio.to_thread(_capture_login_shell_env)
+    with _shell_env_lock:
+        _shell_env_cache = env
+    return dict(env)
+
+
+def _warm_shell_env_background() -> None:
+    """Start login shell env capture in a daemon thread at module load time."""
+    t = _threading.Thread(target=_get_shell_env, daemon=True, name="shell-env-warm")
+    t.start()
+
+
+# Kick off background env capture immediately so it's ready when the first
+# terminal session opens (typically a few seconds later).
+_warm_shell_env_background()
 
 
 def _prepare_session_config(session_id: str) -> str | None:
@@ -423,10 +542,10 @@ def _build_cli_shell_command(tool: str, status: dict):
     shell_path = os.environ.get("SHELL", "/bin/zsh")
     cli_cmd = _quote_for_bash(command_path)
     cwd = _get_project_root_dir()
-    # -l = login shell: loads ~/.zprofile / ~/.bash_profile so PATH includes
-    # npm global bin, nvm shims, etc. — critical for Claude CLI to find itself.
-    # exec replaces the shell process so signals reach Claude directly.
-    return [shell_path, "-l", "-c",
+    # Use -i (interactive) not -l (login). The full login-shell PATH is already
+    # in the environment via _build_env()/_get_shell_env(), so -l is not needed
+    # and would add 30s-2min of nvm/pyenv/oh-my-zsh initialization time.
+    return [shell_path, "-i", "-c",
             f"cd {_quote_for_bash(cwd)} && exec {cli_cmd}"]
 
 
@@ -776,13 +895,16 @@ async def terminal_pty_ws(
     cwd: str = None,
 ):
     """Real PTY terminal over WebSocket — identical to VS Code's integrated terminal."""
+    t0 = time.perf_counter()
     await websocket.accept()
     loop = asyncio.get_running_loop()
     # Use caller-supplied cwd if valid, otherwise fall back to the workspace root
     if not (cwd and os.path.isdir(cwd)):
         cwd = _get_project_root_dir()
-    env = {k: str(v) for k, v in _build_env().items()}
+    # Use async version so login-shell env capture (subprocess) never blocks the event loop
+    env = {k: str(v) for k, v in (await _build_env_async()).items()}
     env.update({"TERM": "xterm-256color", "COLORTERM": "truecolor"})
+    _perf_log(f"terminal_pty_ws({session_id}) setup", t0)
 
     if IS_WINDOWS:
         if not _WINPTY_OK:
@@ -830,7 +952,9 @@ async def terminal_pty_ws(
                 try:
                     data = pty_proc.read(65536)
                     if data:
-                        asyncio.run_coroutine_threadsafe(send_q.put(data), loop)
+                        # Encode to bytes so _forward can send binary frames
+                        raw = data.encode("utf-8") if isinstance(data, str) else data
+                        asyncio.run_coroutine_threadsafe(send_q.put(raw), loop)
                     elif not pty_proc.isalive():
                         asyncio.run_coroutine_threadsafe(send_q.put(None), loop)
                         break
@@ -842,8 +966,11 @@ async def terminal_pty_ws(
                     break
 
         _threading.Thread(target=_reader, daemon=True).start()
+        _perf_log(f"terminal_pty_ws({session_id}) Windows shell started", t0)
 
         async def _forward():
+            nonlocal t0
+            frames = 0
             while True:
                 chunk = await send_q.get()
                 if chunk is None:
@@ -852,9 +979,30 @@ async def terminal_pty_ws(
                     except Exception:
                         pass
                     break
+                frames += 1
+                if frames == 1:
+                    _perf_log(f"terminal_pty_ws({session_id}) first output frame", t0)
+                # Drain all immediately-available chunks; coalesce into one binary frame
+                parts = [chunk]
+                done = False
+                while True:
+                    try:
+                        nxt = send_q.get_nowait()
+                        if nxt is None:
+                            done = True
+                            break
+                        parts.append(nxt)
+                    except asyncio.QueueEmpty:
+                        break
                 try:
-                    await websocket.send_text(chunk)
+                    await websocket.send_bytes(b"".join(parts))
                 except Exception:
+                    break
+                if done:
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
                     break
 
         fwd_task = asyncio.create_task(_forward())
@@ -880,11 +1028,15 @@ async def terminal_pty_ws(
                 pass
 
     else:
-        # Unix PTY via built-in pty module
+        # Unix PTY — use interactive (non-login) shell.
+        # The login-shell environment (PATH, NVM_DIR, etc.) is already baked into
+        # the env dict via _build_env(), so we don't need -l here. Using -i
+        # skips ~/.zprofile / /etc/profile which can add 30s-2min of startup time.
         if shell == "bash":
-            cmd = [shutil.which("bash") or "/bin/bash", "-l"]
+            shell_bin = shutil.which("bash") or "/bin/bash"
         else:
-            cmd = [os.environ.get("SHELL", shutil.which("zsh") or "/bin/bash"), "-l"]
+            shell_bin = os.environ.get("SHELL", shutil.which("zsh") or "/bin/bash")
+        cmd = [shell_bin, "-i"]
 
         master_fd, slave_fd = _pty.openpty()
         winsize = _struct.pack("HHHH", rows, cols, 0, 0)
@@ -921,23 +1073,30 @@ async def terminal_pty_ws(
         def _reader():
             while True:
                 try:
-                    r, _, _ = _select.select([master_fd], [], [], 0.1)
+                    # Block until data is ready (up to 50ms to also detect process exit)
+                    r, _, _ = _select.select([master_fd], [], [], 0.05)
                     if r:
                         data = os.read(master_fd, 65536)
                         if data:
-                            asyncio.run_coroutine_threadsafe(
-                                send_q.put(data.decode("utf-8", errors="replace")), loop
-                            )
+                            # Put raw bytes; _forward sends binary frames (zero-copy)
+                            asyncio.run_coroutine_threadsafe(send_q.put(data), loop)
+                        else:
+                            # EOF on PTY master
+                            asyncio.run_coroutine_threadsafe(send_q.put(None), loop)
+                            break
+                    elif proc.poll() is not None:
+                        asyncio.run_coroutine_threadsafe(send_q.put(None), loop)
+                        break
                 except Exception:
-                    asyncio.run_coroutine_threadsafe(send_q.put(None), loop)
-                    break
-                if proc.poll() is not None:
                     asyncio.run_coroutine_threadsafe(send_q.put(None), loop)
                     break
 
         _threading.Thread(target=_reader, daemon=True).start()
+        _perf_log(f"terminal_pty_ws({session_id}) Unix shell started", t0)
 
         async def _forward():
+            nonlocal t0
+            frames = 0
             while True:
                 chunk = await send_q.get()
                 if chunk is None:
@@ -946,9 +1105,30 @@ async def terminal_pty_ws(
                     except Exception:
                         pass
                     break
+                frames += 1
+                if frames == 1:
+                    _perf_log(f"terminal_pty_ws({session_id}) first output frame", t0)
+                # Drain all immediately-available chunks; coalesce into one binary frame
+                parts = [chunk]
+                done = False
+                while True:
+                    try:
+                        nxt = send_q.get_nowait()
+                        if nxt is None:
+                            done = True
+                            break
+                        parts.append(nxt)
+                    except asyncio.QueueEmpty:
+                        break
                 try:
-                    await websocket.send_text(chunk)
+                    await websocket.send_bytes(b"".join(parts))
                 except Exception:
+                    break
+                if done:
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
                     break
 
         fwd_task = asyncio.create_task(_forward())
@@ -965,10 +1145,10 @@ async def terminal_pty_ws(
                         _fcntl.ioctl(master_fd, _termios.TIOCSWINSZ, winsize)
                     elif msg.get("type") == "input":
                         data = msg["data"].encode("utf-8")
-                        await asyncio.to_thread(os.write, master_fd, data)
+                        os.write(master_fd, data)
                 except (json.JSONDecodeError, KeyError):
                     data = raw.encode("utf-8")
-                    await asyncio.to_thread(os.write, master_fd, data)
+                    os.write(master_fd, data)
         except WebSocketDisconnect:
             pass
         finally:
@@ -1006,6 +1186,7 @@ async def cli_websocket(
     session_id: str = None,
     token: str = None,
 ):
+    t0 = time.perf_counter()
     await websocket.accept()
 
     # ── Auth: validate JWT when users exist ────────────────────────

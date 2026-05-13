@@ -42,8 +42,14 @@ def get_client() -> MongoClient:
     global _client
     if _client is None:
         uri = _get_mongodb_uri()
-        # Increased timeouts to 5 seconds to be more resilient to slow startups
-        _client = MongoClient(uri, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000, socketTimeoutMS=5000)
+        # Short connect/selection timeout — fail fast so startup tasks don't block.
+        # socketTimeoutMS is kept at 10 s for in-flight operations (inserts, queries).
+        _client = MongoClient(
+            uri,
+            serverSelectionTimeoutMS=3000,
+            connectTimeoutMS=3000,
+            socketTimeoutMS=10000,
+        )
     return _client
 
 def get_db() -> Database:

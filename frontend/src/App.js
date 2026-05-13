@@ -3,8 +3,6 @@ import Editor from '@monaco-editor/react';
 import axios from 'axios';
 import './App.css';
 import { API_URL as API } from './config';
-
-// Components
 import ActivityBar from './components/ActivityBar';
 import FileExplorer from './components/FileExplorer';
 import SearchPanel from './components/SearchPanel';
@@ -24,6 +22,16 @@ import AuthGate from './components/AuthGate';
 import { VscDeviceMobile, VscTerminal } from 'react-icons/vsc';
 import { listDirFromHandle, getHandleForPath, getFileContentFromHandle, writeFileToHandle } from './lib/webFs';
 import { authFetch, getAuthUser } from './lib/auth';
+import { Throttler, SequencerByKey } from './lib/async';
+
+// Global default timeout so no request ever hangs indefinitely.
+axios.defaults.timeout = 8000;
+
+// Module-level singletons — mirrors VS Code's service-level Throttler instances.
+// Throttler: at most 1 in-flight tree load + 1 pending (new requests replace old pending)
+const _treeLoadThrottler = new Throttler();
+// SequencerByKey: file saves are serialised per path — prevents out-of-order writes
+const _fileSaveSequencer = new SequencerByKey();
 
 // Language detection by file extension
 function getLanguage(filename) {
@@ -98,6 +106,8 @@ function App() {
   const [rightPanelWidth, setRightPanelWidth] = useState(300);
   const [showMobileCompanionPopup, setShowMobileCompanionPopup] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  // Unsaved-changes dialog state
+  const [unsavedDialog, setUnsavedDialog] = useState(null); // { file: string, onSave, onDiscard, onCancel }
   const [terminalHeight, setTerminalHeight] = useState(250);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
   const [activeMenu, setActiveMenu] = useState(null);
@@ -134,40 +144,124 @@ function App() {
     } catch { return true; }
   });
 
-  // Load file tree (optionally include hidden files); from backend or from web folder handle
-  const loadTree = useCallback(async () => {
-    // Show cached tree immediately so the explorer feels instant
-    if (!webFolderHandle) {
+  // Force explorer panel as default on every mount
+  useEffect(() => { setSidebarPanel('explorer'); }, []);
+
+  // Load file tree — throttled so rapid refreshes (file watcher events) never
+  // stack up. Mirrors VS Code's Throttler used for configuration/tree refresh.
+  const loadTree = useCallback(() => {
+    return _treeLoadThrottler.queue(async () => {
+      setTreeLoading(true);
       try {
-        const cached = sessionStorage.getItem('nebula_tree_cache');
-        if (cached) setTree(JSON.parse(cached));
-      } catch (_) {}
-    }
-    setTreeLoading(true);
-    try {
-      if (webFolderHandle) {
-        const nodes = await listDirFromHandle(webFolderHandle, '', showHiddenFiles);
-        setTree(nodes);
-      } else {
-        const res = await axios.get(`${API}/files/tree`, { params: { show_hidden: showHiddenFiles } });
-        setTree(res.data);
-        try { sessionStorage.setItem('nebula_tree_cache', JSON.stringify(res.data)); } catch (_) {}
+        if (webFolderHandle) {
+          const nodes = await listDirFromHandle(webFolderHandle, '', showHiddenFiles);
+          setTree(nodes);
+        } else {
+          const useNative = typeof window !== 'undefined' && window.electronAPI?.listProjectDir;
+          const treeP = useNative
+            ? window.electronAPI.listProjectDir('', showHiddenFiles)
+            : axios.get(`${API}/files/tree`, { params: { show_hidden: showHiddenFiles } }).then(r => r.data);
+          let pathKey = '';
+          try {
+            const wsRes = await axios.get(`${API}/files/workspace`);
+            pathKey = (wsRes.data?.path || '').trim();
+            if (pathKey) {
+              try {
+                const raw = sessionStorage.getItem('nebula_tree_cache');
+                const parsed = raw ? JSON.parse(raw) : null;
+                if (
+                  parsed && typeof parsed === 'object' && Array.isArray(parsed.tree)
+                  && String(parsed.path || '').trim() === pathKey
+                ) {
+                  setTree(parsed.tree);
+                }
+              } catch (_) {}
+            } else {
+              setTree([]);
+            }
+          } catch (_) {}
+          const nodes = await treeP;
+          const list = Array.isArray(nodes) ? nodes : [];
+          setTree(list);
+          try {
+            sessionStorage.setItem(
+              'nebula_tree_cache',
+              JSON.stringify({ path: pathKey, tree: list }),
+            );
+          } catch (_) {}
+        }
+      } catch (err) {
+        console.error('Failed to load file tree:', err);
+        throw err; // re-throw so the Throttler can signal retry callers
+      } finally {
+        setTreeLoading(false);
       }
-    } catch (err) {
-      console.error('Failed to load file tree:', err);
-    } finally {
-      setTreeLoading(false);
-    }
+    });
   }, [showHiddenFiles, webFolderHandle]);
 
-  // Load workspace info and file tree on startup
+  // Load workspace info and file tree on startup with resilient retry.
+  // Critical: In the packaged Electron app, the backend may start before or after
+  // React mounts. If it starts first, the backend:ready event fires BEFORE the
+  // onBackendReady listener is registered below, and the event is lost forever.
+  // The retry loop below handles both cases:
+  //   - Backend not ready → retry with backoff until it responds
+  //   - Backend ready → succeeds immediately on first try
   useEffect(() => {
-    loadTree();
-    // Fetch workspace info so the title bar and terminal use the real project path
-    axios.get(`${API}/files/workspace`).then(res => {
-      if (res.data.name) setProjectName(res.data.name);
-      if (res.data.path) setProjectRoot(res.data.path);
-    }).catch(() => {});
+    let active = true;
+    let retryTimer = null;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 30; // ~30s total with backoff
+    const cleanupFns = [];
+
+    const loadWorkspace = () => {
+      loadTree().catch(() => {}); // error already logged inside loadTree
+      axios.get(`${API}/files/workspace`).then(res => {
+        if (res.data.name) setProjectName(res.data.name);
+        if (res.data.path) setProjectRoot(res.data.path);
+      }).catch(() => {});
+    };
+
+    const tryLoad = () => {
+      if (!active) return;
+      loadTree().then(() => {
+        // Success — also load workspace info
+        axios.get(`${API}/files/workspace`).then(res => {
+          if (!active) return;
+          if (res.data.name) setProjectName(res.data.name);
+          if (res.data.path) setProjectRoot(res.data.path);
+        }).catch(() => {});
+      }).catch(() => {
+        // Failed — retry with exponential backoff (200ms, 400ms, 800ms, ... up to ~3s)
+        if (!active) return;
+        attempts++;
+        if (attempts >= MAX_ATTEMPTS) {
+          console.warn('[App] Backend not reachable after 30 retries. Check that the backend is running.');
+          return;
+        }
+        const delay = Math.min(200 * Math.pow(1.5, attempts), 3000);
+        retryTimer = setTimeout(tryLoad, delay);
+      });
+    };
+
+    tryLoad();
+
+    // Also register for backend:ready event as an optimization (faster recovery).
+    const elAPI = window.electronAPI;
+    if (elAPI?.onBackendReady) {
+      const cleanup = elAPI.onBackendReady(() => {
+        if (!active) return;
+        attempts = 0;
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        loadWorkspace();
+      });
+      cleanupFns.push(cleanup);
+    }
+
+    return () => {
+      active = false;
+      if (retryTimer) clearTimeout(retryTimer);
+      cleanupFns.forEach(fn => { try { fn(); } catch (_) {} });
+    };
   }, [loadTree]);
 
   // After login, Super Admin lands on Admin dashboard by default.
@@ -218,7 +312,7 @@ function App() {
       if (webFolderHandle) {
         content = await getFileContentFromHandle(webFolderHandle, path);
       } else {
-        const res = await axios.get(`${API}/files/read`, { params: { path } });
+        const res = await axios.get(`${API}/files/read`, { params: { path }, timeout: 10000 });
         content = res.data.content;
       }
       setFileContents(prev => ({ ...prev, [path]: content }));
@@ -230,8 +324,8 @@ function App() {
     }
   }, [openFiles, webFolderHandle]);
 
-  // Close a file
-  const closeFile = useCallback((path) => {
+  // Internal close — no unsaved check (used after save/discard confirmed)
+  const _forceCloseFile = useCallback((path) => {
     setOpenFiles(prev => {
       const newFiles = prev.filter(f => f !== path);
       if (activeFile === path) {
@@ -246,6 +340,38 @@ function App() {
     setModifiedFiles(prev => { const next = new Set(prev); next.delete(path); return next; });
   }, [activeFile]);
 
+  // Close a file — shows unsaved-changes dialog if the file has been modified
+  const closeFile = useCallback((path) => {
+    if (modifiedFiles.has(path)) {
+      setUnsavedDialog({
+        file: path,
+        onSave: async () => {
+          // Save then close
+          try {
+            if (webFolderHandle) {
+              const { writeFileToHandle } = await import('./lib/webFs');
+              await writeFileToHandle(webFolderHandle, path, fileContents[path]);
+            } else {
+              await axios.post(`${API}/files/write`, null, {
+                params: { path, content: fileContents[path] },
+                timeout: 10000,
+              });
+            }
+          } catch (_) {}
+          setUnsavedDialog(null);
+          _forceCloseFile(path);
+        },
+        onDiscard: () => {
+          setUnsavedDialog(null);
+          _forceCloseFile(path);
+        },
+        onCancel: () => setUnsavedDialog(null),
+      });
+      return;
+    }
+    _forceCloseFile(path);
+  }, [modifiedFiles, fileContents, webFolderHandle, _forceCloseFile]);
+
   // Close all tabs
   const closeAllTabs = useCallback(() => {
     setOpenFiles([]);
@@ -255,19 +381,25 @@ function App() {
     setModifiedFiles(new Set());
   }, []);
 
-  // Save the current file (to backend or to web folder handle)
+  // Save the current file — sequenced per path so rapid Ctrl+S presses on the
+  // same file never cause out-of-order writes. Mirrors VS Code's ResourceQueue
+  // / SequencerByKey used for atomic file writes.
   const saveFile = useCallback(async () => {
     if (!activeFile || !fileContents[activeFile]) return;
+    const path    = activeFile;
+    const content = fileContents[activeFile];
     try {
-      if (webFolderHandle) {
-        await writeFileToHandle(webFolderHandle, activeFile, fileContents[activeFile]);
-      } else {
-        await axios.post(`${API}/files/write`, null, {
-          params: { path: activeFile, content: fileContents[activeFile] }
-        });
-      }
-      setOriginalContents(prev => ({ ...prev, [activeFile]: fileContents[activeFile] }));
-      setModifiedFiles(prev => { const next = new Set(prev); next.delete(activeFile); return next; });
+      await _fileSaveSequencer.queueFor(path, async () => {
+        if (webFolderHandle) {
+          await writeFileToHandle(webFolderHandle, path, content);
+        } else {
+          await axios.post(`${API}/files/write`, null, {
+            params: { path, content },
+          });
+        }
+      });
+      setOriginalContents(prev => ({ ...prev, [path]: content }));
+      setModifiedFiles(prev => { const next = new Set(prev); next.delete(path); return next; });
     } catch (err) {
       console.error('Failed to save file:', err);
     }
@@ -629,6 +761,19 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [activeMenu]);
 
+  // Warn before closing the window/tab when there are unsaved changes
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      if (modifiedFiles.size > 0) {
+        e.preventDefault();
+        e.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
+        return e.returnValue;
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [modifiedFiles]);
+
   // Terminal resize
   const handlePanelResizeStart = useCallback((e) => {
     e.preventDefault();
@@ -721,7 +866,7 @@ function App() {
   }, []);
 
   // Handle open folder (path/name from Electron; or null, name, handle from web picker)
-  const handleOpenFolder = useCallback((folderPath, folderName, handle = null) => {
+  const handleOpenFolder = useCallback((folderPath, folderName, handle = null, treeData = null) => {
     setOpenFiles([]);
     setActiveFile(null);
     setFileContents({});
@@ -730,8 +875,20 @@ function App() {
     setProjectName(folderName || 'Nebula');
     if (folderPath) setProjectRoot(folderPath);
     setWebFolderHandle(handle || null);
-    if (handle) {
+    if (handle && treeData) {
+      setTree(treeData);
+      try {
+        const keyPath = (folderPath || '').trim();
+        sessionStorage.setItem('nebula_tree_cache', JSON.stringify({ path: keyPath, tree: treeData }));
+      } catch (_) {}
+    } else if (handle) {
       listDirFromHandle(handle, '', showHiddenFiles).then(setTree).catch(console.error);
+    } else if (treeData) {
+      setTree(treeData);
+      try {
+        const keyPath = (folderPath || '').trim();
+        sessionStorage.setItem('nebula_tree_cache', JSON.stringify({ path: keyPath, tree: treeData }));
+      } catch (_) {}
     } else {
       loadTree();
     }
@@ -1109,11 +1266,57 @@ function App() {
         visible={showOpenFolder}
         onClose={() => setShowOpenFolder(false)}
         onOpen={handleOpenFolder}
+        showHiddenFiles={showHiddenFiles}
       />
 
       {/* Mobile Companion popup (title bar icon) */}
       {showMobileCompanionPopup && (
         <MobileCompanionPopup onClose={() => setShowMobileCompanionPopup(false)} />
+      )}
+
+      {/* Unsaved changes dialog */}
+      {unsavedDialog && (
+        <div className="command-palette-overlay" onClick={unsavedDialog.onCancel}>
+          <div
+            className="about-dialog"
+            style={{ maxWidth: 420, padding: '28px 32px' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ fontSize: 28, marginBottom: 12 }}>⚠️</div>
+            <h2 style={{ marginBottom: 8, fontSize: 16 }}>Unsaved Changes</h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 24 }}>
+              Do you want to save the changes you made to{' '}
+              <strong style={{ color: 'var(--text)' }}>
+                {unsavedDialog.file.split('/').pop()}
+              </strong>
+              ?<br />
+              <span style={{ fontSize: 11, opacity: 0.6 }}>Your changes will be lost if you don't save them.</span>
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                className="about-close"
+                style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)', minWidth: 80 }}
+                onClick={unsavedDialog.onCancel}
+              >
+                Cancel
+              </button>
+              <button
+                className="about-close"
+                style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text)', minWidth: 80 }}
+                onClick={unsavedDialog.onDiscard}
+              >
+                Don't Save
+              </button>
+              <button
+                className="about-close"
+                style={{ background: 'var(--accent)', border: 'none', color: '#fff', minWidth: 80 }}
+                onClick={unsavedDialog.onSave}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       </div>
     </AuthGate>

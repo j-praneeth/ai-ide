@@ -43,7 +43,12 @@
       "PowerShell(Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd E:\\\\ai-ide\\\\frontend; npm start' -WindowStyle Normal)",
       "PowerShell(Get-ChildItem \"E:\\\\ai-ide\" | Where-Object { $_.Name -ne 'node_modules' } | Format-Table Name, PSIsContainer -AutoSize)",
       "Bash(npm run *)",
-      "Bash(Select-Object Name, PSIsContainer)"
+      "Bash(Select-Object Name, PSIsContainer)",
+      "Bash(git config *)",
+      "Bash(cat ~/.zshrc 2>/dev/null | head -80)",
+      "Bash(git count-objects *)",
+      "Bash(python3 -c \"import json,sys; p=json.load\\(sys.stdin\\); print\\('Scripts:', list\\(p.get\\('scripts',{}\\).keys\\(\\)\\)\\); print\\('Deps count:', len\\(p.get\\('dependencies',{}\\)\\) + len\\(p.get\\('devDependencies',{}\\)\\)\\)\")",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

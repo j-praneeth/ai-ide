@@ -14,8 +14,10 @@ const DEFAULT_API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000'
 function getApiUrl() {
   if (typeof window !== 'undefined') {
     const configUrl = window.NEBULA_CONFIG?.apiUrl;
-    if (configUrl) return configUrl;
-    if (window.NEBULA_API_URL) return window.NEBULA_API_URL;
+    if (configUrl && String(configUrl).trim()) return String(configUrl).trim();
+    if (window.NEBULA_API_URL && String(window.NEBULA_API_URL).trim()) {
+      return String(window.NEBULA_API_URL).trim();
+    }
   }
   if (process.env.REACT_APP_API_URL) return process.env.REACT_APP_API_URL;
   return DEFAULT_API_URL;
@@ -24,8 +26,10 @@ function getApiUrl() {
 function getAuthUrl() {
   if (typeof window !== 'undefined') {
     const configUrl = window.NEBULA_CONFIG?.authUrl;
-    if (configUrl) return configUrl;
-    if (window.NEBULA_AUTH_URL) return window.NEBULA_AUTH_URL;
+    if (configUrl && String(configUrl).trim()) return String(configUrl).trim();
+    if (window.NEBULA_AUTH_URL && String(window.NEBULA_AUTH_URL).trim()) {
+      return String(window.NEBULA_AUTH_URL).trim();
+    }
   }
   if (process.env.REACT_APP_AUTH_URL) return process.env.REACT_APP_AUTH_URL;
   return getApiUrl();

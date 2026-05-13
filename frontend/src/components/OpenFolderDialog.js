@@ -3,7 +3,7 @@ import axios from 'axios';
 import { API_URL as API } from '../config';
 import { IS_ELECTRON } from '../config';
 
-export default function OpenFolderDialog({ visible, onClose, onOpen }) {
+export default function OpenFolderDialog({ visible, onClose, onOpen, showHiddenFiles = true }) {
   const [unsupported, setUnsupported] = useState(false);
 
   useEffect(() => {
@@ -18,11 +18,17 @@ export default function OpenFolderDialog({ visible, onClose, onOpen }) {
         if (IS_ELECTRON && window.electronAPI?.openFolderDialog) {
           const folderPath = await window.electronAPI.openFolderDialog();
           if (folderPath) {
-            const res = await axios.post(`${API}/files/open-folder`, null, {
-              params: { path: folderPath },
+            const postOpen = axios.post(`${API}/files/open-folder`, null, {
+              params: { path: folderPath, show_hidden: showHiddenFiles },
             });
+            const nativeTree = window.electronAPI?.listProjectDir
+              ? window.electronAPI.listProjectDir('', showHiddenFiles).catch(() => null)
+              : Promise.resolve(null);
+            const [ipcTree, res] = await Promise.all([nativeTree, postOpen]);
             if (!res.data.error) {
-              onOpen(res.data.path, res.data.name, null);
+              const apiTree = Array.isArray(res.data.tree) ? res.data.tree : [];
+              const tree = Array.isArray(ipcTree) && ipcTree.length > 0 ? ipcTree : apiTree;
+              onOpen(res.data.path, res.data.name, null, tree);
             }
           }
           onClose();
@@ -63,10 +69,10 @@ export default function OpenFolderDialog({ visible, onClose, onOpen }) {
           // Backend already set PROJECT_ROOT; call open-folder to confirm name
           try {
             const res = await axios.post(`${API}/files/open-folder`, null, {
-              params: { path: resolvedPath },
+              params: { path: resolvedPath, show_hidden: showHiddenFiles },
             });
             if (!res.data.error) {
-              onOpen(res.data.path, res.data.name, handle);
+              onOpen(res.data.path, res.data.name, handle, res.data.tree);
               onClose();
               return;
             }
@@ -83,7 +89,7 @@ export default function OpenFolderDialog({ visible, onClose, onOpen }) {
     };
 
     run();
-  }, [visible, onClose, onOpen]);
+  }, [visible, onClose, onOpen, showHiddenFiles]);
 
   if (!visible) return null;
 
