@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import re as _re
+import fnmatch
 import time as _time
 from typing import Optional, Tuple, Any, List
 import subprocess
@@ -549,6 +550,99 @@ def move_path(path: str, dest: str):
         return {"status": "moved", "path": str(rel)}
     except Exception as e:
         return {"error": str(e)}
+
+
+# ── .gitignore parsing ───────────────────────────────────────────────────────
+# Cache: root_str → (mtime, compiled_rules)
+_gitignore_cache: dict = {}
+
+
+def _compile_gitignore(root: Path) -> list:
+    """Parse .gitignore and return compiled rule list. Results are mtime-cached."""
+    cache_key = str(root)
+    gitignore_path = root / ".gitignore"
+
+    if not gitignore_path.exists():
+        _gitignore_cache[cache_key] = (0.0, [])
+        return []
+
+    try:
+        mtime = gitignore_path.stat().st_mtime
+    except OSError:
+        return []
+
+    cached = _gitignore_cache.get(cache_key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+
+    rules = []
+    try:
+        for line in gitignore_path.read_text(encoding='utf-8', errors='ignore').splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            negated = line.startswith('!')
+            p = line[1:] if negated else line
+            dir_only = p.endswith('/')
+            if dir_only:
+                p = p[:-1]
+            anchored = p.startswith('/') or ('/' in p and not p.startswith('**'))
+            if p.startswith('/'):
+                p = p[1:]
+            if p:
+                rules.append((p, negated, dir_only, anchored))
+    except Exception:
+        pass
+
+    _gitignore_cache[cache_key] = (mtime, rules)
+    return rules
+
+
+def _path_is_ignored(rel_path: str, rules: list) -> bool:
+    """Return True if rel_path (forward-slash separated) matches any gitignore rule."""
+    rel_path = rel_path.replace('\\', '/')
+    parts = rel_path.split('/')
+    name = parts[-1]
+    ignored = False
+
+    for pattern, negated, _dir_only, anchored in rules:
+        matched = False
+        if anchored:
+            matched = (
+                fnmatch.fnmatch(rel_path, pattern) or
+                fnmatch.fnmatch(rel_path, f'**/{pattern}')
+            )
+        else:
+            # Match against filename or any ancestor component
+            if fnmatch.fnmatch(name, pattern):
+                matched = True
+            elif '/' in pattern:
+                matched = fnmatch.fnmatch(rel_path, pattern)
+            else:
+                matched = any(fnmatch.fnmatch(part, pattern) for part in parts)
+        if matched:
+            ignored = not negated
+
+    return ignored
+
+
+class GitIgnoreBody(BaseModel):
+    paths: List[str] = []
+
+
+@router.post("/git-check-ignore")
+def git_check_ignore(body: GitIgnoreBody):
+    """Return which paths are matched by the workspace .gitignore."""
+    root, err = _require_project_root()
+    if err:
+        return {"ignored": []}
+
+    rules = _compile_gitignore(root)
+    if not rules:
+        return {"ignored": []}
+
+    ignored = [p for p in body.paths[:500] if _path_is_ignored(p, rules)]
+    return {"ignored": ignored}
 
 
 _SEARCH_SKIP = {

@@ -80,6 +80,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('fs:read-project-file', relPath == null ? '' : String(relPath)),
 
   openNewWindow: () => ipcRenderer.invoke('app:new-window'),
+  openFolderInNewWindow: (folderPath) => ipcRenderer.invoke('app:open-in-new-window', folderPath),
+
+  /** The folder path this window was spawned to open (passed via --nebula-open-folder). */
+  getStartupFolder: () => ipcRenderer.invoke('app:get-startup-folder'),
 
   readPersistedAuth: () => ipcRenderer.invoke('auth:read-disk'),
   writePersistedAuth: (payload) => ipcRenderer.invoke('auth:write-disk', payload || {}),

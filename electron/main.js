@@ -33,6 +33,13 @@ const SCROLLBACK_MAX_BYTES = 512 * 1024; // 512 KB per session
 /** Set when this process was spawned as an additional IDE window — no auto-open last folder. */
 const NEBULA_FRESH_WINDOW = process.argv.includes('--nebula-fresh-window');
 
+/** Folder path passed via --nebula-open-folder=<path> when spawning a new window for a different project. */
+const NEBULA_OPEN_FOLDER = (() => {
+  const arg = process.argv.find(a => a.startsWith('--nebula-open-folder='));
+  if (!arg) return null;
+  try { return decodeURIComponent(arg.slice('--nebula-open-folder='.length)); } catch (_) { return null; }
+})();
+
 // ─── Deep-link / SSO callback handling ──────────────────────────
 const APP_PROTOCOL = 'nebula';
 let pendingAuthCallbackUrl = null;
@@ -161,15 +168,17 @@ function killAllIntegratedTerminals() {
   integratedTermSessions.clear();
 }
 
-/** Spawn another app process so the user can open a different project in a separate window. */
-function spawnNewAppInstance() {
+/** Spawn another app process so the user can open a different project in a separate window.
+ *  Pass folderPath to auto-open a specific project in the new window. */
+function spawnNewAppInstance(folderPath) {
   try {
     const exe = process.execPath;
+    const folderArg = folderPath ? `--nebula-open-folder=${encodeURIComponent(folderPath)}` : '--nebula-fresh-window';
     if (process.platform === 'darwin' && app.isPackaged) {
       const idx = exe.indexOf('.app/');
       if (idx >= 0) {
         const bundle = exe.slice(0, idx + 4);
-        const child = spawn('open', ['-n', '-a', bundle, '--args', '--nebula-fresh-window'], {
+        const child = spawn('open', ['-n', '-a', bundle, '--args', folderArg], {
           detached: true,
           stdio: 'ignore',
         });
@@ -177,7 +186,7 @@ function spawnNewAppInstance() {
         return { ok: true };
       }
     }
-    const child = spawn(exe, ['--nebula-fresh-window'], {
+    const child = spawn(exe, [folderArg], {
       detached: true,
       stdio: 'ignore',
       windowsHide: false,
@@ -1661,6 +1670,20 @@ ipcMain.handle('fs:list-project-dir', async (_event, payload) => {
 
 ipcMain.handle('app:new-window', () => spawnNewAppInstance());
 
+ipcMain.handle('app:get-startup-folder', () => NEBULA_OPEN_FOLDER || null);
+
+/** Open a folder in a brand-new window and close this window after the new one has time to launch. */
+ipcMain.handle('app:open-in-new-window', (_event, folderPath) => {
+  const result = spawnNewAppInstance(folderPath);
+  if (result.ok) {
+    // Give the new process ~1.5s to start before closing this window.
+    setTimeout(() => {
+      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close(); } catch (_) {}
+    }, 1500);
+  }
+  return result;
+});
+
 ipcMain.handle('term:start', async (event, payload) => {
   try {
     const sessionId = (payload && payload.sessionId) || `iterm-${Date.now()}`;
@@ -2077,7 +2100,10 @@ app.whenReady().then(async () => {
 
     // Restore last opened folder for normal launches only (not extra windows).
     try {
-      if (!NEBULA_FRESH_WINDOW) {
+      if (NEBULA_OPEN_FOLDER) {
+        // New window was spawned to open a specific project — use that path.
+        setCurrentProjectRoot(NEBULA_OPEN_FOLDER);
+      } else if (!NEBULA_FRESH_WINDOW) {
         const s = readSessionState();
         const last = s && typeof s.lastProjectRoot === 'string' ? s.lastProjectRoot.trim() : '';
         if (last) setCurrentProjectRoot(last);

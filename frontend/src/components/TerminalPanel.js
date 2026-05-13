@@ -46,7 +46,8 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon }  from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import {
-  VscAdd, VscTrash, VscSplitHorizontal, VscClose, VscTerminal,
+  VscAdd, VscTrash, VscSplitHorizontal, VscClose, VscEllipsis,
+  VscChevronUp, VscChevronDown,
 } from 'react-icons/vsc';
 import { API_URL as API } from '../config';
 
@@ -370,7 +371,9 @@ export default function TerminalPanel({ visible, onClose, onResize, projectRoot 
   const [splitMode,    setSplitMode]    = useState(false);
   const [problems]   = useState([]);
   const [outputLogs] = useState([]);
-  const [showShellMenu, setShowShellMenu] = useState(false);
+  const [showShellMenu,    setShowShellMenu]    = useState(false);
+  const [shellMenuPos,     setShellMenuPos]     = useState({ top: 0, left: 0 });
+  const chevronBtnRef = useRef(null);
 
   const nextId     = useRef(2);
   const instances  = useRef(new Map());   // id → { term, fitAddon, ws, fitAndResize, destroyWs }
@@ -528,6 +531,26 @@ export default function TerminalPanel({ visible, onClose, onResize, projectRoot 
     return () => document.removeEventListener('mousedown', handler);
   }, [showShellMenu]);
 
+  // Compute fixed position for shell menu when it opens
+  const openShellMenu = useCallback(() => {
+    if (chevronBtnRef.current) {
+      const rect = chevronBtnRef.current.getBoundingClientRect();
+      setShellMenuPos({ top: rect.top, left: rect.left });
+    }
+    setShowShellMenu(v => !v);
+  }, []);
+
+  // Scroll hooks — must be above the early return to satisfy Rules of Hooks
+  const scrollToBottom = useCallback(() => {
+    const inst = instances.current.get(activeTermId);
+    if (inst?.term) inst.term.scrollToBottom();
+  }, [activeTermId]);
+
+  const scrollToTop = useCallback(() => {
+    const inst = instances.current.get(activeTermId);
+    if (inst?.term) inst.term.scrollToTop();
+  }, [activeTermId]);
+
   if (!visible) return null;
 
   const showingTerminals = viewTab === 'terminals';
@@ -562,63 +585,108 @@ export default function TerminalPanel({ visible, onClose, onResize, projectRoot 
 
   return (
     <div className="terminal-panel">
+      {/* ── Header ── */}
       <div className="terminal-header">
-        {/* LEFT: view-type tabs */}
+        {/* LEFT: view tabs — VS Code sentence case */}
         <div className="terminal-view-tabs">
-          <div className={`terminal-view-tab ${viewTab === 'problems' ? 'active' : ''}`}
-            onClick={() => setViewTab('problems')}>
-            PROBLEMS{problems.length > 0 && <span className="terminal-tab-badge">{problems.length}</span>}
-          </div>
-          <div className={`terminal-view-tab ${viewTab === 'output' ? 'active' : ''}`}
-            onClick={() => setViewTab('output')}>
-            OUTPUT
-          </div>
-          <div className={`terminal-view-tab ${viewTab === 'terminals' ? 'active' : ''}`}
-            onClick={() => setViewTab('terminals')}>
-            TERMINAL
-          </div>
+          {[
+            { id: 'problems',      label: 'Problems',      badge: problems.length },
+            { id: 'output',        label: 'Output' },
+            { id: 'debug-console', label: 'Debug Console' },
+            { id: 'terminals',     label: 'Terminal' },
+            { id: 'ports',         label: 'Ports' },
+          ].map(({ id, label, badge }) => (
+            <div
+              key={id}
+              className={`terminal-view-tab${viewTab === id ? ' active' : ''}`}
+              onClick={() => setViewTab(id)}
+            >
+              {label}
+              {badge > 0 && <span className="terminal-tab-badge">{badge}</span>}
+            </div>
+          ))}
         </div>
 
-        {/* RIGHT: action buttons */}
+        {/* RIGHT: VS Code action bar */}
         <div className="terminal-right-area">
-          <div className="terminal-actions">
-            <div style={{ position: 'relative', display: 'flex' }}>
-              <button type="button" className="icon-btn" title="New Terminal" onClick={() => addTerminal()}>
-                <VscAdd size={14} />
-              </button>
-              <button type="button" className="icon-btn terminal-chevron-btn"
-                title="Select Shell" onClick={() => setShowShellMenu(v => !v)}>
-                <span className="terminal-chevron">&#9662;</span>
-              </button>
-              {showShellMenu && (
-                <div className="shell-selection-menu">{shellMenuItems}</div>
-              )}
-            </div>
-            <button className="icon-btn" title={splitMode ? 'Unsplit' : 'Split Terminal'} onClick={() => {
+          {/* + ▾ new terminal / shell picker */}
+          <div className="terminal-action-group">
+            <button type="button" className="icon-btn" title="New Terminal (Ctrl+`)"
+              onClick={() => addTerminal()}>
+              <VscAdd size={14} />
+            </button>
+            <button type="button" className="icon-btn terminal-chevron-btn"
+              ref={chevronBtnRef}
+              title="Launch Profile…" onClick={openShellMenu}>
+              <span className="terminal-chevron">&#9662;</span>
+            </button>
+            {showShellMenu && (
+              <div
+                className="shell-selection-menu"
+                style={{ position: 'fixed', top: shellMenuPos.top - 4, left: shellMenuPos.left, transform: 'translateY(-100%)' }}
+              >
+                {shellMenuItems}
+              </div>
+            )}
+          </div>
+
+          <span className="terminal-action-sep" />
+
+          {/* Split */}
+          <button className="icon-btn" title={splitMode ? 'Unsplit' : 'Split Terminal'}
+            onClick={() => {
               if (splitMode) setSplitMode(false);
               else if (terminals.length >= 2) setSplitMode(true);
               else splitTerminal();
-            }}><VscSplitHorizontal size={14} /></button>
-            <button className="icon-btn" title="Kill Terminal" onClick={killActive}><VscTrash size={14} /></button>
-            <button className="icon-btn" title="Close Panel"   onClick={onClose}><VscClose size={14} /></button>
-          </div>
+            }}>
+            <VscSplitHorizontal size={13} />
+          </button>
+
+          {/* Kill */}
+          <button className="icon-btn" title="Kill Terminal" onClick={killActive}>
+            <VscTrash size={13} />
+          </button>
+
+          <span className="terminal-action-sep" />
+
+          {/* Scroll navigation */}
+          <button className="icon-btn" title="Scroll to Top" onClick={scrollToTop}>
+            <VscChevronUp size={14} />
+          </button>
+          <button className="icon-btn" title="Scroll to Bottom" onClick={scrollToBottom}>
+            <VscChevronDown size={14} />
+          </button>
+
+          <span className="terminal-action-sep" />
+
+          {/* More / Close */}
+          <button className="icon-btn" title="More Actions…">
+            <VscEllipsis size={14} />
+          </button>
+          <button className="icon-btn" title="Close Panel" onClick={onClose}>
+            <VscClose size={13} />
+          </button>
         </div>
       </div>
 
+      {/* ── Terminal view ── */}
       {showingTerminals && (
-        <div className="terminal-split-container" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-          {/* Terminal output area */}
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+          {/* xterm canvases */}
           <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minWidth: 0 }}>
             {splitMode ? (
               terminals.map((t, idx) => (
                 <React.Fragment key={t.id}>
-                  {idx > 0 && <div style={{ width: 1, background: 'var(--border)', flexShrink: 0 }} />}
+                  {idx > 0 && (
+                    <div style={{ width: 1, background: '#2d2d2d', flexShrink: 0 }} />
+                  )}
                   <div
                     className="terminal-body"
                     ref={(el) => attachRef(t.id, el)}
                     style={{
                       flex: 1, display: 'block', minWidth: 0,
-                      outline: activeTermId === t.id ? '1px solid rgba(55,148,255,0.25)' : 'none',
+                      outline: activeTermId === t.id
+                        ? '1px solid rgba(55,148,255,0.3)' : 'none',
                       outlineOffset: '-1px',
                     }}
                     onClick={() => setActiveTermId(t.id)}
@@ -637,62 +705,79 @@ export default function TerminalPanel({ visible, onClose, onResize, projectRoot 
             )}
           </div>
 
-          {/* Right sidebar — terminal instance list */}
-          <div className="terminal-sidebar">
-            {terminals.map((t) => (
-              <div
-                key={t.id}
-                className={`terminal-sidebar-item ${activeTermId === t.id ? 'active' : ''}`}
-                onClick={() => setActiveTermId(t.id)}
-              >
-                <VscTerminal className="terminal-sidebar-icon" />
-                <span className="terminal-sidebar-name">{t.name}</span>
-                <button type="button" className="terminal-sidebar-close" title="Close"
-                  onClick={(e) => closeTerminal(t.id, e)}>
-                  <VscClose size={10} />
-                </button>
-              </div>
-            ))}
-          </div>
+          {/* Instance sidebar — only shown with 2+ terminals */}
+          {terminals.length >= 2 && (
+            <div className="terminal-sidebar">
+              {terminals.map((t) => (
+                <div
+                  key={t.id}
+                  className={`terminal-sidebar-item${activeTermId === t.id ? ' active' : ''}`}
+                  onClick={() => setActiveTermId(t.id)}
+                >
+                  <span className="term-status-dot" />
+                  <span className="terminal-sidebar-name">{t.name}</span>
+                  <button
+                    type="button"
+                    className="terminal-sidebar-close"
+                    title="Remove Terminal"
+                    onClick={(e) => closeTerminal(t.id, e)}
+                  >
+                    <VscClose size={10} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
+      {/* ── Problems view ── */}
       {viewTab === 'problems' && (
         <div className="terminal-body-content">
           {problems.length === 0 ? (
             <div className="terminal-empty-message">
-              <span style={{ color: 'var(--success)', marginRight: 8 }}>&#10003;</span>
-              No problems detected in the workspace.
+              <span style={{ color: '#23d18b', fontSize: 13 }}>✓</span>
+              No problems have been detected in the workspace.
             </div>
-          ) : (
-            problems.map((p, idx) => (
-              <div key={idx} className="terminal-problem-item">
-                <span className={`problem-icon ${p.severity}`}>{p.severity === 'error' ? '✕' : '⚠'}</span>
-                <span className="problem-file">{p.file}</span>
-                <span className="problem-text">{p.message}</span>
-              </div>
-            ))
-          )}
+          ) : problems.map((p, idx) => (
+            <div key={idx} className="terminal-problem-item">
+              <span className={`problem-icon ${p.severity}`}>
+                {p.severity === 'error' ? '✕' : '⚠'}
+              </span>
+              <span className="problem-file">{p.file}</span>
+              <span className="problem-text">{p.message}</span>
+            </div>
+          ))}
         </div>
       )}
 
+      {/* ── Output view ── */}
       {viewTab === 'output' && (
         <div className="terminal-body-content">
           {outputLogs.length === 0 ? (
             <div className="terminal-empty-message">
-              No output yet. Run commands in the terminal to see output here.
+              No output yet.
             </div>
-          ) : (
-            outputLogs.map((log, idx) => (
-              <div key={idx} className="terminal-output-entry">
-                <div className="output-header">
-                  <span className="output-time">[{log.time}]</span>
-                  <span className="output-command">$ {log.command}</span>
-                </div>
-                {log.output && <pre className="output-content">{log.output}</pre>}
+          ) : outputLogs.map((log, idx) => (
+            <div key={idx} className="terminal-output-entry">
+              <div className="output-header">
+                <span className="output-time">[{log.time}]</span>
+                <span className="output-command">$ {log.command}</span>
               </div>
-            ))
-          )}
+              {log.output && <pre className="output-content">{log.output}</pre>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── Debug Console / Ports (placeholder) ── */}
+      {(viewTab === 'debug-console' || viewTab === 'ports') && (
+        <div className="terminal-body-content">
+          <div className="terminal-empty-message">
+            {viewTab === 'debug-console'
+              ? 'Start a debug session to see output here.'
+              : 'No forwarded ports.'}
+          </div>
         </div>
       )}
     </div>

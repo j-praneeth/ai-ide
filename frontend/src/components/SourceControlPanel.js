@@ -71,7 +71,7 @@ function getFileInfo(fullPath) {
 const GRAPH_COLORS = [
   '#3b82f6', // blue
   '#10b981', // green
-  '#f59e0b', // amber / yellow
+  '#e8c547', // yellow
   '#ec4899', // pink
   '#9333ea', // purple
   '#ef4444', // red
@@ -83,56 +83,74 @@ const GRAPH_COLORS = [
   '#84cc16', // lime
 ];
 
-function parseGraphLines(lines) {
-  const entries = [];
+// Extracts per-character lane info from the raw graph prefix of a git log line.
+// Each logical lane is 2 chars wide in git's output ("* ", "| ", etc.).
+function extractLanes(graphStr) {
+  const lanes = [];
+  for (let i = 0; i < graphStr.length; i++) {
+    const ch = graphStr[i];
+    if (ch === ' ') continue;
+    lanes.push({ ch, col: Math.floor(i / 2) });
+  }
+  return lanes;
+}
+
+// Parse `git log --graph --format="COMMIT:%H\x00%s\x00%an\x00%ar\x00%D"` output.
+// Returns an array of row objects — both commit rows and connector rows.
+function parseGraphOutput(raw) {
+  const rows = [];
+  const lines = raw.split('\n');
 
   for (const line of lines) {
-    const match = line.match(/^([*|/\\ ]+)\s+([a-f0-9]{7,})\s+(.+)$/);
-    if (!match) continue;
-    const [, graphSymbols, hash, rest] = match;
-    let message = rest;
-    let branchName = '';
-    let remoteRef = '';
+    if (!line.trim()) continue;
 
-    // Parse branch/remote refs from the parenthesised decoration
-    const refParenMatch = rest.match(/\(([^)]+)\)/);
-    if (refParenMatch) {
-      const refsStr = refParenMatch[1];
-      if (refsStr.includes('HEAD ->') || refsStr.includes('origin/') || refsStr.includes('upstream/')) {
-        message = rest.replace(/\s*\([^)]+\)\s*/, ' ').trim();
-        const refs = refsStr.split(/,\s*/);
-        for (const r of refs) {
-          if (r.startsWith('HEAD -> ')) {
-            branchName = r.replace(/^HEAD -> /, '').trim();
-          } else if (r.startsWith('origin/') || r.startsWith('upstream/')) {
-            remoteRef = r.trim();
+    // Git --graph prefixes every line (commit or connector) with graph chars.
+    const graphMatch = line.match(/^([*|/\\ ._\-+]+)/);
+    const graphStr = graphMatch ? graphMatch[1] : '';
+    const rest = line.slice(graphStr.length);
+    const lanes = extractLanes(graphStr);
+
+    const commitIdx = rest.indexOf('COMMIT:');
+    if (commitIdx >= 0) {
+      const data = rest.slice(commitIdx + 'COMMIT:'.length);
+      const parts = data.split('\x00');
+      const hash    = (parts[0] || '').trim();
+      const message = (parts[1] || '').trim();
+      const author  = (parts[2] || '').trim();
+      const date    = (parts[3] || '').trim();
+      const refsStr = (parts[4] || '').trim();
+
+      let branchName = '';
+      let remoteRef  = '';
+      let isHead     = false;
+
+      if (refsStr) {
+        for (const r of refsStr.split(/,\s*/)) {
+          const t = r.trim();
+          if (t.startsWith('HEAD -> ')) {
+            branchName = t.replace('HEAD -> ', '');
+            isHead = true;
+          } else if (t === 'HEAD') {
+            isHead = true;
+          } else if (t.startsWith('origin/') || t.startsWith('upstream/')) {
+            if (!remoteRef) remoteRef = t;
+          } else if (!t.startsWith('HEAD') && !isHead && !branchName && t && !t.includes('/')) {
+            branchName = t;
           }
         }
       }
-    }
 
-    // Map graph symbols to branch-lane columns.
-    // Each lane occupies 2 characters ("* ", "| ", "/ ", "\ ") so we divide
-    // the raw character index by 2 to get the logical lane number. This matches
-    // how git --graph lays out its output and gives Cursor-style per-branch colours.
-    const colInfo = [];
-    for (let i = 0; i < graphSymbols.length; i++) {
-      const char = graphSymbols[i];
-      if (char === ' ') continue;
-      colInfo.push({ char, col: Math.floor(i / 2) });
+      if (hash) {
+        rows.push({ type: 'commit', hash, message, author, date, branchName, remoteRef, isHead, lanes });
+      }
+    } else {
+      // Connector row (only graph chars — no commit data)
+      if (lanes.length > 0) {
+        rows.push({ type: 'connector', lanes });
+      }
     }
-
-    entries.push({
-      hash,
-      message: message.trim(),
-      isHead: entries.length === 0,
-      branchName,
-      remoteRef,
-      graphSymbols: graphSymbols.trimEnd(),
-      colInfo,
-    });
   }
-  return entries;
+  return rows;
 }
 
 // Inline diff viewer for a file
@@ -177,80 +195,100 @@ function DiffViewer({ path, isStaged, onClose }) {
   );
 }
 
-function GitGraphSVG({ colInfo, isLast, nextColInfo }) {
-  const colWidth = 14;
-  const height = 24;
-  const dotRadius = 3;
-  const strokeWidth = 2;
-  
-  const maxCol = Math.max(
-    ...colInfo.map(c => c.col),
-    ...(nextColInfo ? nextColInfo.map(c => c.col) : [])
-  );
-  const width = (maxCol + 1) * colWidth + 8;
+// Renders one row's SVG lane segment.
+// `row`      — the current row object (commit or connector)
+// `prevRow`  — the row above (for top connections)
+// `nextRow`  — the row below (for bottom connections)
+// `isHead`   — true for the HEAD commit (draws open ring dot)
+function GitGraphSVG({ row, prevRow, nextRow, isHead }) {
+  const COL_W     = 16;   // px per lane column
+  const ROW_H     = row.type === 'connector' ? 10 : 24;
+  const STROKE    = 1.5;
+  const DOT_R     = 3.5;
+  const OFFSET    = 8;    // left margin
+
+  const allCols = [
+    ...row.lanes.map(l => l.col),
+    ...(prevRow?.lanes || []).map(l => l.col),
+    ...(nextRow?.lanes || []).map(l => l.col),
+  ];
+  const maxCol = allCols.length ? Math.max(...allCols) : 0;
+  const svgW   = (maxCol + 1) * COL_W + OFFSET;
+  const midY   = ROW_H / 2;
+
+  const elements = [];
+
+  // Draw connections: for every lane in this row, draw top + bottom segments
+  for (const lane of row.lanes) {
+    const color = GRAPH_COLORS[lane.col % GRAPH_COLORS.length];
+    const x     = OFFSET + lane.col * COL_W;
+
+    // Top connection: draw from top-edge to midY
+    const hasPrevSame = prevRow?.lanes.some(l => l.col === lane.col);
+    const hasPrevLeft = prevRow?.lanes.some(l => l.col === lane.col - 1 && (l.ch === '/' || l.ch === '*'));
+    const hasPrevRight = prevRow?.lanes.some(l => l.col === lane.col + 1 && (l.ch === '\\' || l.ch === '*'));
+
+    if (hasPrevSame) {
+      elements.push(<line key={`t-s-${lane.col}`} x1={x} y1={0} x2={x} y2={midY} stroke={color} strokeWidth={STROKE} strokeLinecap="round" />);
+    }
+    if (hasPrevLeft) {
+      const px = OFFSET + (lane.col - 1) * COL_W;
+      elements.push(<line key={`t-l-${lane.col}`} x1={px} y1={0} x2={x} y2={midY} stroke={color} strokeWidth={STROKE} strokeLinecap="round" />);
+    }
+    if (hasPrevRight) {
+      const px = OFFSET + (lane.col + 1) * COL_W;
+      elements.push(<line key={`t-r-${lane.col}`} x1={px} y1={0} x2={x} y2={midY} stroke={color} strokeWidth={STROKE} strokeLinecap="round" />);
+    }
+    // If this row has no known connection above but is a | or * lane, draw from top
+    if (!hasPrevSame && !hasPrevLeft && !hasPrevRight && (lane.ch === '|' || lane.ch === '*')) {
+      elements.push(<line key={`t-d-${lane.col}`} x1={x} y1={0} x2={x} y2={midY} stroke={color} strokeWidth={STROKE} strokeLinecap="round" />);
+    }
+
+    // Bottom connection: draw from midY to bottom-edge
+    const hasNextSame  = nextRow?.lanes.some(l => l.col === lane.col);
+    const hasNextRight = nextRow?.lanes.some(l => l.col === lane.col + 1 && (l.ch === '/' || l.ch === '*'));
+    const hasNextLeft  = nextRow?.lanes.some(l => l.col === lane.col - 1 && (l.ch === '\\' || l.ch === '*'));
+
+    if (hasNextSame) {
+      elements.push(<line key={`b-s-${lane.col}`} x1={x} y1={midY} x2={x} y2={ROW_H} stroke={color} strokeWidth={STROKE} strokeLinecap="round" />);
+    }
+    if (hasNextRight) {
+      const nx = OFFSET + (lane.col + 1) * COL_W;
+      elements.push(<line key={`b-r-${lane.col}`} x1={x} y1={midY} x2={nx} y2={ROW_H} stroke={color} strokeWidth={STROKE} strokeLinecap="round" />);
+    }
+    if (hasNextLeft) {
+      const nx = OFFSET + (lane.col - 1) * COL_W;
+      elements.push(<line key={`b-l-${lane.col}`} x1={x} y1={midY} x2={nx} y2={ROW_H} stroke={color} strokeWidth={STROKE} strokeLinecap="round" />);
+    }
+    if (!hasNextSame && !hasNextRight && !hasNextLeft && lane.ch === '|') {
+      elements.push(<line key={`b-d-${lane.col}`} x1={x} y1={midY} x2={x} y2={ROW_H} stroke={color} strokeWidth={STROKE} strokeLinecap="round" />);
+    }
+
+    // Commit dot
+    if (lane.ch === '*') {
+      if (isHead) {
+        // HEAD: open ring with colored stroke
+        elements.push(
+          <circle key={`dot-outer-${lane.col}`} cx={x} cy={midY} r={DOT_R} fill="#1e1e1e" stroke={color} strokeWidth={1.8} />
+        );
+        elements.push(
+          <circle key={`dot-inner-${lane.col}`} cx={x} cy={midY} r={DOT_R - 2} fill={color} />
+        );
+      } else {
+        // Normal: solid filled dot
+        elements.push(
+          <circle key={`dot-${lane.col}`} cx={x} cy={midY} r={DOT_R} fill={color} />
+        );
+      }
+    }
+  }
 
   return (
-    <svg width={width} height={height} className="scm-graph-svg" style={{ overflow: 'visible', flexShrink: 0 }}>
-      {colInfo.map((c, i) => {
-        const color = GRAPH_COLORS[c.col % GRAPH_COLORS.length];
-        const x = c.col * colWidth + 10;
-        const centerY = height / 2;
-
-        const elements = [];
-
-        // 1. Connection from top
-        elements.push(
-          <line key={`top-${i}`} x1={x} y1={0} x2={x} y2={centerY} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
-        );
-
-        // 2. Connection to next row
-        if (!isLast && nextColInfo) {
-          const nextSame = nextColInfo.find(nc => nc.col === c.col);
-          const nextLeft = nextColInfo.find(nc => nc.col === c.col - 1 && (nc.char === '/' || nc.char === '*'));
-          const nextRight = nextColInfo.find(nc => nc.col === c.col + 1 && (nc.char === '\\' || nc.char === '*'));
-
-          if (nextSame) {
-            elements.push(
-              <line key={`bot-s-${i}`} x1={x} y1={centerY} x2={x} y2={height} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
-            );
-          }
-          if (nextLeft) {
-            const tx = (c.col - 1) * colWidth + 10;
-            elements.push(
-              <path key={`bot-l-${i}`} d={`M ${x} ${centerY} L ${tx} ${height}`} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
-            );
-          }
-          if (nextRight) {
-            const tx = (c.col + 1) * colWidth + 10;
-            elements.push(
-              <path key={`bot-r-${i}`} d={`M ${x} ${centerY} L ${tx} ${height}`} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
-            );
-          }
-        } else if (!isLast) {
-          elements.push(
-            <line key={`bot-d-${i}`} x1={x} y1={centerY} x2={x} y2={height} stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" />
-          );
-        }
-
-        // 3. Commit dot
-        if (c.char === '*') {
-          elements.push(
-            <g key={`dot-g-${i}`}>
-              <circle 
-                cx={x} cy={centerY} r={dotRadius} 
-                fill={color} 
-              />
-              <circle 
-                cx={x} cy={centerY} r={dotRadius / 1.8} 
-                fill="white" 
-                opacity="0.8"
-              />
-            </g>
-          );
-        }
-
-        return <React.Fragment key={i}>{elements}</React.Fragment>;
-      })}
+    <svg
+      width={svgW} height={ROW_H}
+      style={{ flexShrink: 0, overflow: 'visible', display: 'block' }}
+    >
+      {elements}
     </svg>
   );
 }
@@ -265,8 +303,7 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   const [committing, setCommitting] = useState(false);
   const [sectionsCollapsed, setSectionsCollapsed] = useState({ changesSection: false, agentReview: true, staged: false, changes: false, graph: false });
   const [viewingDiff, setViewingDiff] = useState(null); // { path, isStaged }
-  const [graphLines, setGraphLines] = useState([]);
-  const [graphEntries, setGraphEntries] = useState([]); // parsed { message, isHead, branchName, remoteRef }
+  const [graphRows, setGraphRows] = useState([]); // all parsed rows (commit + connector)
   const [selectedCommit, setSelectedCommit] = useState(null);
   const [commitDetails, setCommitDetails] = useState(null);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -282,14 +319,14 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
     if (!hasWorkspace) return;
     setGraphLoading(true);
     try {
-      const res = await runCommand('git log --oneline --graph --decorate -30');
-      const lines = (res.output || '').trim().split('\n').filter(Boolean);
-      setGraphLines(lines);
-      const entries = parseGraphLines(lines);
-      setGraphEntries(entries);
+      // %x00 as field separator avoids conflicts with | in commit messages.
+      const res = await runCommand(
+        'git log --graph --format="COMMIT:%H%x00%s%x00%an%x00%ar%x00%D" -50'
+      );
+      const raw = (res.output || '').trim();
+      setGraphRows(parseGraphOutput(raw));
     } catch (_) {
-      setGraphLines([]);
-      setGraphEntries([]);
+      setGraphRows([]);
     } finally {
       setGraphLoading(false);
     }
@@ -342,10 +379,10 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
 
   useEffect(() => {
     if (!hasWorkspace) return;
-    if (hasRepo && sectionsCollapsed.graph === false && graphLines.length === 0 && !graphLoading) {
+    if (hasRepo && sectionsCollapsed.graph === false && graphRows.length === 0 && !graphLoading) {
       fetchGraph();
     }
-  }, [hasWorkspace, hasRepo, sectionsCollapsed.graph, graphLines.length, graphLoading, fetchGraph]);
+  }, [hasWorkspace, hasRepo, sectionsCollapsed.graph, graphRows.length, graphLoading, fetchGraph]);
 
   useEffect(() => {
     if (!hasWorkspace || (!statusOutput && error)) return;
@@ -690,76 +727,101 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
           {/* Graph section */}
           <div className="scm-graph-section-wrap" style={{ height: sectionsCollapsed.graph ? 'auto' : panelHeights.graph }}>
             <div className="scm-section scm-section-graph">
-              <div className="scm-section-header" onClick={() => { toggleSection('graph'); if (!sectionsCollapsed.graph && graphLines.length === 0) fetchGraph(); }}>
+              <div className="scm-section-header" onClick={() => { toggleSection('graph'); if (!sectionsCollapsed.graph && graphRows.length === 0) fetchGraph(); }}>
                 <span className="scm-section-toggle">
                   {sectionsCollapsed.graph ? <VscChevronRight size={14} /> : <VscChevronDown size={14} />}
                 </span>
-                <span className="scm-section-title">Graph</span>
+                <span className="scm-section-title">GRAPH</span>
                 <div className="scm-graph-toolbar">
-                  <span className="scm-graph-toolbar-auto">Auto</span>
-                  <button className="scm-icon-btn" title="Push" type="button" onClick={handlePush}><VscArrowUp size={14} /></button>
-                  <button className="scm-icon-btn" title="Fetch" type="button" onClick={handleFetch}><VscTarget size={14} /></button>
-                  <button className="scm-icon-btn" title="Pull" type="button" onClick={handlePull}><VscArrowDown size={14} /></button>
+                  <span className="scm-graph-toolbar-auto">
+                    <VscGitMerge size={11} style={{ marginRight: 3 }} /> Auto
+                  </span>
+                  <button className="scm-icon-btn" title="Push" type="button" onClick={(e) => { e.stopPropagation(); handlePush(); }}><VscArrowUp size={13} /></button>
+                  <button className="scm-icon-btn" title="Fetch" type="button" onClick={(e) => { e.stopPropagation(); handleFetch(); }}><VscTarget size={13} /></button>
+                  <button className="scm-icon-btn" title="Pull" type="button" onClick={(e) => { e.stopPropagation(); handlePull(); }}><VscArrowDown size={13} /></button>
+                  <button className="scm-icon-btn" title="Refresh Graph" type="button" onClick={(e) => { e.stopPropagation(); fetchGraph(); }}><VscRefresh size={13} /></button>
                 </div>
               </div>
               {!sectionsCollapsed.graph && (
                 <div className="scm-graph-container">
                   {graphLoading ? (
-                    <div className="scm-graph-loading">Loading...</div>
-                  ) : graphEntries.length > 0 ? (
+                    <div className="scm-graph-loading">Loading graph…</div>
+                  ) : graphRows.length > 0 ? (
                     <div className="scm-graph-list">
-                      {graphEntries.map((entry, i) => (
-                        <React.Fragment key={`${entry.hash}-${i}`}>
-                          <div
-                            className={`scm-graph-row ${selectedCommit === entry.hash ? 'selected' : ''}`}
-                            onClick={() => handleCommitClick(entry.hash)}
-                          >
-                            <GitGraphSVG
-                              colInfo={entry.colInfo}
-                              isLast={i === graphEntries.length - 1}
-                              nextColInfo={graphEntries[i + 1]?.colInfo}
-                            />
-                            <span className="scm-graph-commit-msg">{entry.message}</span>
-                            <div className="scm-graph-pills">
-                              {entry.branchName && (
-                                <span className="scm-graph-pill branch">
-                                  <VscGitMerge size={10} />
-                                  {entry.branchName}
-                                </span>
-                              )}
-                              {entry.remoteRef && (
-                                <span className="scm-graph-pill remote">
-                                  <VscCloud size={10} />
-                                  {entry.remoteRef}
-                                </span>
-                              )}
+                      {graphRows.map((row, i) => {
+                        if (row.type === 'connector') {
+                          return (
+                            <div key={`c-${i}`} className="scm-graph-connector-row">
+                              <GitGraphSVG row={row} prevRow={graphRows[i - 1]} nextRow={graphRows[i + 1]} isHead={false} />
                             </div>
-                          </div>
-                          {selectedCommit === entry.hash && commitDetails && (
-                            <div className="scm-commit-details">
-                              <div className="scm-commit-details-header">
-                                <strong>{commitDetails.author}</strong>
-                                <span className="scm-commit-details-date">{commitDetails.date}</span>
-                              </div>
-                              <div className="scm-commit-details-body">
-                                {commitDetails.subject}
-                                {commitDetails.body && <div className="scm-commit-details-full">{commitDetails.body}</div>}
-                              </div>
-                              <div className="scm-commit-details-files">
-                                {commitDetails.files?.map(file => (
-                                  <div key={file.path} className="scm-commit-details-file">
-                                    <span className={`scm-status-icon ${file.status}`}>{file.status}</span>
-                                    <span className="scm-file-path">{file.path}</span>
+                          );
+                        }
+                        // Commit row
+                        const isSelected = selectedCommit === row.hash;
+                        const isFirstCommit = i === 0;
+                        return (
+                          <React.Fragment key={`${row.hash}-${i}`}>
+                            <div
+                              className={`scm-graph-row${isSelected ? ' selected' : ''}`}
+                              onClick={() => handleCommitClick(row.hash)}
+                              title={`${row.hash} · ${row.author}`}
+                            >
+                              <GitGraphSVG
+                                row={row}
+                                prevRow={graphRows[i - 1]}
+                                nextRow={graphRows[i + 1]}
+                                isHead={isFirstCommit}
+                              />
+                              <div className="scm-graph-row-content">
+                                <div className="scm-graph-row-top">
+                                  <span className="scm-graph-commit-msg">{row.message}</span>
+                                  <div className="scm-graph-pills">
+                                    {row.branchName && (
+                                      <span className="scm-graph-pill branch">
+                                        <VscGitMerge size={10} />
+                                        {row.branchName}
+                                      </span>
+                                    )}
+                                    {row.remoteRef && (
+                                      <span className="scm-graph-pill remote">
+                                        <VscCloud size={10} />
+                                      </span>
+                                    )}
                                   </div>
-                                ))}
+                                </div>
+                                <div className="scm-graph-row-bottom">
+                                  <span className="scm-graph-author">{row.author}</span>
+                                  <span className="scm-graph-date">{row.date}</span>
+                                </div>
                               </div>
                             </div>
-                          )}
-                        </React.Fragment>
-                      ))}
+                            {isSelected && commitDetails && (
+                              <div className="scm-commit-details">
+                                <div className="scm-commit-details-header">
+                                  <span className="scm-commit-details-hash">{commitDetails.hash?.slice(0, 7)}</span>
+                                  <strong className="scm-commit-details-author">{commitDetails.author}</strong>
+                                  <span className="scm-commit-details-date">{commitDetails.date}</span>
+                                </div>
+                                <div className="scm-commit-details-body">{commitDetails.subject}</div>
+                                {commitDetails.body && (
+                                  <div className="scm-commit-details-full">{commitDetails.body}</div>
+                                )}
+                                <div className="scm-commit-details-files">
+                                  {commitDetails.files?.map((file, fi) => (
+                                    <div key={`${file.path}-${fi}`} className="scm-commit-details-file">
+                                      <span className={`scm-status-icon ${file.status}`}>{file.status}</span>
+                                      <span className="scm-file-path">{file.path}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
                     </div>
                   ) : (
-                    <div className="scm-no-changes">No commits</div>
+                    <div className="scm-no-changes">No commits found</div>
                   )}
                 </div>
               )}

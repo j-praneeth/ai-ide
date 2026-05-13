@@ -3,6 +3,53 @@ import axios from 'axios';
 const TOKEN_KEY = 'nebula_auth_token';
 const USER_KEY = 'nebula_auth_user';
 
+// ─── Apply token immediately at module load so every axios request
+//     made during app startup already has the Authorization header. ──────────
+(function applyOnLoad() {
+  try {
+    const token = localStorage.getItem(TOKEN_KEY) || '';
+    if (token) {
+      axios.defaults.headers.common.Authorization = `Bearer ${token}`;
+    }
+  } catch (_) {}
+})();
+
+// ─── Global 401 interceptor ──────────────────────────────────────────────────
+// Swallows 401 errors when the user has no token (not yet logged in — backend
+// requests fire before auth completes on startup). If a token IS present and
+// we still get 401, the token has expired → force re-login.
+let _interceptorId = null;
+function _ensureInterceptor() {
+  if (_interceptorId !== null) return;
+  _interceptorId = axios.interceptors.response.use(
+    res => res,
+    err => {
+      if (err?.response?.status === 401) {
+        try {
+          const token = localStorage.getItem(TOKEN_KEY) || '';
+          if (token) {
+            // Token exists but server rejected it — clear it and reload to login.
+            localStorage.removeItem(TOKEN_KEY);
+            localStorage.removeItem(USER_KEY);
+            delete axios.defaults.headers.common.Authorization;
+            // Only force reload if we are not already on the login page.
+            if (!window.location.search.includes('login=true')) {
+              window.location.search = '?login=true';
+            }
+          }
+          // No token → backend requires auth but we haven't logged in yet.
+          // Return an empty resolved response so callers don't throw.
+          return Promise.resolve({ data: {}, status: 401, _silenced401: true });
+        } catch (_) {
+          return Promise.resolve({ data: {}, status: 401, _silenced401: true });
+        }
+      }
+      return Promise.reject(err);
+    }
+  );
+}
+_ensureInterceptor();
+
 export function getAuthToken() {
   try {
     return localStorage.getItem(TOKEN_KEY) || '';

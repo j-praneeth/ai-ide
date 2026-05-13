@@ -123,6 +123,7 @@ function App() {
   /** Bump when switching workspaces so terminal / local UI fully remounts. */
   const [workspaceKey, setWorkspaceKey] = useState(0);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [startupFolderName, setStartupFolderName] = useState('');
   const workspaceCtxRef = useRef({ projectRoot: '', webFolderHandle: null });
   const [sidebarWidth, setSidebarWidth] = useState(270);
   const sidebarResizingRef = useRef(false);
@@ -225,11 +226,25 @@ function App() {
     const MAX_ATTEMPTS = 30; // ~30s total with backoff
     const cleanupFns = [];
 
+    // Detect if this window was spawned to open a specific folder (show loading until ready).
+    if (window.electronAPI?.getStartupFolder) {
+      window.electronAPI.getStartupFolder().then(startupPath => {
+        if (startupPath) {
+          const name = startupPath.split(/[\\/]/).filter(Boolean).pop() || startupPath;
+          setStartupFolderName(name);
+        } else {
+          // Not a folder-open window — hide loading immediately.
+          setWorkspaceLoading(false);
+        }
+      }).catch(() => setWorkspaceLoading(false));
+    }
+
     const loadWorkspace = () => {
       loadTree().catch(() => {}); // error already logged inside loadTree
       axios.get(`${API}/files/workspace`).then(res => {
         if (res.data.name) setProjectName(res.data.name);
         if (res.data.path) setProjectRoot(res.data.path);
+        setWorkspaceLoading(false);
       }).catch(() => {});
     };
 
@@ -241,7 +256,8 @@ function App() {
           if (!active) return;
           if (res.data.name) setProjectName(res.data.name);
           if (res.data.path) setProjectRoot(res.data.path);
-        }).catch(() => {});
+          setWorkspaceLoading(false);
+        }).catch(() => { setWorkspaceLoading(false); });
       }).catch(() => {
         // Failed — retry with exponential backoff (200ms, 400ms, 800ms, ... up to ~3s)
         if (!active) return;
@@ -962,6 +978,20 @@ function App() {
     const { projectRoot: prevRoot, webFolderHandle: prevHandle } = workspaceCtxRef.current;
     const hadWorkspace = !!(prevRoot || prevHandle);
     const openingSomething = !!(folderPath || handle);
+
+    // In Electron: if a workspace is already open, spawn the new folder in a fresh window
+    // and show a loading screen — then close this window. This matches VS Code's behavior.
+    if (hadWorkspace && openingSomething && folderPath && window.electronAPI?.openFolderInNewWindow) {
+      setWorkspaceLoading(true);
+      try {
+        await window.electronAPI.openFolderInNewWindow(folderPath);
+      } catch (_) {
+        setWorkspaceLoading(false);
+      }
+      // Window will be closed by the main process after the new one starts.
+      return;
+    }
+
     const showBlockingLoad = hadWorkspace && openingSomething;
     if (showBlockingLoad) setWorkspaceLoading(true);
     try {
@@ -1136,8 +1166,14 @@ function App() {
             </svg>
           </div>
           <div className="workspace-loading-spinner" />
-          <div className="workspace-loading-text">Loading project…</div>
-          <div className="workspace-loading-sub">Workspace and terminal will use the new folder.</div>
+          <div className="workspace-loading-text">
+            {startupFolderName ? `Opening ${startupFolderName}…` : 'Loading project…'}
+          </div>
+          <div className="workspace-loading-sub">
+            {startupFolderName
+              ? `Setting up workspace for ${startupFolderName}`
+              : 'Workspace and terminal will use the new folder.'}
+          </div>
         </div>
       )}
       {/* Title Bar */}

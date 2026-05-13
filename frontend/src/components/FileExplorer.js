@@ -39,6 +39,16 @@ import {
   VscFolderOpened, VscEllipsis, VscEdit, VscTrash, VscCopy,
   VscLoading,
 } from 'react-icons/vsc';
+import {
+  MdFolder, MdFolderOpen, MdInsertDriveFile,
+  MdImage, MdLock, MdSettings, MdCode,
+} from 'react-icons/md';
+import {
+  SiJavascript, SiTypescript, SiReact, SiPython, SiHtml5,
+  SiCss3, SiSass, SiMarkdown, SiJson, SiYaml, SiRust,
+  SiGo, SiRuby, SiPhp, SiSwift, SiKotlin, SiDocker,
+  SiGit,
+} from 'react-icons/si';
 import { API_URL as API } from '../config';
 import { Throttler, RunOnceScheduler, Limiter } from '../lib/async';
 
@@ -90,29 +100,84 @@ function perfLog(label, t0) {
   }
 }
 
-// ─── File icon mapping ────────────────────────────────────────────────────────
-const FILE_ICONS = {
-  js: '#e8d44d', jsx: '#61dafb', ts: '#3178c6', tsx: '#3178c6',
-  py: '#3776ab', json: '#e8d44d', html: '#e34f26', css: '#1572b6',
-  scss: '#cf649a', md: '#519aba', svg: '#ffb13b', png: '#a074c4',
-  jpg: '#a074c4', jpeg: '#a074c4', gif: '#a074c4', yaml: '#cb171e',
-  yml: '#cb171e', env: '#ecd53f', gitignore: '#f05032', lock: '#6a6a6a',
-  txt: '#6a6a6a', sh: '#89e051', java: '#b07219', xml: '#e34f26',
-  rs: '#dea584', go: '#00acd7', rb: '#cc342d', php: '#8892be',
-  c: '#555555', cpp: '#f34b7d', cs: '#178600', swift: '#f05138',
-  kt: '#7f52ff', toml: '#9c4221', ini: '#6a6a6a', dockerfile: '#384d54',
+// ─── File icon mapping (Material + SI icons) ─────────────────────────────────
+// Each entry: [IconComponent, color]
+const FILE_ICON_MAP = {
+  // JavaScript / TypeScript
+  js:          [SiJavascript,       '#e8d44d'],
+  jsx:         [SiReact,            '#61dafb'],
+  ts:          [SiTypescript,       '#3178c6'],
+  tsx:         [SiReact,            '#3178c6'],
+  mjs:         [SiJavascript,       '#e8d44d'],
+  cjs:         [SiJavascript,       '#e8d44d'],
+  // Web
+  html:        [SiHtml5,            '#e34f26'],
+  htm:         [SiHtml5,            '#e34f26'],
+  css:         [SiCss3,             '#1572b6'],
+  scss:        [SiSass,             '#cf649a'],
+  sass:        [SiSass,             '#cf649a'],
+  less:        [SiCss3,             '#1572b6'],
+  // Data / Config
+  json:        [SiJson,             '#e8d44d'],
+  yaml:        [SiYaml,             '#cb171e'],
+  yml:         [SiYaml,             '#cb171e'],
+  toml:        [MdSettings,         '#9c4221'],
+  ini:         [MdSettings,         '#6a6a6a'],
+  env:         [MdSettings,         '#ecd53f'],
+  xml:         [MdCode,             '#e34f26'],
+  // Markdown / Docs
+  md:          [SiMarkdown,         '#519aba'],
+  mdx:         [SiMarkdown,         '#519aba'],
+  txt:         [MdInsertDriveFile,  '#8a8a8a'],
+  // Systems languages
+  rs:          [SiRust,             '#dea584'],
+  go:          [SiGo,               '#00acd7'],
+  c:           [MdCode,             '#555555'],
+  cpp:         [MdCode,             '#f34b7d'],
+  cc:          [MdCode,             '#f34b7d'],
+  h:           [MdCode,             '#a074c4'],
+  hpp:         [MdCode,             '#a074c4'],
+  cs:          [MdCode,             '#178600'],
+  // Scripted languages
+  py:          [SiPython,           '#3776ab'],
+  rb:          [SiRuby,             '#cc342d'],
+  php:         [SiPhp,              '#8892be'],
+  java:        [MdCode,             '#b07219'],
+  kt:          [SiKotlin,           '#7f52ff'],
+  swift:       [SiSwift,            '#f05138'],
+  sh:          [MdCode,             '#89e051'],
+  bash:        [MdCode,             '#89e051'],
+  zsh:         [MdCode,             '#89e051'],
+  // Images
+  png:         [MdImage,            '#a074c4'],
+  jpg:         [MdImage,            '#a074c4'],
+  jpeg:        [MdImage,            '#a074c4'],
+  gif:         [MdImage,            '#a074c4'],
+  svg:         [MdImage,            '#ffb13b'],
+  webp:        [MdImage,            '#a074c4'],
+  ico:         [MdImage,            '#a074c4'],
+  // Git / Lock
+  gitignore:   [SiGit,              '#f05032'],
+  lock:        [MdLock,             '#6a6a6a'],
+  // Docker
+  dockerfile:  [SiDocker,           '#384d54'],
 };
 
-const FILE_LABELS = {
-  js: 'JS', jsx: 'JSX', ts: 'TS', tsx: 'TSX', py: 'PY', json: '{}',
-  html: '<>', css: '#', scss: '#', md: 'M', svg: 'SVG', png: 'IMG',
-  jpg: 'IMG', jpeg: 'IMG', gif: 'IMG', yaml: 'YML', yml: 'YML',
-  env: 'ENV', gitignore: 'GIT', lock: 'LCK', txt: 'TXT', sh: 'SH',
-  java: 'JV', xml: 'XML', rs: 'RS', go: 'GO', rb: 'RB', php: 'PHP',
-  c: 'C', cpp: 'C++', cs: 'C#', swift: 'SW', kt: 'KT', toml: 'TOML',
-  ini: 'INI', dockerfile: 'DF',
-};
+function getFileIconColor(name) {
+  const lower = name.toLowerCase();
+  // Match full filename (e.g. "Dockerfile", ".gitignore")
+  const fullKey = lower.startsWith('.') ? lower.slice(1) : lower;
+  if (FILE_ICON_MAP[fullKey]) return FILE_ICON_MAP[fullKey];
+  // Match extension
+  const dotIdx = lower.lastIndexOf('.');
+  if (dotIdx >= 0) {
+    const ext = lower.slice(dotIdx + 1);
+    if (FILE_ICON_MAP[ext]) return FILE_ICON_MAP[ext];
+  }
+  return [MdInsertDriveFile, '#8a8a8a'];
+}
 
+// Folder colors — Material folder icon tinted by folder role
 const FOLDER_COLORS = {
   src: '#3b82f6', source: '#3b82f6', lib: '#3b82f6',
   components: '#61dafb', pages: '#61dafb', views: '#61dafb', ui: '#61dafb',
@@ -131,11 +196,6 @@ const FOLDER_COLORS = {
   electron: '#2563eb',
   mobile: '#10b981', android: '#10b981', ios: '#10b981',
 };
-
-function getFileIconColor(name) {
-  const ext = name.split('.').pop().toLowerCase();
-  return { color: FILE_ICONS[ext] || '#6a6a6a', label: FILE_LABELS[ext] || 'F' };
-}
 
 function getFolderColor(name) {
   return FOLDER_COLORS[name.toLowerCase()] || '#dcad5a';
@@ -188,6 +248,7 @@ const TreeRow = memo(function TreeRow({
 
   if (node.type === 'folder') {
     const folderColor = getFolderColor(node.name);
+    const FolderIcon = isExpanded ? MdFolderOpen : MdFolder;
     return (
       <div
         style={{ ...style, paddingLeft, display: 'flex', alignItems: 'center', cursor: 'pointer' }}
@@ -206,20 +267,20 @@ const TreeRow = memo(function TreeRow({
           {isLoading
             ? <VscLoading size={14} className="tree-spinner" />
             : isExpanded
-              ? <VscChevronDown size={16} />
-              : <VscChevronRight size={16} />
+              ? <VscChevronDown size={14} />
+              : <VscChevronRight size={14} />
           }
         </span>
-        <span className="folder-icon" style={{ color: folderColor, opacity: dimGit ? 0.45 : 1 }}>
-          {isExpanded ? '📂' : '📁'}
+        <span className="folder-icon" style={{ color: folderColor, display: 'flex', alignItems: 'center' }}>
+          <FolderIcon size={16} />
         </span>
-        <span className="tree-label" style={{ opacity: dimGit ? 0.5 : 1 }}>{node.name}</span>
+        <span className="tree-label">{node.name}</span>
       </div>
     );
   }
 
-  // File row
-  const { color, label } = getFileIconColor(node.name);
+  // File row — Material + SI icon per file type
+  const [FileIconComp, iconColor] = getFileIconColor(node.name);
   return (
     <div
       style={{ ...style, paddingLeft, display: 'flex', alignItems: 'center', cursor: 'pointer' }}
@@ -232,10 +293,12 @@ const TreeRow = memo(function TreeRow({
       onDragStart={e => onDragStart(e, path, 'file')}
     >
       <span className="tree-chevron" style={{ visibility: 'hidden' }}>
-        <VscChevronRight size={16} />
+        <VscChevronRight size={14} />
       </span>
-      <span className="file-icon" style={{ color, opacity: dimGit ? 0.45 : 1 }}>{label}</span>
-      <span className="tree-label" style={{ opacity: dimGit ? 0.5 : 1 }}>{node.name}</span>
+      <span className="file-icon" style={{ color: iconColor, display: 'flex', alignItems: 'center' }}>
+        <FileIconComp size={15} />
+      </span>
+      <span className="tree-label">{node.name}</span>
     </div>
   );
 });
@@ -759,7 +822,7 @@ export default function FileExplorer({
       {renamePath && (
         <div className="tree-item" style={{ padding: '4px 8px' }}>
           <span className="tree-chevron" style={{ visibility: 'hidden' }}><VscChevronRight size={16} /></span>
-          <span className="file-icon" style={{ color: '#6a6a6a' }}>F</span>
+          <span className="file-icon" style={{ color: '#8a8a8a', display: 'flex', alignItems: 'center' }}><MdInsertDriveFile size={15} /></span>
           <input
             ref={renameInputRef}
             className="search-input"
@@ -797,8 +860,8 @@ export default function FileExplorer({
               <div className="tree-item" style={{ padding: '4px 8px' }}>
                 <span className="tree-chevron" style={{ visibility: 'hidden' }}><VscChevronRight size={16} /></span>
                 {showNewFolderInput
-                  ? <span className="folder-icon">📁</span>
-                  : <span className="file-icon" style={{ color: '#6a6a6a' }}>F</span>
+                  ? <span className="folder-icon" style={{ color: '#dcad5a', display: 'flex', alignItems: 'center' }}><MdFolder size={16} /></span>
+                  : <span className="file-icon" style={{ color: '#8a8a8a', display: 'flex', alignItems: 'center' }}><MdInsertDriveFile size={15} /></span>
                 }
                 <div className="search-input-wrapper" style={{ flex: 1, margin: 0, minWidth: 0 }}>
                   <input

@@ -398,25 +398,22 @@
 }
 
 .folder-icon {
-  font-size: 14px;
   flex-shrink: 0;
-  width: 16px;
-  text-align: center;
+  width: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 1px;
 }
 
 .file-icon {
-  font-size: 8px;
-  font-weight: 700;
   flex-shrink: 0;
   width: 18px;
   height: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.04);
-  font-family: var(--font-mono);
-  letter-spacing: -0.5px;
+  margin-right: 1px;
 }
 
 .tree-label {
@@ -440,13 +437,27 @@
   outline: 1px dashed var(--accent-amber);
 }
 
-/* Git-ignored entries (git check-ignore) — Cursor/VS Code style */
+/* Git-ignored entries — VS Code gitDecoration.ignoredResourceForeground (#8c8c8c)
+   All icons and text are forced to the ignored grey, matching VS Code / Cursor exactly. */
 .tree-item.tree-git-ignored .tree-label {
-  color: var(--text-muted);
+  color: #8c8c8c !important;
 }
-
-.tree-item.tree-git-ignored:not(.selected):hover .tree-label {
-  color: var(--text-secondary);
+.tree-item.tree-git-ignored .folder-icon,
+.tree-item.tree-git-ignored .tree-chevron {
+  color: #8c8c8c !important;
+  opacity: 0.7;
+}
+.tree-item.tree-git-ignored .file-icon {
+  color: #6c6c6c !important;
+}
+.tree-item.tree-git-ignored:not(.selected) {
+  opacity: 0.75;
+}
+.tree-item.tree-git-ignored:hover:not(.selected) {
+  opacity: 0.9;
+}
+.tree-item.tree-git-ignored.selected .tree-label {
+  color: var(--text-bright) !important;
 }
 
 .file-context-menu {
@@ -834,101 +845,68 @@
   margin-right: 6px;
 }
 
+/* ── Graph container ──────────────────────────────────────── */
 .scm-graph-container {
   flex: 1;
   min-height: 0;
-  padding: 6px 12px 12px 28px;
+  padding: 4px 0 12px 0;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .scm-graph-list {
   display: flex;
   flex-direction: column;
-  gap: 0;
 }
 
+/* Connector row (branch lines between commit rows) */
+.scm-graph-connector-row {
+  display: flex;
+  align-items: stretch;
+  padding: 0 8px;
+  line-height: 0;
+}
+
+/* Commit row */
 .scm-graph-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 22px;
-  padding: 2px 0;
-  font-size: 11px;
-  color: var(--text-secondary);
+  gap: 6px;
+  min-height: 36px;
+  padding: 3px 8px 3px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.08s;
 }
 
-.scm-graph-row-has-tooltip {
-  position: relative;
+.scm-graph-row:hover {
+  background: rgba(255,255,255,0.04);
 }
 
-.scm-graph-tooltip {
-  position: absolute;
-  left: 24px;
-  bottom: 100%;
-  margin-bottom: 4px;
-  padding: 8px 10px;
-  background: var(--bg-elevated, #2d2d2d);
-  border: 1px solid var(--border, rgba(255,255,255,0.1));
-  border-radius: 6px;
-  font-size: 11px;
-  max-width: 320px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-  z-index: 100;
-  pointer-events: none;
-  visibility: hidden;
-  opacity: 0;
-  transition: opacity 0.15s, visibility 0.15s;
-  white-space: normal;
+.scm-graph-row.selected {
+  background: rgba(55,148,255,0.12);
 }
 
-.scm-graph-row-has-tooltip:hover .scm-graph-tooltip {
-  visibility: visible;
-  opacity: 1;
+/* Row content (message + meta) */
+.scm-graph-row-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.scm-graph-tooltip-hash {
-  font-family: var(--font-mono);
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
-
-.scm-graph-tooltip-msg {
-  color: var(--text-primary);
-  line-height: 1.4;
-}
-
-.scm-graph-line-col {
-  position: relative;
-  width: 16px;
-  flex-shrink: 0;
+.scm-graph-row-top {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 6px;
+  min-width: 0;
 }
 
-.scm-graph-vline {
-  position: absolute;
-  left: 7px;
-  top: 14px;
-  bottom: -2px;
-  width: 2px;
-  background: #4a9eff;
-  border-radius: 1px;
-}
-
-.scm-graph-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: #4a9eff;
-  flex-shrink: 0;
-  z-index: 1;
-}
-
-.scm-graph-dot.empty {
-  background: transparent;
-  border: 2px solid #4a9eff;
-  box-sizing: border-box;
+.scm-graph-row-bottom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .scm-graph-commit-msg {
@@ -937,58 +915,151 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-primary);
+  font-size: 12px;
+  color: #cccccc;
+  font-weight: 400;
+  letter-spacing: 0.01em;
 }
 
+.scm-graph-author {
+  font-size: 11px;
+  color: #6a9955;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
+.scm-graph-date {
+  font-size: 10.5px;
+  color: #5a5a5a;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Branch + remote pills */
 .scm-graph-pills {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
 .scm-graph-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
+  gap: 3px;
+  padding: 1px 7px 1px 5px;
   border-radius: 10px;
   font-size: 10px;
   font-weight: 500;
+  white-space: nowrap;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .scm-graph-pill.branch {
-  background: rgba(74, 158, 255, 0.25);
+  background: rgba(55, 148, 255, 0.18);
   color: #4a9eff;
+  border: 1px solid rgba(55, 148, 255, 0.3);
 }
 
 .scm-graph-pill.remote {
-  background: rgba(204, 120, 50, 0.3);
-  color: #cc7832;
-}
-
-.scm-graph-pill.cloud-icon {
-  padding: 2px 4px;
-  background: transparent;
+  padding: 1px 5px;
+  background: rgba(180, 140, 255, 0.15);
   color: #b392f0;
+  border: 1px solid rgba(180, 140, 255, 0.25);
 }
 
-.scm-graph-pre {
-  margin: 0;
+/* Commit detail card */
+.scm-commit-details {
+  margin: 2px 8px 4px 8px;
+  padding: 10px 12px;
+  background: #252526;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  font-size: 11.5px;
+}
+
+.scm-commit-details-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.scm-commit-details-hash {
   font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--text-secondary);
-  white-space: pre;
+  font-size: 10.5px;
+  color: #5a5a5a;
+  flex-shrink: 0;
 }
 
-.scm-graph-line {
-  white-space: pre;
+.scm-commit-details-author {
+  font-size: 11.5px;
+  color: #cccccc;
+  font-weight: 600;
 }
+
+.scm-commit-details-date {
+  font-size: 10.5px;
+  color: #5a5a5a;
+  margin-left: auto;
+}
+
+.scm-commit-details-body {
+  color: #9d9d9d;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+
+.scm-commit-details-full {
+  color: #7a7a7a;
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+.scm-commit-details-files {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scm-commit-details-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.scm-status-icon {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.scm-status-icon.M { color: #e8c547; }
+.scm-status-icon.A { color: #6a9955; }
+.scm-status-icon.D { color: #ef4444; }
+.scm-status-icon.R { color: #06b6d4; }
 
 .scm-graph-loading {
   font-size: 12px;
   color: var(--text-muted);
+  padding: 12px 16px;
+}
+
+/* Graph toolbar */
+.scm-graph-toolbar-auto {
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-right: 4px;
 }
 
 /* File list */
@@ -1379,126 +1450,253 @@
    Terminal Panel — VS Code / Cursor style
    ============================================ */
 
+/* ═══════════════════════════════════════════════════════
+   Terminal Panel — VS Code integrated terminal styling
+   ═══════════════════════════════════════════════════════ */
+
 .terminal-panel {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #1E1E1E;
-  border-top: 1px solid var(--border);
+  background: #1e1e1e;
+  border-top: 1px solid #2d2d2d;
   position: relative;
 }
 
+/* ── Tab bar ─────────────────────────────────────────── */
 .terminal-header {
   display: flex;
   align-items: stretch;
-  justify-content: space-between;
   height: 35px;
-  padding: 0;
-  background: #252526;
-  border-bottom: 1px solid var(--border);
+  background: #181818;
+  border-bottom: 1px solid #2d2d2d;
   flex-shrink: 0;
-  overflow: hidden;
+  overflow: visible;
+  user-select: none;
+  position: relative;
+  z-index: 10;
 }
 
-/* LEFT: PROBLEMS | OUTPUT | TERMINAL view tabs */
 .terminal-view-tabs {
   display: flex;
   align-items: stretch;
-  flex-shrink: 0;
+  flex: 1;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .terminal-view-tab {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 0 12px;
+  padding: 0 13px;
   font-size: 11px;
   font-weight: 400;
-  letter-spacing: 0.04em;
-  color: #8b8b8b;
+  letter-spacing: 0.01em;
+  color: #858585;
   cursor: pointer;
-  border-bottom: 2px solid transparent;
+  border-bottom: 1px solid transparent;
   white-space: nowrap;
-  user-select: none;
+  flex-shrink: 0;
   transition: color 0.1s;
+  position: relative;
 }
 
 .terminal-view-tab:hover { color: #cccccc; }
 
 .terminal-view-tab.active {
   color: #cccccc;
-  border-bottom-color: #3794FF;
+  border-bottom-color: #3794ff;
+  background: rgba(255,255,255,0.03);
 }
 
-/* RIGHT: action buttons only (instance list moved to sidebar) */
+.terminal-tab-badge {
+  font-size: 10px;
+  background: #cc3333;
+  color: #fff;
+  border-radius: 10px;
+  padding: 1px 5px;
+  min-width: 16px;
+  text-align: center;
+  font-weight: 600;
+}
+
+/* ── Right-side action bar ───────────────────────────── */
 .terminal-right-area {
   display: flex;
-  align-items: stretch;
-  margin-left: auto;
+  align-items: center;
+  padding: 0 4px;
+  gap: 1px;
+  flex-shrink: 0;
+  border-left: 1px solid #2d2d2d;
+}
+
+.terminal-action-group {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  position: relative;
+}
+
+.terminal-action-sep {
+  width: 1px;
+  height: 14px;
+  background: #3c3c3c;
+  margin: 0 3px;
   flex-shrink: 0;
 }
 
-/* ── Terminal instance sidebar (right side of body) ── */
-.terminal-sidebar {
-  width: 154px;
+.terminal-actions .icon-btn,
+.terminal-right-area .icon-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8b8b8b;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.1s, background 0.1s;
+  padding: 0;
   flex-shrink: 0;
-  background: #252526;
-  border-left: 1px solid #3c3c3c;
+}
+
+.terminal-actions .icon-btn:hover,
+.terminal-right-area .icon-btn:hover {
+  color: #cccccc;
+  background: rgba(255,255,255,0.07);
+}
+
+.terminal-add-btn {
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.terminal-chevron-btn {
+  width: 14px !important;
+  padding: 0 !important;
+}
+
+.terminal-chevron {
+  font-size: 9px;
+  opacity: 0.7;
+  line-height: 1;
+}
+
+/* ── Shell dropdown ──────────────────────────────────── */
+.shell-selection-menu {
+  background: #2d2d2d;
+  border: 1px solid #454545;
+  border-radius: 5px;
+  padding: 4px 0;
+  z-index: 99999;
+  min-width: 210px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+}
+
+.shell-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 14px;
+  font-size: 12px;
+  color: #cccccc;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.08s;
+}
+
+.shell-menu-item:hover { background: #094771; }
+
+.shell-menu-separator {
+  height: 1px;
+  background: #454545;
+  margin: 4px 0;
+}
+
+/* ── Terminal body + split layout ────────────────────── */
+.terminal-body {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #1e1e1e;
+  display: block;
+}
+
+/* ── Instance sidebar ────────────────────────────────── */
+.terminal-sidebar {
+  width: 160px;
+  min-width: 120px;
+  flex-shrink: 0;
+  background: #181818;
+  border-left: 1px solid #2d2d2d;
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
   flex-direction: column;
-  padding-top: 2px;
+  padding: 4px 0;
 }
 
-.terminal-sidebar::-webkit-scrollbar { width: 4px; }
+.terminal-sidebar::-webkit-scrollbar { width: 3px; }
 .terminal-sidebar::-webkit-scrollbar-track { background: transparent; }
-.terminal-sidebar::-webkit-scrollbar-thumb { background: #424242; border-radius: 2px; }
-.terminal-sidebar::-webkit-scrollbar-thumb:hover { background: #686868; }
+.terminal-sidebar::-webkit-scrollbar-thumb { background: #404040; border-radius: 2px; }
+.terminal-sidebar::-webkit-scrollbar-thumb:hover { background: #5a5a5a; }
 
 .terminal-sidebar-item {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 6px 5px 10px;
-  font-size: 12px;
-  color: #9d9d9d;
+  gap: 7px;
+  padding: 4px 8px 4px 10px;
+  font-size: 11.5px;
+  color: #858585;
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
   border-left: 2px solid transparent;
-  transition: background 0.12s, color 0.12s;
-  min-height: 28px;
+  border-radius: 0;
+  transition: background 0.1s, color 0.1s;
+  min-height: 26px;
 }
 
 .terminal-sidebar-item:hover {
   background: rgba(255,255,255,0.05);
-  color: #cccccc;
+  color: #c8c8c8;
 }
 
 .terminal-sidebar-item.active {
-  background: #37373d;
+  background: rgba(255,255,255,0.07);
   color: #cccccc;
-  border-left-color: #3794FF;
+  border-left-color: #3794ff;
 }
 
-.terminal-sidebar-icon {
-  font-size: 14px;
+/* Running indicator dot */
+.term-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   flex-shrink: 0;
-  opacity: 0.75;
+  background: #4a4a4a;
+  transition: background 0.1s;
 }
 
-.terminal-sidebar-item.active .terminal-sidebar-icon {
-  opacity: 1;
+.terminal-sidebar-item.active .term-status-dot {
+  background: #23d18b;
 }
 
 .terminal-sidebar-name {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 12px;
+  font-size: 11.5px;
   letter-spacing: 0.01em;
+  font-family: var(--font-mono);
 }
 
 .terminal-sidebar-close {
@@ -1512,126 +1710,47 @@
   background: transparent;
   border: none;
   border-radius: 3px;
-  color: #8b8b8b;
+  color: #6a6a6a;
   cursor: pointer;
   transition: color 0.1s, background 0.1s;
 }
 
 .terminal-sidebar-item:hover .terminal-sidebar-close,
-.terminal-sidebar-item.active .terminal-sidebar-close { display: flex; }
+.terminal-sidebar-item.active .terminal-sidebar-close {
+  display: flex;
+}
 
 .terminal-sidebar-close:hover {
   color: #cccccc !important;
   background: rgba(255,255,255,0.1);
 }
 
-/* Action buttons area */
-.terminal-actions {
-  display: flex;
-  align-items: center;
-  padding: 0 4px;
-  gap: 0;
-  flex-shrink: 0;
-}
-
-.terminal-actions .icon-btn {
-  width: 26px;
-  height: 26px;
-  color: #8b8b8b;
-  border-radius: 3px;
-}
-
-.terminal-actions .icon-btn:hover {
-  color: #cccccc;
-  background: rgba(255,255,255,0.08);
-}
-
-/* Chevron-only dropdown trigger next to + button */
-.terminal-chevron-btn {
-  width: 14px !important;
-  padding: 0 !important;
-  min-width: 0 !important;
-}
-
-.terminal-chevron {
-  font-size: 8px;
-  opacity: 0.75;
-  line-height: 1;
-}
-
-/* Shell dropdown menu */
-.shell-selection-menu {
-  position: absolute;
-  bottom: calc(100% + 2px);
-  right: 0;
-  background: #252526;
-  border: 1px solid #454545;
-  border-radius: 4px;
-  padding: 4px 0;
-  z-index: 1000;
-  min-width: 200px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-}
-
-.shell-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
-  color: #cccccc;
-  cursor: pointer;
-  user-select: none;
-}
-
-.shell-menu-item:hover { background: #04395e; }
-
-.shell-menu-separator {
-  height: 1px;
-  background: #454545;
-  margin: 4px 0;
-}
-
-.terminal-tab-badge {
-  font-size: 10px;
-  background: var(--error);
-  color: #fff;
-  border-radius: 10px;
-  padding: 0 5px;
-  min-width: 16px;
-  text-align: center;
-  font-weight: 600;
-  margin-left: 4px;
-}
-
-/* Terminal xterm container — padding: 0 so xterm owns sizing */
-.terminal-body {
-  flex: 1;
-  padding: 0;
-  overflow: hidden;
-  background: #1E1E1E;
-}
-
-/* Content panels (problems / output) */
+/* ── Content panels (Problems / Output) ──────────────── */
 .terminal-body-content {
   flex: 1;
   overflow-y: auto;
-  padding: 8px 16px;
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
-  background: var(--bg-deep);
+  padding: 10px 16px;
+  font-size: 12px;
+  color: #9d9d9d;
+  background: #1e1e1e;
 }
 
+.terminal-body-content::-webkit-scrollbar { width: 6px; }
+.terminal-body-content::-webkit-scrollbar-thumb { background: #424242; border-radius: 3px; }
+
 .terminal-empty-message {
-  padding: 20px 0;
-  color: var(--text-muted);
-  font-size: var(--font-size-sm);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 0;
+  color: #6a6a6a;
+  font-size: 12px;
 }
 
 .terminal-output-entry {
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #2a2a2a;
 }
 
 .output-header {
@@ -1640,15 +1759,15 @@
   margin-bottom: 4px;
 }
 
-.output-time { color: var(--text-ghost); }
-.output-command { color: var(--accent); font-family: var(--font-mono); }
+.output-time { color: #5a5a5a; font-size: 11px; }
+.output-command { color: #3794ff; font-family: var(--font-mono); font-size: 12px; }
 
 .output-content {
   font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
-  background: var(--bg-surface);
-  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: #cccccc;
+  background: #252526;
+  border-radius: 4px;
   padding: 6px 10px;
   overflow-x: auto;
   white-space: pre-wrap;
@@ -1660,14 +1779,14 @@
   align-items: baseline;
   gap: 8px;
   padding: 3px 0;
-  font-size: var(--font-size-sm);
+  font-size: 12px;
 }
 
 .problem-icon { font-size: 10px; }
-.problem-icon.error { color: var(--error); }
-.problem-icon.warning { color: var(--warning); }
-.problem-file { color: var(--accent); font-family: var(--font-mono); }
-.problem-text { color: var(--text-secondary); }
+.problem-icon.error { color: #f48771; }
+.problem-icon.warning { color: #cca700; }
+.problem-file { color: #3794ff; font-family: var(--font-mono); font-size: 11.5px; }
+.problem-text { color: #cccccc; }
 
 /* ── Panel Resizer ── */
 
@@ -3128,9 +3247,9 @@
   overflow: hidden;
 }
 
-/* Give xterm a small internal inset without breaking FitAddon sizing */
-.terminal-body .xterm { padding: 6px 8px; }
-.cli-body .xterm { padding: 6px 8px; }
+/* Do NOT add CSS padding to .xterm — FitAddon measures the container and xterm
+   renders its canvas edge-to-edge. CSS padding on .xterm creates a black gap
+   where the canvas has no content (FitAddon/canvas size mismatch). */
 
 /* ============================================
    Utility
