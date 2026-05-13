@@ -207,15 +207,24 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
   );
 }
 
-export default function StatusBar({ activeFile, cursorPosition, encoding }) {
+export default function StatusBar({ activeFile, cursorPosition, encoding, hasWorkspace = true }) {
   const [branch, setBranch] = useState('');
   const [gitChanges, setGitChanges] = useState(0);
   const [showBranchPicker, setShowBranchPicker] = useState(false);
   const language = getLanguageFromFile(activeFile);
 
   const fetchGitInfo = useCallback(async () => {
+    if (!hasWorkspace) {
+      setBranch('');
+      setGitChanges(0);
+      return;
+    }
     try {
-      const branchRes = await axios.post(`${API}/terminal/run`, { command: 'git branch --show-current' });
+      const branchRes = await axios.post(
+        `${API}/terminal/run`,
+        { command: 'git branch --show-current' },
+        { timeout: 180000 },
+      );
       const branchName = (branchRes.data.output || '').trim();
       if (branchName && branchRes.data.exit_code === 0) {
         setBranch(branchName);
@@ -223,14 +232,19 @@ export default function StatusBar({ activeFile, cursorPosition, encoding }) {
         setBranch('');
       }
 
-      const statusRes = await axios.post(`${API}/terminal/run`, { command: 'git status --porcelain -uall' });
+      // Do not use -uall here — it can enumerate huge untracked trees and stall for minutes.
+      const statusRes = await axios.post(
+        `${API}/terminal/run`,
+        { command: 'git status --porcelain' },
+        { timeout: 180000 },
+      );
       const lines = (statusRes.data.output || '').trim().split('\n').filter(Boolean);
       setGitChanges(statusRes.data.exit_code === 0 ? lines.length : 0);
     } catch {
       setBranch('');
       setGitChanges(0);
     }
-  }, []);
+  }, [hasWorkspace]);
 
   useEffect(() => {
     fetchGitInfo();
@@ -256,6 +270,11 @@ export default function StatusBar({ activeFile, cursorPosition, encoding }) {
             {gitChanges > 0 && (
               <span className="status-badge">{gitChanges}</span>
             )}
+          </div>
+        ) : !hasWorkspace ? (
+          <div className="status-item branch" title="Open a folder for Git status">
+            <VscSourceControl size={12} />
+            <span>No folder</span>
           </div>
         ) : (
           <div className="status-item branch" title="No git repository">

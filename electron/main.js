@@ -30,6 +30,9 @@ let _credWatcher = null;
 
 const SCROLLBACK_MAX_BYTES = 512 * 1024; // 512 KB per session
 
+/** Set when this process was spawned as an additional IDE window — no auto-open last folder. */
+const NEBULA_FRESH_WINDOW = process.argv.includes('--nebula-fresh-window');
+
 // ─── Deep-link / SSO callback handling ──────────────────────────
 const APP_PROTOCOL = 'nebula';
 let pendingAuthCallbackUrl = null;
@@ -87,6 +90,47 @@ const embeddedPythonDir = path.join(userDataPath, 'python');
 const embeddedNodeDir = path.join(userDataPath, 'node');
 const cliToolsPrefixDir = path.join(userDataPath, 'cli-tools');
 const sessionStatePath = path.join(userDataPath, 'nebula-session.json');
+const authPersistPath = path.join(userDataPath, 'nebula-auth.json');
+
+function readPersistedAuth() {
+  try {
+    if (!fs.existsSync(authPersistPath)) return null;
+    const raw = fs.readFileSync(authPersistPath, 'utf-8');
+    const o = JSON.parse(raw);
+    if (!o || typeof o !== 'object') return null;
+    const token = typeof o.token === 'string' ? o.token.trim() : '';
+    if (!token) return null;
+    return { token, user: o.user && typeof o.user === 'object' ? o.user : null };
+  } catch (_) {
+    return null;
+  }
+}
+
+function writePersistedAuth(payload) {
+  const token = payload && typeof payload.token === 'string' ? payload.token.trim() : '';
+  if (!token) return { ok: false, error: 'no_token' };
+  try {
+    fs.mkdirSync(path.dirname(authPersistPath), { recursive: true });
+    fs.writeFileSync(
+      authPersistPath,
+      JSON.stringify({ token, user: payload.user && typeof payload.user === 'object' ? payload.user : null }),
+      'utf-8',
+    );
+    try {
+      if (process.platform !== 'win32') fs.chmodSync(authPersistPath, 0o600);
+    } catch (_) {}
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+function clearPersistedAuth() {
+  try {
+    if (fs.existsSync(authPersistPath)) fs.unlinkSync(authPersistPath);
+  } catch (_) {}
+  return { ok: true };
+}
 
 function readSessionState() {
   try {
@@ -125,12 +169,15 @@ function spawnNewAppInstance() {
       const idx = exe.indexOf('.app/');
       if (idx >= 0) {
         const bundle = exe.slice(0, idx + 4);
-        const child = spawn('open', ['-n', '-a', bundle], { detached: true, stdio: 'ignore' });
+        const child = spawn('open', ['-n', '-a', bundle, '--args', '--nebula-fresh-window'], {
+          detached: true,
+          stdio: 'ignore',
+        });
         child.unref();
         return { ok: true };
       }
     }
-    const child = spawn(exe, [], {
+    const child = spawn(exe, ['--nebula-fresh-window'], {
       detached: true,
       stdio: 'ignore',
       windowsHide: false,
@@ -1517,6 +1564,13 @@ ipcMain.handle('get-platform', () => {
   return process.platform;
 });
 
+ipcMain.handle('auth:read-disk', () => readPersistedAuth());
+ipcMain.handle('auth:write-disk', (_event, payload) => writePersistedAuth(payload || {}));
+ipcMain.handle('auth:clear-disk', () => {
+  clearPersistedAuth();
+  return { ok: true };
+});
+
 ipcMain.handle('open-folder-dialog', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory'],
@@ -2021,11 +2075,13 @@ app.whenReady().then(async () => {
     // Show splash screen
     createSplashWindow('Starting IDE...');
 
-    // Restore last opened folder session (if any)
+    // Restore last opened folder for normal launches only (not extra windows).
     try {
-      const s = readSessionState();
-      const last = s && typeof s.lastProjectRoot === 'string' ? s.lastProjectRoot.trim() : '';
-      if (last) setCurrentProjectRoot(last);
+      if (!NEBULA_FRESH_WINDOW) {
+        const s = readSessionState();
+        const last = s && typeof s.lastProjectRoot === 'string' ? s.lastProjectRoot.trim() : '';
+        if (last) setCurrentProjectRoot(last);
+      }
     } catch (_) {}
 
     // Ensure the CLI tools exist before the backend/terminal sessions use them.

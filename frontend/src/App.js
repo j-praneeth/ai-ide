@@ -23,9 +23,11 @@ import { VscDeviceMobile, VscTerminal } from 'react-icons/vsc';
 import { listDirFromHandle, getHandleForPath, getFileContentFromHandle, writeFileToHandle } from './lib/webFs';
 import { authFetch, getAuthUser } from './lib/auth';
 import { Throttler, SequencerByKey } from './lib/async';
+import { buildMatchRegex, firstMatchColumnsInLine } from './lib/searchMatch';
 
-// Global default timeout so no request ever hangs indefinitely.
-axios.defaults.timeout = 8000;
+// Default HTTP timeout for axios (ms). Git / terminal / large trees can exceed a few seconds;
+// keep this generous so Source Control and search fallbacks do not spuriously time out.
+axios.defaults.timeout = 120000;
 
 // Module-level singletons — mirrors VS Code's service-level Throttler instances.
 // Throttler: at most 1 in-flight tree load + 1 pending (new requests replace old pending)
@@ -120,6 +122,7 @@ function App() {
   const [webFolderHandle, setWebFolderHandle] = useState(null);
   /** Bump when switching workspaces so terminal / local UI fully remounts. */
   const [workspaceKey, setWorkspaceKey] = useState(0);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const workspaceCtxRef = useRef({ projectRoot: '', webFolderHandle: null });
   const [sidebarWidth, setSidebarWidth] = useState(270);
   const sidebarResizingRef = useRef(false);
@@ -136,6 +139,7 @@ function App() {
   // Refs
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
+  const pendingSearchNavRef = useRef(null);
   const resizingRef = useRef(false);
   const startYRef = useRef(0);
   const startHeightRef = useRef(0);
@@ -309,8 +313,24 @@ function App() {
   useEffect(() => {
     document.documentElement.style.setProperty('--sidebar-width', `${sidebarWidth}px`);
   }, [sidebarWidth]);
-  // Open a file (from backend or from web folder handle)
-  const openFile = useCallback(async (path) => {
+  // Open a file (from backend or from web folder handle). Optional opts: { line, search: { query, caseSensitive, wholeWord, useRegex } }
+  const openFile = useCallback(async (path, opts = {}) => {
+    const line = opts.line != null ? Number(opts.line) : null;
+    if (line != null && Number.isFinite(line) && opts.search) {
+      pendingSearchNavRef.current = {
+        path,
+        line,
+        query: opts.search.query,
+        caseSensitive: !!opts.search.caseSensitive,
+        wholeWord: !!opts.search.wholeWord,
+        useRegex: !!opts.search.useRegex,
+      };
+    } else if (line != null && Number.isFinite(line)) {
+      pendingSearchNavRef.current = { path, line, query: null };
+    } else {
+      pendingSearchNavRef.current = null;
+    }
+
     if (openFiles.includes(path)) {
       setActiveFile(path);
       return;
@@ -335,8 +355,53 @@ function App() {
       setActiveFile(path);
     } catch (err) {
       console.error('Failed to open file:', err);
+      pendingSearchNavRef.current = null;
     }
   }, [openFiles, webFolderHandle]);
+
+  useEffect(() => {
+    const nav = pendingSearchNavRef.current;
+    if (!nav || !editorRef.current || !monacoRef.current || activeFile !== nav.path) return;
+    const content = fileContents[nav.path];
+    if (content === undefined) return;
+
+    const run = () => {
+      const ed = editorRef.current;
+      const monaco = monacoRef.current;
+      if (!ed || !monaco) {
+        pendingSearchNavRef.current = null;
+        return;
+      }
+      const model = ed.getModel();
+      if (!model) {
+        pendingSearchNavRef.current = null;
+        return;
+      }
+      const ln = Math.max(1, Math.min(model.getLineCount(), nav.line));
+      const lineText = model.getLineContent(ln);
+      const re = nav.query != null
+        ? buildMatchRegex(nav.query, {
+          caseSensitive: nav.caseSensitive,
+          wholeWord: nav.wholeWord,
+          useRegex: nav.useRegex,
+        })
+        : null;
+      const cols = firstMatchColumnsInLine(lineText, re);
+      try {
+        if (cols) {
+          const range = new monaco.Range(ln, cols.startColumn, ln, cols.endColumn);
+          ed.setSelection(range);
+          ed.revealRangeInCenter(range);
+        } else {
+          ed.revealLineInCenter(ln);
+        }
+      } catch (_) {}
+      pendingSearchNavRef.current = null;
+    };
+
+    const t = window.setTimeout(run, 64);
+    return () => window.clearTimeout(t);
+  }, [activeFile, fileContents]);
 
   // Internal close — no unsaved check (used after save/discard confirmed)
   const _forceCloseFile = useCallback((path) => {
@@ -893,43 +958,54 @@ function App() {
   }, []);
 
   // Handle open folder (path/name from Electron; or null, name, handle from web picker)
-  const handleOpenFolder = useCallback((folderPath, folderName, handle = null, treeData = null) => {
+  const handleOpenFolder = useCallback(async (folderPath, folderName, handle = null, treeData = null) => {
     const { projectRoot: prevRoot, webFolderHandle: prevHandle } = workspaceCtxRef.current;
     const hadWorkspace = !!(prevRoot || prevHandle);
     const openingSomething = !!(folderPath || handle);
-    if (hadWorkspace && openingSomething) {
-      setWorkspaceKey(k => k + 1);
-      try {
-        sessionStorage.removeItem('nebula_tree_cache');
-      } catch (_) {}
-    }
+    const showBlockingLoad = hadWorkspace && openingSomething;
+    if (showBlockingLoad) setWorkspaceLoading(true);
+    try {
+      if (showBlockingLoad) {
+        setWorkspaceKey(k => k + 1);
+        try {
+          sessionStorage.removeItem('nebula_tree_cache');
+        } catch (_) {}
+      }
 
-    setOpenFiles([]);
-    setActiveFile(null);
-    setFileContents({});
-    setOriginalContents({});
-    setModifiedFiles(new Set());
-    setProjectName(folderName || 'Nebula');
-    if (folderPath) setProjectRoot(folderPath);
-    setWebFolderHandle(handle || null);
-    if (handle && treeData) {
-      setTree(treeData);
-      try {
-        const keyPath = (folderPath || '').trim();
-        sessionStorage.setItem('nebula_tree_cache', JSON.stringify({ path: keyPath, tree: treeData }));
-      } catch (_) {}
-    } else if (handle) {
-      listDirFromHandle(handle, '', showHiddenFiles).then(setTree).catch(console.error);
-    } else if (treeData) {
-      setTree(treeData);
-      try {
-        const keyPath = (folderPath || '').trim();
-        sessionStorage.setItem('nebula_tree_cache', JSON.stringify({ path: keyPath, tree: treeData }));
-      } catch (_) {}
-    } else {
-      loadTree();
+      setOpenFiles([]);
+      setActiveFile(null);
+      setFileContents({});
+      setOriginalContents({});
+      setModifiedFiles(new Set());
+      setProjectName(folderName || 'Nebula');
+      if (folderPath) setProjectRoot(folderPath);
+      setWebFolderHandle(handle || null);
+      if (handle && treeData) {
+        setTree(treeData);
+        try {
+          const keyPath = (folderPath || '').trim();
+          sessionStorage.setItem('nebula_tree_cache', JSON.stringify({ path: keyPath, tree: treeData }));
+        } catch (_) {}
+      } else if (handle) {
+        try {
+          const nodes = await listDirFromHandle(handle, '', showHiddenFiles);
+          setTree(nodes);
+        } catch (e) {
+          console.error(e);
+        }
+      } else if (treeData) {
+        setTree(treeData);
+        try {
+          const keyPath = (folderPath || '').trim();
+          sessionStorage.setItem('nebula_tree_cache', JSON.stringify({ path: keyPath, tree: treeData }));
+        } catch (_) {}
+      } else {
+        await loadTree();
+      }
+      setSidebarPanel('explorer');
+    } finally {
+      if (showBlockingLoad) setWorkspaceLoading(false);
     }
-    setSidebarPanel('explorer');
   }, [loadTree, showHiddenFiles]);
 
   // Load children for a folder (used when web folder handle is set)
@@ -1049,6 +1125,21 @@ function App() {
   return (
     <AuthGate>
       <div className={`ide-container ${platformClass}`}>
+      {workspaceLoading && (
+        <div className="workspace-loading-overlay" aria-live="polite" aria-busy="true">
+          <div className="workspace-loading-refresh" aria-hidden="true">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+              <path d="M16 21h5v-5" />
+            </svg>
+          </div>
+          <div className="workspace-loading-spinner" />
+          <div className="workspace-loading-text">Loading project…</div>
+          <div className="workspace-loading-sub">Workspace and terminal will use the new folder.</div>
+        </div>
+      )}
       {/* Title Bar */}
       <div className="title-bar">
         <div className="title-bar-left">
@@ -1158,10 +1249,13 @@ function App() {
               />
             )}
             {sidebarPanel === 'search' && (
-              <SearchPanel onOpenFile={openFile} />
+              <SearchPanel onOpenFile={openFile} hasWorkspace={!!projectRoot || !!webFolderHandle} />
             )}
             {sidebarPanel === 'source-control' && (
-              <SourceControlPanel onOpenFile={openFile} />
+              <SourceControlPanel
+                onOpenFile={openFile}
+                hasWorkspace={!!projectRoot || !!webFolderHandle}
+              />
             )}
             {sidebarPanel === 'extensions' && (
               <ExtensionsPanel />
@@ -1286,6 +1380,7 @@ function App() {
       <StatusBar
         activeFile={activeFile}
         cursorPosition={cursorPosition}
+        hasWorkspace={!!projectRoot || !!webFolderHandle}
       />
 
       {/* Command Palette */}

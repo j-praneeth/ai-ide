@@ -17,7 +17,7 @@
  *  4. When limit hit, stream closes → no wasted work (same as ripgrep kill()).
  */
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   VscCaseSensitive, VscWholeWord, VscRegex,
   VscReplace, VscReplaceAll, VscChevronRight, VscChevronDown,
@@ -26,11 +26,26 @@ import axios from 'axios';
 import { API_URL as API } from '../config';
 import { authFetch } from '../lib/auth';
 import { RunOnceScheduler } from '../lib/async';
+import { buildMatchRegex } from '../lib/searchMatch';
 
 // VS Code uses 80ms batching for search result DOM updates
 const RESULT_BATCH_MS = 80;
 
-export default function SearchPanel({ onOpenFile }) {
+/** Parse one SSE `data:` line into JSON; undefined if not a data payload or invalid JSON. */
+function parseSseDataLine(rawLine) {
+  const trimmed = String(rawLine || '').replace(/\r$/, '');
+  if (!trimmed.length || trimmed.startsWith(':')) return undefined;
+  if (!trimmed.startsWith('data:')) return undefined;
+  const jsonText = trimmed.slice(5).trimStart();
+  if (!jsonText) return undefined;
+  try {
+    return JSON.parse(jsonText);
+  } catch {
+    return undefined;
+  }
+}
+
+export default function SearchPanel({ onOpenFile, hasWorkspace = true }) {
   const [query,         setQuery]         = useState('');
   const [replaceText,   setReplaceText]   = useState('');
   const [showReplace,   setShowReplace]   = useState(false);
@@ -50,29 +65,77 @@ export default function SearchPanel({ onOpenFile }) {
   // RunOnceScheduler — flushes buffered results to React state every 80ms
   const scheduler    = useRef(null);
 
+  const highlightRegex = useMemo(
+    () => buildMatchRegex(query, { caseSensitive, wholeWord, useRegex }),
+    [query, caseSensitive, wholeWord, useRegex],
+  );
+
+  const renderHighlightedLine = (text) => {
+    try {
+      const s = String(text ?? '');
+      if (!highlightRegex) return s;
+      const parts = [];
+      let last = 0;
+      const r = new RegExp(
+        highlightRegex.source,
+        highlightRegex.flags.includes('g') ? highlightRegex.flags : `${highlightRegex.flags}g`,
+      );
+      let guard = 0;
+      let m;
+      while ((m = r.exec(s)) !== null && guard++ < 200) {
+        parts.push(s.slice(last, m.index));
+        parts.push(
+          <mark key={`${m.index}-${parts.length}`} className="search-hit">{m[0]}</mark>,
+        );
+        last = m.index + m[0].length;
+        if (m.index === r.lastIndex) r.lastIndex += 1;
+      }
+      parts.push(s.slice(last));
+      return parts.length === 1 ? parts[0] : parts;
+    } catch {
+      return String(text ?? '');
+    }
+  };
+
+  const flushRef = useRef(() => {});
+  flushRef.current = () => {
+    const batch = resultBuffer.current.splice(0);
+    if (batch.length === 0) return;
+    setResults((prev) => {
+      const next = [...prev, ...batch];
+      setExpandedFiles((exp) => {
+        const n = new Set(exp);
+        batch.forEach((r) => {
+          if (r && r.file) n.add(r.file);
+        });
+        return n;
+      });
+      return next;
+    });
+  };
+
   // Initialise scheduler once
   useEffect(() => {
-    const sched = new RunOnceScheduler(() => {
-      const batch = resultBuffer.current.splice(0);
-      if (batch.length === 0) return;
-      setResults(prev => {
-        const next = [...prev, ...batch];
-        // Auto-expand newly seen files (VS Code opens first group automatically)
-        setExpandedFiles(exp => {
-          const n = new Set(exp);
-          batch.forEach(r => n.add(r.file));
-          return n;
-        });
-        return next;
-      });
-    }, RESULT_BATCH_MS);
+    const sched = new RunOnceScheduler(() => flushRef.current(), RESULT_BATCH_MS);
     scheduler.current = sched;
-    return () => sched.dispose();
+    return () => {
+      sched.dispose();
+      scheduler.current = null;
+    };
   }, []);
 
   const search = useCallback(async () => {
     const q = query.trim();
     if (!q) return;
+
+    if (!hasWorkspace) {
+      setResults([]);
+      setExpandedFiles(new Set());
+      setTruncated(false);
+      setSearching(false);
+      setReplaceStatus('');
+      return;
+    }
 
     // Cancel previous in-flight search (createCancelablePromise equivalent)
     if (abortRef.current) {
@@ -81,6 +144,10 @@ export default function SearchPanel({ onOpenFile }) {
     }
     scheduler.current?.cancel();
     resultBuffer.current = [];
+
+    if (!scheduler.current) {
+      scheduler.current = new RunOnceScheduler(() => flushRef.current(), RESULT_BATCH_MS);
+    }
 
     setResults([]);
     setExpandedFiles(new Set());
@@ -98,10 +165,7 @@ export default function SearchPanel({ onOpenFile }) {
 
     try {
       // fetch() with ReadableStream — streams SSE results without blocking
-      const response = await authFetch(url, {
-        signal: ctrl.signal,
-        headers: { Accept: 'text/event-stream' },
-      });
+      const response = await authFetch(url, { signal: ctrl.signal });
       if (!response.ok || !response.body) {
         throw new Error('Stream unavailable');
       }
@@ -119,35 +183,66 @@ export default function SearchPanel({ onOpenFile }) {
         partial = lines.pop(); // keep incomplete line
 
         for (const line of lines) {
-          const trimmed = line.replace(/\r$/, '');
-          const m = trimmed.match(/^data:\s?(.*)$/);
-          if (!m) continue;
-          try {
-            const payload = JSON.parse(m[1]);
-            if (payload.done) {
-              setTruncated(!!payload.truncated);
-              // Flush remaining buffered results immediately on stream end
-              scheduler.current?.cancel();
-              const remaining = resultBuffer.current.splice(0);
-              if (remaining.length > 0) {
-                setResults(prev => {
-                  const next = [...prev, ...remaining];
-                  setExpandedFiles(exp => {
-                    const n = new Set(exp);
-                    remaining.forEach(r => n.add(r.file));
-                    return n;
+          const payload = parseSseDataLine(line);
+          if (payload === undefined) continue;
+
+          if (payload.done === true) {
+            setTruncated(!!payload.truncated);
+            scheduler.current?.cancel();
+            const remaining = resultBuffer.current.splice(0);
+            if (remaining.length > 0) {
+              setResults((prev) => {
+                const next = [...prev, ...remaining];
+                setExpandedFiles((exp) => {
+                  const n = new Set(exp);
+                  remaining.forEach((r) => {
+                    if (r && r.file) n.add(r.file);
                   });
-                  return next;
+                  return n;
                 });
-              }
-            } else {
-              // Buffer the match and schedule a flush (80ms RunOnceScheduler)
-              resultBuffer.current.push(payload);
-              if (!scheduler.current.isScheduled()) {
-                scheduler.current.schedule();
-              }
+                return next;
+              });
             }
-          } catch (_) {}
+          } else if (payload.file != null && payload.line != null) {
+            resultBuffer.current.push(payload);
+            const sch = scheduler.current;
+            if (sch && !sch.isScheduled()) {
+              sch.schedule();
+            } else if (!sch) {
+              flushRef.current();
+            }
+          }
+        }
+      }
+
+      if (partial.trim()) {
+        const tailLines = partial.split('\n');
+        for (const line of tailLines) {
+          const payload = parseSseDataLine(line);
+          if (payload === undefined) continue;
+          if (payload.done === true) {
+            setTruncated(!!payload.truncated);
+            scheduler.current?.cancel();
+            const remaining = resultBuffer.current.splice(0);
+            if (remaining.length > 0) {
+              setResults((prev) => {
+                const next = [...prev, ...remaining];
+                setExpandedFiles((exp) => {
+                  const n = new Set(exp);
+                  remaining.forEach((r) => {
+                    if (r && r.file) n.add(r.file);
+                  });
+                  return n;
+                });
+                return next;
+              });
+            }
+          } else if (payload.file != null && payload.line != null) {
+            resultBuffer.current.push(payload);
+            const sch = scheduler.current;
+            if (sch && !sch.isScheduled()) sch.schedule();
+            else if (!sch) flushRef.current();
+          }
         }
       }
     } catch (err) {
@@ -156,6 +251,7 @@ export default function SearchPanel({ onOpenFile }) {
         try {
           const res = await axios.get(`${API}/files/search`, {
             params: { query: searchQuery, case_sensitive: caseSensitive, use_regex: useRegex },
+            timeout: 120000,
           });
           const items = res.data.results || [];
           setResults(items);
@@ -169,7 +265,7 @@ export default function SearchPanel({ onOpenFile }) {
       if (abortRef.current === ctrl) abortRef.current = null;
       setSearching(false);
     }
-  }, [query, caseSensitive, wholeWord, useRegex]);
+  }, [query, caseSensitive, wholeWord, useRegex, hasWorkspace]);
 
   // Cancel stream on unmount
   useEffect(() => () => { abortRef.current?.abort(); }, []);
@@ -307,12 +403,15 @@ export default function SearchPanel({ onOpenFile }) {
       </div>
 
       <div className="search-results">
+        {!hasWorkspace && query.trim() && (
+          <div className="search-message">Open a folder to search in this workspace.</div>
+        )}
         {searching && (
           <div className="search-message">
             Searching{totalResults > 0 ? ` — ${totalResults} result${totalResults !== 1 ? 's' : ''} so far` : '...'}
           </div>
         )}
-        {!searching && query && results.length === 0 && (
+        {!searching && query && results.length === 0 && hasWorkspace && (
           <div className="search-message">No results found.</div>
         )}
         {totalResults > 0 && (
@@ -338,10 +437,13 @@ export default function SearchPanel({ onOpenFile }) {
               <div
                 key={idx}
                 className="search-result-line"
-                onClick={() => onOpenFile(file, match.line)}
+                onClick={() => onOpenFile(file, {
+                  line: match.line,
+                  search: { query, caseSensitive, wholeWord, useRegex },
+                })}
               >
                 <span className="search-line-number">{match.line}</span>
-                <span className="search-line-text">{match.text}</span>
+                <span className="search-line-text">{renderHighlightedLine(match.text)}</span>
                 {showReplace && (
                   <button
                     className="icon-btn tiny"

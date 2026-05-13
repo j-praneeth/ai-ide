@@ -64,6 +64,14 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
     applyAxiosAuthHeader();
   }, []);
 
+  const persistElectronAuth = useCallback(async (token, user) => {
+    try {
+      if (window.electronAPI?.writePersistedAuth && token) {
+        await window.electronAPI.writePersistedAuth({ token, user: user || null });
+      }
+    } catch (_) {}
+  }, []);
+
   const exchangeSsoCode = useCallback(async (code, state) => {
     if (!code) return;
     if (state && ssoStateRef.current && state !== ssoStateRef.current) {
@@ -82,6 +90,7 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
       if (data.token && data.user) {
         setAuthToken(data.token);
         setAuthUser(data.user);
+        await persistElectronAuth(data.token, data.user);
         setAuthenticated(true);
       } else {
         setError('SSO exchange failed.');
@@ -91,7 +100,7 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
     } finally {
       setSsoBusy(false);
     }
-  }, []);
+  }, [persistElectronAuth]);
 
   useEffect(() => {
     if (!window.electronAPI?.onAuthCallback && !window.electronAPI?.getPendingAuthCallback) return;
@@ -140,6 +149,16 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
 
     const run = async () => {
       try {
+        try {
+          if (window.electronAPI?.readPersistedAuth) {
+            const disk = await window.electronAPI.readPersistedAuth();
+            if (disk?.token && !getAuthToken()) {
+              setAuthToken(disk.token);
+              if (disk.user) setAuthUser(disk.user);
+            }
+          }
+        } catch (_) {}
+
         const res = await fetch(`${AUTH}/auth/status`);
         clearTimeout(timeout);
         const data = await res.json().catch(() => ({}));
@@ -165,10 +184,23 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
           if (meData?.user) {
             setAuthUser(meData.user);
             setAuthenticated(true);
+            try {
+              if (window.electronAPI?.writePersistedAuth) {
+                await window.electronAPI.writePersistedAuth({
+                  token: getAuthToken(),
+                  user: meData.user,
+                });
+              }
+            } catch (_) {}
             setLoading(false);
             return;
           }
-          setAuthToken('');
+          if (me.status === 401) {
+            setAuthToken('');
+            try {
+              await window.electronAPI?.clearPersistedAuth?.();
+            } catch (_) {}
+          }
         }
       } catch (_) {
         clearTimeout(timeout);
@@ -196,6 +228,11 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
       }
       setAuthToken(data.token || '');
       setAuthUser(data.user || null);
+      try {
+        if (window.electronAPI?.writePersistedAuth && data.token) {
+          await window.electronAPI.writePersistedAuth({ token: data.token, user: data.user || null });
+        }
+      } catch (_) {}
       setAuthenticated(true);
       setLoading(false);
     } catch (e) {

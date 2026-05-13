@@ -23,7 +23,11 @@ import axios from 'axios';
 import { API_URL as API } from '../config';
 
 async function runCommand(command) {
-  const res = await axios.post(`${API}/terminal/run`, { command });
+  const res = await axios.post(
+    `${API}/terminal/run`,
+    { command },
+    { timeout: 180000 },
+  );
   return { output: res.data.output ?? '', exit_code: res.data.exit_code ?? 0 };
 }
 
@@ -251,7 +255,7 @@ function GitGraphSVG({ colInfo, isLast, nextColInfo }) {
   );
 }
 
-export default function SourceControlPanel({ onOpenFile }) {
+export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) {
   const [branch, setBranch] = useState('');
   const [hasUpstream, setHasUpstream] = useState(false);
   const [statusOutput, setStatusOutput] = useState(null);
@@ -275,6 +279,7 @@ export default function SourceControlPanel({ onOpenFile }) {
   const isResizing = useRef(null);
 
   const fetchGraph = useCallback(async () => {
+    if (!hasWorkspace) return;
     setGraphLoading(true);
     try {
       const res = await runCommand('git log --oneline --graph --decorate -30');
@@ -288,9 +293,17 @@ export default function SourceControlPanel({ onOpenFile }) {
     } finally {
       setGraphLoading(false);
     }
-  }, []);
+  }, [hasWorkspace]);
 
   const fetchStatus = useCallback(async () => {
+    if (!hasWorkspace) {
+      setLoading(false);
+      setStatusOutput(null);
+      setError(null);
+      setBranch('');
+      setHasUpstream(false);
+      return;
+    }
     setError(null);
     try {
       // Note: do NOT use -uall here — it recursively enumerates every untracked
@@ -320,7 +333,7 @@ export default function SourceControlPanel({ onOpenFile }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [hasWorkspace]);
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
@@ -328,16 +341,17 @@ export default function SourceControlPanel({ onOpenFile }) {
   const { staged = [], unstaged = [] } = hasRepo ? parsePorcelain(statusOutput) : {};
 
   useEffect(() => {
+    if (!hasWorkspace) return;
     if (hasRepo && sectionsCollapsed.graph === false && graphLines.length === 0 && !graphLoading) {
       fetchGraph();
     }
-  }, [hasRepo, sectionsCollapsed.graph, graphLines.length, graphLoading, fetchGraph]);
+  }, [hasWorkspace, hasRepo, sectionsCollapsed.graph, graphLines.length, graphLoading, fetchGraph]);
 
   useEffect(() => {
-    if (!statusOutput && error) return;
+    if (!hasWorkspace || (!statusOutput && error)) return;
     const id = setInterval(fetchStatus, 8000);
     return () => clearInterval(id);
-  }, [fetchStatus, statusOutput, error]);
+  }, [fetchStatus, statusOutput, error, hasWorkspace]);
 
   const hasStaged = staged.length > 0;
   const canCommit = hasStaged && commitMessage.trim();
@@ -458,6 +472,20 @@ export default function SourceControlPanel({ onOpenFile }) {
       }
     } catch (err) { console.error(err); }
   };
+
+  if (!hasWorkspace) {
+    return (
+      <div className="scm-panel">
+        <div className="scm-panel-header">
+          <span className="scm-panel-title">SOURCE CONTROL</span>
+        </div>
+        <div className="scm-empty">
+          <VscSourceControl size={40} className="scm-empty-icon" />
+          <p className="scm-empty-text">Open a folder to use source control.</p>
+        </div>
+      </div>
+    );
+  }
 
   if (loading && !statusOutput && !error) {
     return (

@@ -81,6 +81,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   openNewWindow: () => ipcRenderer.invoke('app:new-window'),
 
+  readPersistedAuth: () => ipcRenderer.invoke('auth:read-disk'),
+  writePersistedAuth: (payload) => ipcRenderer.invoke('auth:write-disk', payload || {}),
+  clearPersistedAuth: () => ipcRenderer.invoke('auth:clear-disk'),
+
   // SSO deep-link callback
   getPendingAuthCallback: () => ipcRenderer.invoke('auth:get-pending-callback'),
   onAuthCallback: (listener) => {

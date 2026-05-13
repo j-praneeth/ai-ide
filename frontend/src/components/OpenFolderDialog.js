@@ -1,10 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import axios from 'axios';
 import { API_URL as API } from '../config';
 import { IS_ELECTRON } from '../config';
 
 export default function OpenFolderDialog({ visible, onClose, onOpen, showHiddenFiles = true }) {
   const [unsupported, setUnsupported] = useState(false);
+  const onOpenRef = useRef(onOpen);
+  const onCloseRef = useRef(onClose);
+  onOpenRef.current = onOpen;
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!visible) {
@@ -28,10 +32,10 @@ export default function OpenFolderDialog({ visible, onClose, onOpen, showHiddenF
             if (!res.data.error) {
               const apiTree = Array.isArray(res.data.tree) ? res.data.tree : [];
               const tree = Array.isArray(ipcTree) && ipcTree.length > 0 ? ipcTree : apiTree;
-              onOpen(res.data.path, res.data.name, null, tree);
+              await Promise.resolve(onOpenRef.current(res.data.path, res.data.name, null, tree));
             }
           }
-          onClose();
+          onCloseRef.current();
           return;
         }
 
@@ -72,35 +76,37 @@ export default function OpenFolderDialog({ visible, onClose, onOpen, showHiddenF
               params: { path: resolvedPath, show_hidden: showHiddenFiles },
             });
             if (!res.data.error) {
-              onOpen(res.data.path, res.data.name, handle, res.data.tree);
-              onClose();
+              await Promise.resolve(
+                onOpenRef.current(res.data.path, res.data.name, handle, res.data.tree),
+              );
+              onCloseRef.current();
               return;
             }
           } catch (_) {}
         }
 
         // Fallback: open with handle only (terminal will use home dir)
-        onOpen(null, handle.name, handle);
-        onClose();
+        await Promise.resolve(onOpenRef.current(null, handle.name, handle));
+        onCloseRef.current();
       } catch (err) {
         if (err.name !== 'AbortError') console.error('Failed to open folder:', err);
-        onClose();
+        onCloseRef.current();
       }
     };
 
     run();
-  }, [visible, onClose, onOpen, showHiddenFiles]);
+  }, [visible, showHiddenFiles]);
 
   if (!visible) return null;
 
   if (unsupported) {
     return (
-      <div className="open-folder-overlay" onClick={onClose}>
+      <div className="open-folder-overlay" onClick={() => onCloseRef.current()}>
         <div className="open-folder-dialog" onClick={e => e.stopPropagation()} style={{ padding: '20px' }}>
           <h3 className="open-folder-title">Open Folder</h3>
           <p className="open-folder-hint">Folder picker is not supported in this browser. Use Chrome or Edge, or run the desktop app.</p>
           <div className="open-folder-actions">
-            <button type="button" onClick={onClose}>Close</button>
+            <button type="button" onClick={() => onCloseRef.current()}>Close</button>
           </div>
         </div>
       </div>

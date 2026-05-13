@@ -36,6 +36,11 @@ export function setAuthUser(user) {
 }
 
 export function logout(forceLogin = false) {
+  try {
+    if (typeof window !== 'undefined' && window.electronAPI?.clearPersistedAuth) {
+      window.electronAPI.clearPersistedAuth().catch(() => {});
+    }
+  } catch (_) {}
   setAuthToken('');
   setAuthUser(null);
   if (forceLogin) {
