@@ -56,6 +56,7 @@ const MENU_ITEMS = {
     { id: 'file.newFile', label: 'New File', shortcut: '⌘ N' },
     { id: 'file.newFolder', label: 'New Folder' },
     { id: 'file.openFolder', label: 'Open Folder...', shortcut: '⌘ O' },
+    { id: 'file.newWindow', label: 'New Window', shortcut: '⌘ ⇧ N' },
     { type: 'separator' },
     { id: 'file.save', label: 'Save', shortcut: '⌘ S' },
     { id: 'file.saveAll', label: 'Save All', shortcut: '⌘ ⇧ S' },
@@ -117,6 +118,9 @@ function App() {
   const [projectName, setProjectName] = useState('Nebula');
   const [projectRoot, setProjectRoot] = useState('');
   const [webFolderHandle, setWebFolderHandle] = useState(null);
+  /** Bump when switching workspaces so terminal / local UI fully remounts. */
+  const [workspaceKey, setWorkspaceKey] = useState(0);
+  const workspaceCtxRef = useRef({ projectRoot: '', webFolderHandle: null });
   const [sidebarWidth, setSidebarWidth] = useState(270);
   const sidebarResizingRef = useRef(false);
   const rightPanelResizingRef = useRef(false);
@@ -146,6 +150,10 @@ function App() {
 
   // Force explorer panel as default on every mount
   useEffect(() => { setSidebarPanel('explorer'); }, []);
+
+  useEffect(() => {
+    workspaceCtxRef.current = { projectRoot, webFolderHandle };
+  }, [projectRoot, webFolderHandle]);
 
   // Load file tree — throttled so rapid refreshes (file watcher events) never
   // stack up. Mirrors VS Code's Throttler used for configuration/tree refresh.
@@ -536,6 +544,11 @@ function App() {
       case 'file.openFolder':
         setShowOpenFolder(true);
         break;
+      case 'file.newWindow':
+        if (window.electronAPI?.openNewWindow) {
+          window.electronAPI.openNewWindow().catch(() => {});
+        }
+        break;
       case 'file.save':
         saveFile();
         break;
@@ -720,6 +733,14 @@ function App() {
         e.preventDefault();
         setShowOpenFolder(true);
       }
+      // Cmd/Ctrl + Shift + N — New Window (Electron only)
+      if (
+        window.electronAPI?.openNewWindow &&
+        (e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'n' || e.key === 'N')
+      ) {
+        e.preventDefault();
+        window.electronAPI.openNewWindow().catch(() => {});
+      }
       // Cmd/Ctrl + , - Settings
       if ((e.metaKey || e.ctrlKey) && e.key === ',') {
         e.preventDefault();
@@ -873,6 +894,16 @@ function App() {
 
   // Handle open folder (path/name from Electron; or null, name, handle from web picker)
   const handleOpenFolder = useCallback((folderPath, folderName, handle = null, treeData = null) => {
+    const { projectRoot: prevRoot, webFolderHandle: prevHandle } = workspaceCtxRef.current;
+    const hadWorkspace = !!(prevRoot || prevHandle);
+    const openingSomething = !!(folderPath || handle);
+    if (hadWorkspace && openingSomething) {
+      setWorkspaceKey(k => k + 1);
+      try {
+        sessionStorage.removeItem('nebula_tree_cache');
+      } catch (_) {}
+    }
+
     setOpenFiles([]);
     setActiveFile(null);
     setFileContents({});
@@ -1223,6 +1254,7 @@ function App() {
               <div className="bottom-panel-container" style={{ height: terminalHeight }}>
                 <div className="panel-resizer" onMouseDown={handlePanelResizeStart} />
                 <TerminalPanel
+                  key={workspaceKey}
                   visible={showTerminal}
                   onClose={() => setShowTerminal(false)}
                   onResize={terminalHeight}

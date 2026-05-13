@@ -579,7 +579,7 @@ def _search_generator(root, query: str, case_sensitive: bool, use_regex: bool, m
             if file.startswith('.'):
                 continue
             full_path = os.path.join(root_dir, file)
-            rel_path = os.path.relpath(full_path, str(root))
+            rel_path = os.path.relpath(full_path, str(root)).replace(os.sep, '/')
             try:
                 if os.path.getsize(full_path) > 1_000_000:
                     continue

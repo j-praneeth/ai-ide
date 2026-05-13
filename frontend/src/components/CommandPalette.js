@@ -14,12 +14,14 @@ import {
   VscClose,
   VscInfo,
   VscFolderOpened,
+  VscEmptyWindow,
 } from 'react-icons/vsc';
 
 const COMMANDS = [
   // File
   { id: 'file.newFile', label: 'New File', icon: VscNewFile, category: 'File' },
   { id: 'file.openFolder', label: 'Open Folder...', icon: VscFolderOpened, category: 'File', shortcut: '⌘O' },
+  { id: 'file.newWindow', label: 'New Window', icon: VscEmptyWindow, category: 'File', shortcut: '⌘⇧N' },
   { id: 'file.save', label: 'Save File', icon: VscSave, category: 'File', shortcut: '⌘S' },
   { id: 'file.saveAll', label: 'Save All', icon: VscSaveAll, category: 'File', shortcut: '⌘⇧S' },
   { id: 'file.closeTab', label: 'Close Tab', icon: VscClose, category: 'File', shortcut: '⌘W' },

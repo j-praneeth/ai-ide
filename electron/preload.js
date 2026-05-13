@@ -79,6 +79,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readProjectFile: (relPath) =>
     ipcRenderer.invoke('fs:read-project-file', relPath == null ? '' : String(relPath)),
 
+  openNewWindow: () => ipcRenderer.invoke('app:new-window'),
+
   // SSO deep-link callback
   getPendingAuthCallback: () => ipcRenderer.invoke('auth:get-pending-callback'),
   onAuthCallback: (listener) => {

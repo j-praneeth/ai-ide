@@ -98,7 +98,10 @@ export default function SearchPanel({ onOpenFile }) {
 
     try {
       // fetch() with ReadableStream — streams SSE results without blocking
-      const response = await authFetch(url, { signal: ctrl.signal });
+      const response = await authFetch(url, {
+        signal: ctrl.signal,
+        headers: { Accept: 'text/event-stream' },
+      });
       if (!response.ok || !response.body) {
         throw new Error('Stream unavailable');
       }
@@ -116,9 +119,11 @@ export default function SearchPanel({ onOpenFile }) {
         partial = lines.pop(); // keep incomplete line
 
         for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
+          const trimmed = line.replace(/\r$/, '');
+          const m = trimmed.match(/^data:\s?(.*)$/);
+          if (!m) continue;
           try {
-            const payload = JSON.parse(line.slice(6));
+            const payload = JSON.parse(m[1]);
             if (payload.done) {
               setTruncated(!!payload.truncated);
               // Flush remaining buffered results immediately on stream end

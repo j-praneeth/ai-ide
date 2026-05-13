@@ -64,21 +64,8 @@ function handleAuthCallbackUrl(url) {
   } catch (_) {}
 }
 
-const gotTheLock = app.requestSingleInstanceLock();
-if (!gotTheLock) {
-  app.quit();
-} else {
-  app.on('second-instance', (_event, argv) => {
-    const url = _extractDeepLinkFromArgv(argv);
-    if (url) handleAuthCallbackUrl(url);
-    try {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    } catch (_) {}
-  });
-}
+// We intentionally allow multiple app instances (separate windows / projects).
+// Deep links use open-url (macOS) or argv on first launch.
 
 app.on('open-url', (event, url) => {
   try { event.preventDefault(); } catch (_) {}
@@ -121,6 +108,40 @@ function writeSessionState(patch = {}) {
   } catch (_) {}
 }
 
+function killAllIntegratedTerminals() {
+  for (const [, sess] of integratedTermSessions) {
+    try {
+      sess.ptyProcess.kill();
+    } catch (_) {}
+  }
+  integratedTermSessions.clear();
+}
+
+/** Spawn another app process so the user can open a different project in a separate window. */
+function spawnNewAppInstance() {
+  try {
+    const exe = process.execPath;
+    if (process.platform === 'darwin' && app.isPackaged) {
+      const idx = exe.indexOf('.app/');
+      if (idx >= 0) {
+        const bundle = exe.slice(0, idx + 4);
+        const child = spawn('open', ['-n', '-a', bundle], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { ok: true };
+      }
+    }
+    const child = spawn(exe, [], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    });
+    child.unref();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
 function setCurrentProjectRoot(folderPath) {
   try {
     const p = typeof folderPath === 'string' ? folderPath.trim() : '';
@@ -129,6 +150,10 @@ function setCurrentProjectRoot(folderPath) {
     if (!fs.existsSync(resolved)) return false;
     const st = fs.statSync(resolved);
     if (!st.isDirectory()) return false;
+    const prev = currentProjectRoot;
+    if (prev && path.resolve(prev) !== resolved) {
+      killAllIntegratedTerminals();
+    }
     currentProjectRoot = resolved;
     process.env.NEBULA_PROJECT_ROOT = resolved;
     writeSessionState({ lastProjectRoot: resolved });
@@ -493,10 +518,17 @@ function getCliLaunchConfig(tool) {
 
 function getIntegratedTerminalLaunch(shell) {
   if (process.platform === 'win32') {
+    const sysRoot = process.env.SystemRoot || 'C:\\Windows';
     if (shell === 'cmd') {
-      return { file: process.env.ComSpec || 'cmd.exe', args: [] };
+      const comspec = process.env.ComSpec || path.join(sysRoot, 'System32', 'cmd.exe');
+      return { file: comspec, args: ['/K'] };
     }
-    return { file: 'powershell.exe', args: ['-NoLogo'] };
+    const psPath = path.join(sysRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const ps = fs.existsSync(psPath) ? psPath : 'powershell.exe';
+    return {
+      file: ps,
+      args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass'],
+    };
   }
   if (shell === 'bash') {
     const bash = fs.existsSync('/bin/bash') ? '/bin/bash' : 'bash';
@@ -1573,6 +1605,8 @@ ipcMain.handle('fs:list-project-dir', async (_event, payload) => {
   return _listDirNative(abs, showHidden);
 });
 
+ipcMain.handle('app:new-window', () => spawnNewAppInstance());
+
 ipcMain.handle('term:start', async (event, payload) => {
   try {
     const sessionId = (payload && payload.sessionId) || `iterm-${Date.now()}`;
@@ -1588,6 +1622,12 @@ ipcMain.handle('term:start', async (event, payload) => {
     }
     const launch = getIntegratedTerminalLaunch(shell);
     const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' };
+    if (process.platform === 'win32') {
+      const sr = process.env.SystemRoot || 'C:\\Windows';
+      if (!env.SystemRoot) env.SystemRoot = sr;
+      if (!env.PATHEXT) env.PATHEXT = '.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC';
+      if (!env.ComSpec) env.ComSpec = path.join(sr, 'System32', 'cmd.exe');
+    }
     const ptyProcess = pty.spawn(launch.file, launch.args, {
       name: 'xterm-256color',
       cols,
