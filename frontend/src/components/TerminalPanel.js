@@ -93,8 +93,8 @@ const TERM_OPTIONS = {
 };
 
 // ─── initTerminal ─────────────────────────────────────────────────────────────
-// Creates one xterm.Terminal + WebSocket PTY session.
-// Each tab gets its own isolated call to this function.
+// Web: xterm + WebSocket → FastAPI PTY.  Electron: xterm + IPC → node-pty in main
+// (same architecture as the right-side CLI panel — avoids Python/WS round-trip).
 
 function initTerminal(container, sessionId, shell, projectRoot) {
   const term = new Terminal(TERM_OPTIONS);
@@ -120,8 +120,6 @@ function initTerminal(container, sessionId, shell, projectRoot) {
   try { fit.fit(); } catch (_) {}
 
   // WebGL renderer — deferred so the canvas renderer paints first (no blank frame).
-  // GPU context creation can block the main thread for 100-300ms; deferring it
-  // lets xterm render the shell prompt before the GPU takes over.
   let webglAddon = null;
   setTimeout(() => {
     try {
@@ -136,10 +134,153 @@ function initTerminal(container, sessionId, shell, projectRoot) {
     }
   }, 0);
 
-  // ── WebSocket setup ───────────────────────────────────────────────────────
-  let ws       = null;
+  let ws = null;
   let disposed = false;
-  let retries  = 0;
+  let resizeTimer = null;
+  const isWin = navigator.platform?.startsWith('Win') || navigator.userAgent?.includes('Windows');
+  const useElectronNative = typeof window !== 'undefined' && window.electronAPI?.startIntegratedTerminal;
+
+  const wireResizeWs = () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+    }
+  };
+
+  const attachInputShortcuts = (sendText) => {
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyC') {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        return false;
+      }
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyV') {
+        navigator.clipboard.readText().then(text => { sendText(text); }).catch(() => {});
+        return false;
+      }
+      if (e.ctrlKey && e.shiftKey && e.code === 'KeyK') {
+        term.clear();
+        return false;
+      }
+      return true;
+    });
+    const onCtx = (e) => {
+      e.preventDefault();
+      const sel = term.getSelection();
+      if (sel) {
+        navigator.clipboard.writeText(sel).catch(() => {});
+      } else {
+        navigator.clipboard.readText().then(text => { sendText(text); }).catch(() => {});
+      }
+    };
+    container.addEventListener('contextmenu', onCtx);
+    return () => container.removeEventListener('contextmenu', onCtx);
+  };
+
+  // ── Electron: node-pty in main (low-latency — no WebSocket → Python hop) ──
+  if (useElectronNative) {
+    let nativeUnsub = null;
+    let nativeExitUnsub = null;
+    let nativeReady = false;
+    const pending = [];
+
+    const flushPending = () => {
+      if (!nativeReady || disposed) return;
+      while (pending.length) {
+        const d = pending.shift();
+        try { window.electronAPI.writeIntegratedTerminal(sessionId, d); } catch (_) {}
+      }
+    };
+
+    const sendText = (data) => {
+      if (disposed || data == null) return;
+      if (!nativeReady) {
+        pending.push(typeof data === 'string' ? data : String(data));
+        return;
+      }
+      try { window.electronAPI.writeIntegratedTerminal(sessionId, data); } catch (_) {}
+    };
+
+    const removeCtx = attachInputShortcuts(sendText);
+
+    term.onData(sendText);
+
+    window.electronAPI.startIntegratedTerminal({
+      sessionId,
+      shell: shell || (isWin ? 'powershell' : 'zsh'),
+      cols: term.cols,
+      rows: term.rows,
+      cwd: projectRoot && String(projectRoot).trim() ? String(projectRoot).trim() : null,
+    }).then((res) => {
+      if (disposed) return;
+      if (!res?.ok) {
+        term.writeln(`\r\n\x1b[31mTerminal: ${res?.error || 'failed to start shell'}\x1b[0m`);
+        return;
+      }
+      nativeReady = true;
+      flushPending();
+      try { fit.fit(); } catch (_) {}
+      try { window.electronAPI.resizeIntegratedTerminal(sessionId, term.cols, term.rows); } catch (_) {}
+      nativeUnsub = window.electronAPI.onIntegratedTermData(({ sessionId: sid, data }) => {
+        if (disposed || sid !== sessionId) return;
+        term.write(data);
+      });
+      if (window.electronAPI.onIntegratedTermExit) {
+        nativeExitUnsub = window.electronAPI.onIntegratedTermExit(({ sessionId: sid }) => {
+          if (disposed || sid !== sessionId) return;
+          term.writeln('\r\n\x1b[33m[Shell exited]\x1b[0m');
+        });
+      }
+    }).catch((err) => {
+      if (!disposed) term.writeln(`\r\n\x1b[31m${err?.message || String(err)}\x1b[0m`);
+    });
+
+    ws = {
+      get readyState() {
+        return nativeReady ? WebSocket.OPEN : WebSocket.CONNECTING;
+      },
+      send(msg) {
+        try {
+          const o = JSON.parse(msg);
+          if (o.type === 'input') sendText(o.data);
+          else if (o.type === 'resize') {
+            window.electronAPI.resizeIntegratedTerminal(sessionId, o.cols, o.rows);
+          }
+        } catch (_) {}
+      },
+      close() {},
+    };
+
+    const fitAndResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        try { fit.fit(); } catch (_) {}
+        if (nativeReady && !disposed) {
+          try { window.electronAPI.resizeIntegratedTerminal(sessionId, term.cols, term.rows); } catch (_) {}
+        }
+      }, 50);
+    };
+
+    const destroyWs = () => {
+      disposed = true;
+      clearTimeout(resizeTimer);
+      try { removeCtx(); } catch (_) {}
+      try { nativeUnsub?.(); } catch (_) {}
+      try { nativeExitUnsub?.(); } catch (_) {}
+      try { window.electronAPI?.killIntegratedTerminal?.(sessionId); } catch (_) {}
+    };
+
+    return {
+      term,
+      fitAddon: fit,
+      get ws() { return ws; },
+      fitAndResize,
+      destroyWs,
+    };
+  }
+
+  // ── Web / backend PTY via WebSocket ───────────────────────────────────────
+  let retries = 0;
   const MAX_RETRIES = 30;
 
   const wsBase = API.replace(/^http/, 'ws');
@@ -148,62 +289,19 @@ function initTerminal(container, sessionId, shell, projectRoot) {
     + `&cols=${term.cols}&rows=${term.rows}`
     + (projectRoot ? `&cwd=${encodeURIComponent(projectRoot)}` : '');
 
-  // ── INPUT: send immediately — ZERO latency, no setTimeout, no buffering ──
-  // VS Code: onData → ITerminalChildProcess.input(data) — direct, synchronous.
-  // The old 20ms batch was the primary source of typing lag.
-  term.onData(data => {
+  const sendWsInput = (data) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'input', data }));
     }
-  });
+  };
 
-  // ── Keyboard shortcuts ────────────────────────────────────────────────────
-  term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== 'keydown') return true;
+  const removeCtx = attachInputShortcuts(sendWsInput);
 
-    // Ctrl+Shift+C → copy selection (VS Code: Ctrl+C when text is selected)
-    if (e.ctrlKey && e.shiftKey && e.code === 'KeyC') {
-      const sel = term.getSelection();
-      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
-      return false;
-    }
-    // Ctrl+Shift+V → paste from clipboard
-    if (e.ctrlKey && e.shiftKey && e.code === 'KeyV') {
-      navigator.clipboard.readText().then(text => {
-        if (ws && ws.readyState === WebSocket.OPEN)
-          ws.send(JSON.stringify({ type: 'input', data: text }));
-      }).catch(() => {});
-      return false;
-    }
-    // Ctrl+Shift+K → clear terminal (VS Code shortcut)
-    if (e.ctrlKey && e.shiftKey && e.code === 'KeyK') {
-      term.clear();
-      return false;
-    }
-    return true;
-  });
+  term.onData(sendWsInput);
 
-  // ── Right-click: copy if selection, else paste ────────────────────────────
-  container.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    const sel = term.getSelection();
-    if (sel) {
-      navigator.clipboard.writeText(sel).catch(() => {});
-    } else {
-      navigator.clipboard.readText().then(text => {
-        if (ws && ws.readyState === WebSocket.OPEN)
-          ws.send(JSON.stringify({ type: 'input', data: text }));
-      }).catch(() => {});
-    }
-  });
-
-  // ── WebSocket connection with auto-reconnect ──────────────────────────────
   function connect() {
     if (disposed) return;
     ws = new WebSocket(wsUrl);
-
-    // Request binary frames for output — avoids JS string allocation per frame.
-    // The backend sends raw PTY bytes; we pass them directly to xterm as Uint8Array.
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
@@ -212,18 +310,10 @@ function initTerminal(container, sessionId, shell, projectRoot) {
       ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
     };
 
-    // OUTPUT: write directly to xterm — NO additional buffering, NO rAF wrapper.
-    //
-    // VS Code path: ITerminalChildProcess → onProcessData → XtermTerminal.write(data).
-    // xterm.js 6.x has its own internal WriteBuffer that queues writes and
-    // processes them at 60 fps via its own scheduler (not our rAF).
-    // Adding an external rAF layer double-buffers and adds ~16ms latency.
     ws.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
-        // Binary frame — PTY bytes as Uint8Array (zero-copy decode in xterm)
         term.write(new Uint8Array(e.data));
       } else {
-        // Text frame — UTF-8 string (fallback or control message)
         term.write(e.data);
       }
     };
@@ -244,26 +334,21 @@ function initTerminal(container, sessionId, shell, projectRoot) {
 
   connect();
 
-  // ── Resize ────────────────────────────────────────────────────────────────
-  // VS Code debounces resize to avoid SIGWINCH storms during panel drag.
-  let resizeTimer = null;
   const fitAndResize = () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       try { fit.fit(); } catch (_) {}
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      }
+      wireResizeWs();
     }, 50);
   };
 
   const destroyWs = () => {
     disposed = true;
     clearTimeout(resizeTimer);
+    try { removeCtx(); } catch (_) {}
     if (ws) { ws.onclose = null; ws.close(); }
   };
 
-  // Expose stable ws getter for projectRoot navigation
   return {
     term,
     fitAddon: fit,

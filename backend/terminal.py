@@ -1073,8 +1073,9 @@ async def terminal_pty_ws(
         def _reader():
             while True:
                 try:
-                    # Block until data is ready (up to 50ms to also detect process exit)
-                    r, _, _ = _select.select([master_fd], [], [], 0.05)
+                    # Short timeout: enough to detect process exit without adding
+                    # noticeable input/echo latency (50ms was perceptible on busy loops).
+                    r, _, _ = _select.select([master_fd], [], [], 0.002)
                     if r:
                         data = os.read(master_fd, 65536)
                         if data:

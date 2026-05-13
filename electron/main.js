@@ -15,6 +15,8 @@ let backendPort = null;
 let splashWindow = null;
 let cliSessionCounter = 0;
 const cliSessions = new Map();
+/** Integrated IDE terminal (bottom panel) — node-pty in main; avoids WS→Python latency. */
+const integratedTermSessions = new Map();
 let currentProjectRoot = null;
 let cliToolsInstallPromise = null;
 // Resolves once the bundled CLI credentials have been written (or definitively
@@ -487,6 +489,21 @@ function getCliLaunchConfig(tool) {
     file: commandPath || spec.command,
     args: [],
   };
+}
+
+function getIntegratedTerminalLaunch(shell) {
+  if (process.platform === 'win32') {
+    if (shell === 'cmd') {
+      return { file: process.env.ComSpec || 'cmd.exe', args: [] };
+    }
+    return { file: 'powershell.exe', args: ['-NoLogo'] };
+  }
+  if (shell === 'bash') {
+    const bash = fs.existsSync('/bin/bash') ? '/bin/bash' : 'bash';
+    return { file: bash, args: ['-i'] };
+  }
+  const sh = process.env.SHELL || (fs.existsSync('/bin/zsh') ? '/bin/zsh' : '/bin/bash');
+  return { file: sh, args: ['-i'] };
 }
 
 function closeCliSession(sessionId) {
@@ -1553,6 +1570,85 @@ ipcMain.handle('fs:list-project-dir', async (_event, payload) => {
   const abs = _resolveSafeProjectSubdir(root, relPath);
   if (!abs) return [];
   return _listDirNative(abs, showHidden);
+});
+
+ipcMain.handle('term:start', async (event, payload) => {
+  try {
+    const sessionId = (payload && payload.sessionId) || `iterm-${Date.now()}`;
+    if (integratedTermSessions.has(sessionId)) {
+      return { ok: false, error: 'session_already_exists' };
+    }
+    const shell = (payload && payload.shell) || (process.platform === 'win32' ? 'powershell' : 'zsh');
+    const cols = Math.max(20, Math.min(512, parseInt(payload && payload.cols, 10) || 80));
+    const rows = Math.max(10, Math.min(256, parseInt(payload && payload.rows, 10) || 24));
+    let cwd = payload && typeof payload.cwd === 'string' ? payload.cwd.trim() : '';
+    if (!cwd || !fs.existsSync(cwd)) {
+      cwd = (currentProjectRoot && fs.existsSync(currentProjectRoot)) ? currentProjectRoot : app.getPath('home');
+    }
+    const launch = getIntegratedTerminalLaunch(shell);
+    const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' };
+    const ptyProcess = pty.spawn(launch.file, launch.args, {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd,
+      env,
+    });
+    const sender = event.sender;
+    integratedTermSessions.set(sessionId, { ptyProcess, sender, cwd, shell });
+    ptyProcess.onData((data) => {
+      const sess = integratedTermSessions.get(sessionId);
+      if (sess?.sender && !sess.sender.isDestroyed()) {
+        try {
+          sess.sender.send('term:data', { sessionId, data });
+        } catch (_) {}
+      }
+    });
+    ptyProcess.onExit(() => {
+      integratedTermSessions.delete(sessionId);
+      try {
+        if (sender && !sender.isDestroyed()) sender.send('term:exit', { sessionId });
+      } catch (_) {}
+    });
+    return { ok: true, sessionId };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+});
+
+ipcMain.handle('term:write', (event, sessionId, data) => {
+  const sess = integratedTermSessions.get(sessionId);
+  if (!sess?.ptyProcess) return { ok: false };
+  try {
+    sess.ptyProcess.write(typeof data === 'string' ? data : String(data));
+    return { ok: true };
+  } catch (_) {
+    return { ok: false };
+  }
+});
+
+ipcMain.handle('term:resize', (event, sessionId, cols, rows) => {
+  const sess = integratedTermSessions.get(sessionId);
+  if (!sess?.ptyProcess) return { ok: false };
+  try {
+    sess.ptyProcess.resize(
+      Math.max(20, cols || 80),
+      Math.max(10, rows || 24),
+    );
+    return { ok: true };
+  } catch (_) {
+    return { ok: false };
+  }
+});
+
+ipcMain.handle('term:kill', (event, sessionId) => {
+  const sess = integratedTermSessions.get(sessionId);
+  if (!sess) return { ok: false };
+  try {
+    sess.ptyProcess.kill();
+  } catch (_) {}
+  integratedTermSessions.delete(sessionId);
+  return { ok: true };
 });
 
 ipcMain.handle('auth:get-pending-callback', () => {

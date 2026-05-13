@@ -59,6 +59,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
       showHidden: !!showHidden,
     }),
 
+  // Integrated bottom terminal — node-pty in main (low latency vs WS→Python).
+  startIntegratedTerminal: (opts) => ipcRenderer.invoke('term:start', opts || {}),
+  writeIntegratedTerminal: (sessionId, data) => ipcRenderer.invoke('term:write', sessionId, data),
+  resizeIntegratedTerminal: (sessionId, cols, rows) =>
+    ipcRenderer.invoke('term:resize', sessionId, cols, rows),
+  killIntegratedTerminal: (sessionId) => ipcRenderer.invoke('term:kill', sessionId),
+  onIntegratedTermData: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('term:data', wrapped);
+    return () => ipcRenderer.removeListener('term:data', wrapped);
+  },
+  onIntegratedTermExit: (listener) => {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on('term:exit', wrapped);
+    return () => ipcRenderer.removeListener('term:exit', wrapped);
+  },
+
   // SSO deep-link callback
   getPendingAuthCallback: () => ipcRenderer.invoke('auth:get-pending-callback'),
   onAuthCallback: (listener) => {
