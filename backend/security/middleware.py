@@ -21,6 +21,7 @@ _ALLOWLIST_PREFIXES: tuple[str, ...] = (
     "/auth/claude-credentials-internal",
     "/auth/sso",
     "/download",
+    "/api/releases",
     "/docs",
     "/openapi.json",
     "/mobile",

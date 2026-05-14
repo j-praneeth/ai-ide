@@ -1,6 +1,7 @@
 import sys
 import os
 import asyncio
+import httpx
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -166,35 +167,12 @@ def root():
 def health():
     return {"status": "healthy"}
 
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "j-praneeth/ai-ide")
+GH_TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GH_REPO_TOKEN") or ""
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOWNLOAD_SITE_DIR = PROJECT_ROOT / "download"
-BUILD_ARTIFACT_DIRS = [
-    PROJECT_ROOT / "release",
-    PROJECT_ROOT / "dist",
-]
-FIXED_WINDOWS_EXE = PROJECT_ROOT / "release" / "Nebula IDE Setup 1.0.0.exe"
 FAVICON_PATH = PROJECT_ROOT / "frontend" / "public" / "favicon.ico"
-
-def _find_latest_windows_exe():
-    if FIXED_WINDOWS_EXE.exists() and FIXED_WINDOWS_EXE.is_file():
-        return FIXED_WINDOWS_EXE
-
-    newest = None
-    newest_mtime = -1
-
-    for d in BUILD_ARTIFACT_DIRS:
-        if not d.exists() or not d.is_dir():
-            continue
-        for p in d.rglob("*.exe"):
-            try:
-                st = p.stat()
-            except Exception:
-                continue
-            if st.st_mtime > newest_mtime:
-                newest = p
-                newest_mtime = st.st_mtime
-
-    return newest
 
 if DOWNLOAD_SITE_DIR.exists() and DOWNLOAD_SITE_DIR.is_dir():
     app.mount("/download/static", StaticFiles(directory=str(DOWNLOAD_SITE_DIR), html=False), name="download_static")
@@ -212,31 +190,90 @@ def favicon():
         return JSONResponse(status_code=404, content={"error": "Not found"})
     return FileResponse(str(FAVICON_PATH), media_type="image/x-icon", headers={"Cache-Control": "no-store"})
 
-@app.get("/download/latest/meta")
-def download_latest_meta():
-    exe = _find_latest_windows_exe()
-    if not exe:
-        return JSONResponse(status_code=404, content={"found": False, "error": "No Windows .exe build found"})
-    st = exe.stat()
-    return {
-        "found": True,
-        "filename": exe.name,
-        "size": st.st_size,
-        "mtime": int(st.st_mtime),
-        "url": "/download/latest",
-    }
+PLATFORM_KEYWORDS = {
+    "windows": ["windows", "win32", "win-x64", ".exe"],
+    "macos": ["macos", "mac-x64", "mac-arm64", "darwin", ".dmg", "mac"],
+    "linux": ["linux", "linux-x64", "linux-arm64", ".appimage", ".deb", ".rpm"],
+}
 
-@app.get("/download/latest")
-def download_latest():
-    exe = _find_latest_windows_exe()
-    if not exe:
-        return JSONResponse(status_code=404, content={"error": "No Windows .exe build found"})
-    return FileResponse(
-        str(exe),
-        filename=exe.name,
-        media_type="application/octet-stream",
-        headers={"Cache-Control": "no-store"},
-    )
+def _classify_asset(name):
+    name_lower = name.lower()
+    for platform, keywords in PLATFORM_KEYWORDS.items():
+        if any(kw in name_lower for kw in keywords):
+            return platform
+    return "other"
+
+def _format_size(size_bytes):
+    if size_bytes is None:
+        return ""
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.0f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+@app.get("/api/releases/latest")
+async def api_releases_latest():
+    headers = {
+        "User-Agent": "Nebula-IDE/1.0",
+        "Accept": "application/vnd.github+json",
+    }
+    if GH_TOKEN:
+        headers["Authorization"] = f"Bearer {GH_TOKEN}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                version = str(data.get("tag_name", "v1.0.0")).lstrip("v")
+                assets = []
+                for a in data.get("assets", []):
+                    platform = _classify_asset(a["name"])
+                    assets.append({
+                        "name": a["name"],
+                        "size": a["size"],
+                        "size_formatted": _format_size(a["size"]),
+                        "url": a["browser_download_url"],
+                        "platform": platform,
+                        "content_type": a.get("content_type", ""),
+                    })
+                return {
+                    "found": True,
+                    "version": version,
+                    "release_name": data.get("name", f"v{version}"),
+                    "release_notes": data.get("body", ""),
+                    "published_at": data.get("published_at", ""),
+                    "html_url": data.get("html_url", ""),
+                    "assets": assets,
+                    "source": "github",
+                }
+
+            return {
+                "found": True,
+                "version": "",
+                "release_name": "",
+                "release_notes": "",
+                "published_at": "",
+                "html_url": "",
+                "assets": [],
+                "source": "github",
+                "message": "No releases published yet.",
+            }
+    except Exception as e:
+        logger.warning("GitHub releases API failed: %s", e)
+        return {
+            "found": True,
+            "version": "",
+            "release_name": "",
+            "release_notes": "",
+            "published_at": "",
+            "html_url": "",
+            "assets": [],
+            "source": "github",
+            "message": f"Could not fetch release data.",
+        }
 
 def main():
     import uvicorn

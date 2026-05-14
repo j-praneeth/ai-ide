@@ -15,18 +15,17 @@
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="/" aria-label="Nebula IDE home">
-          <span class="brand-mark">✦</span>
+          <span class="brand-mark">N</span>
           <span class="brand-name">nebula</span>
         </a>
         <nav class="nav" aria-label="Primary">
-          <a class="nav-link" href="#">Product</a>
-          <a class="nav-link" href="#">Resources</a>
-          <a class="nav-link" href="#">Customers</a>
-          <a class="nav-link" href="#">Pricing</a>
+          <a class="nav-link" href="#">Features</a>
+          <a class="nav-link" href="#">Docs</a>
+          <a class="nav-link active" href="/download">Download</a>
+          <a class="nav-link" href="#">Changelog</a>
         </nav>
         <div class="topbar-actions">
-          <a class="btn btn-ghost" href="#">Sign in</a>
-          <a class="btn btn-solid" href="#">Start for free</a>
+          <a class="btn btn-ghost" href="https://github.com/j-praneeth/ai-ide" target="_blank">GitHub</a>
         </div>
       </div>
     </header>
@@ -34,97 +33,103 @@
     <main class="page">
       <section class="hero">
         <div class="hero-inner">
-          <div class="hero-kicker">Desktop &amp; mobile</div>
-          <h1 class="hero-title">Download Nebula.</h1>
-          <div class="hero-subtitle">Available for Windows.</div>
-
-          <div class="hero-cta">
-            <a id="downloadPrimary" class="btn btn-primary is-loading" href="#" aria-busy="true">
-              <span class="btn-label">Finding latest Windows build…</span>
-              <span class="btn-spinner" aria-hidden="true"></span>
+          <div id="versionBadge" class="hero-badge">Loading...</div>
+          <h1 class="hero-title">
+            Download <span class="hero-title-highlight">Nebula</span>
+          </h1>
+          <p class="hero-subtitle">
+            The modern AI-powered code editor. Choose your platform and start coding smarter.
+          </p>
+          <div id="primaryCta" class="hero-cta" style="display:none">
+            <a id="downloadPrimary" class="btn btn-primary" href="#">
+              <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span class="btn-label">Download for <span id="primaryPlatform">Windows</span></span>
             </a>
-            <div id="downloadMeta" class="hero-meta">Optimized for Windows x64.</div>
           </div>
+          <div id="primaryMeta" class="hero-meta"></div>
+        </div>
+      </section>
 
-          <div class="hero-art" aria-hidden="true">
-            <div class="dock">
-              <div class="dock-item"></div>
-              <div class="dock-item"></div>
-              <div class="dock-app">
-                <div class="dock-app-mark">✦</div>
+      <section class="platforms">
+        <div class="platforms-inner">
+          <div class="platforms-header">
+            <h2 class="section-title">All platforms</h2>
+            <p class="section-desc">Available for desktop and mobile.</p>
+          </div>
+          <div id="platformCards" class="platforms-grid">
+            <div class="platform-card is-loading">
+              <div class="platform-card-icon">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
               </div>
-              <div class="dock-item"></div>
-              <div class="dock-item"></div>
+              <div class="platform-card-name">Windows</div>
+              <div class="platform-card-meta">Loading...</div>
+              <div class="platform-card-action">
+                <span class="btn btn-card is-loading">
+                  <span class="btn-label">Checking...</span>
+                </span>
+              </div>
             </div>
+            <div class="platform-card is-loading">
+              <div class="platform-card-icon">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><path d="M20.2 20.2A2 2 0 0 1 18 22h-12a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16.2z"/><path d="M8 2v4"/><path d="M16 2v4"/></svg>
+              </div>
+              <div class="platform-card-name">macOS</div>
+              <div class="platform-card-meta">Loading...</div>
+              <div class="platform-card-action">
+                <span class="btn btn-card is-loading">
+                  <span class="btn-label">Checking...</span>
+                </span>
+              </div>
+            </div>
+            
           </div>
         </div>
       </section>
 
-      <section class="table">
-        <div class="table-inner">
-          <div class="row">
-            <div class="row-left">
-              <div class="row-title">Nebula for desktop.</div>
-              <div class="row-desc">Windows.</div>
-            </div>
-            <div class="row-middle">
-              <div class="variant">
-                <div class="variant-name">Windows</div>
-                <div class="variant-meta">x64</div>
-              </div>
-            </div>
-            <div class="row-right">
-              <a id="downloadRow" class="btn btn-row is-loading" href="#" aria-busy="true">
-                <span class="btn-label">Download</span>
-                <span class="btn-spinner" aria-hidden="true"></span>
-              </a>
-            </div>
+      <section id="releaseNotes" class="notes" style="display:none">
+        <div class="notes-inner">
+          <div class="notes-header">
+            <h2 class="section-title">Release notes</h2>
+            <span id="notesVersion" class="notes-badge"></span>
           </div>
-
-          <div class="divider"></div>
-
-          <div class="row">
-            <div class="row-left">
-              <div class="row-title">Nebula for mobile.</div>
-              <div class="row-desc">iOS and Android.</div>
-            </div>
-            <div class="row-middle">
-              <div class="variant">
-                <div class="variant-name">iOS</div>
-              </div>
-              <div class="variant">
-                <div class="variant-name">Android</div>
-              </div>
-            </div>
-            <div class="row-right row-right-multi">
-              <a class="btn btn-store is-disabled" href="#" aria-disabled="true">App store</a>
-              <a class="btn btn-store is-disabled" href="#" aria-disabled="true">Play store</a>
-            </div>
-          </div>
-
-          <div id="notice" class="notice" role="status" aria-live="polite"></div>
+          <div id="notesBody" class="notes-body"></div>
         </div>
       </section>
     </main>
 
+    <footer class="footer">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <span class="brand-mark">N</span>
+          <span class="brand-name">nebula</span>
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/j-praneeth/ai-ide" target="_blank">GitHub</a>
+          <a href="#">Privacy</a>
+          <a href="#">Terms</a>
+        </div>
+        <div class="footer-copy">&copy; 2026 Nebula IDE</div>
+      </div>
+    </footer>
+
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
+
     <script>
       window.NEBULA_DOWNLOAD_CONFIG = {
-        metaEndpoint: "/download/latest/meta",
-        downloadEndpoint: "/download/latest"
+        releasesEndpoint: "/api/releases/latest",
       };
     </script>
     <script>
       (function () {
-        const protocol = location.protocol;
-        const css = document.getElementById('downloadStyles');
+        var protocol = location.protocol;
+        var css = document.getElementById('downloadStyles');
         if (protocol === 'file:') {
           if (css) css.setAttribute('href', './styles.css');
           window.NEBULA_DOWNLOAD_CONFIG = {
-            metaEndpoint: "http://127.0.0.1:8000/download/latest/meta",
-            downloadEndpoint: "http://127.0.0.1:8000/download/latest"
+            releasesEndpoint: "http://127.0.0.1:8000/api/releases/latest",
           };
         }
-        const script = document.createElement('script');
+        var script = document.createElement('script');
         script.src = protocol === 'file:' ? './main.js' : '/download/static/main.js';
         document.body.appendChild(script);
       })();
