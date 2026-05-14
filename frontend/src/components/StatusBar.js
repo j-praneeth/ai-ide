@@ -207,7 +207,7 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
   );
 }
 
-export default function StatusBar({ activeFile, cursorPosition, encoding, hasWorkspace = true }) {
+export default function StatusBar({ activeFile, cursorPosition, encoding, hasWorkspace = true, updateState, updateError }) {
   const [branch, setBranch] = useState('');
   const [gitChanges, setGitChanges] = useState(0);
   const [showBranchPicker, setShowBranchPicker] = useState(false);
@@ -308,6 +308,12 @@ export default function StatusBar({ activeFile, cursorPosition, encoding, hasWor
               <span>{language}</span>
             </div>
           </>
+        )}
+        {updateState === 'error' && updateError && (
+          <div className="status-item update-error" title={updateError}>
+            <VscError size={12} />
+            <span style={{ color: '#fca5a5', marginLeft: 4 }}>{updateError}</span>
+          </div>
         )}
         <div className="status-item" title="Notifications">
           <VscBell size={12} />

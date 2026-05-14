@@ -56,8 +56,7 @@ Save the token — you'll use it as `GH_TOKEN`.
 "publish": {
   "provider": "github",
   "owner": "j-praneeth",
-  "repo": "ai-ide",
-  "releaseType": "release"
+  "repo": "ai-ide"
 }
 ```
 
@@ -83,12 +82,9 @@ npm run dist -- --win --publish always
 GH_TOKEN=your_token_here npm run dist -- --publish always
 ```
 
-`--publish always` uploads the artifacts to a GitHub Draft Release automatically.
+`--publish always` uploads the artifacts to a GitHub Release automatically.
 
-After the command completes:
-- Go to **GitHub → Releases**
-- You'll see a Draft release with `Nebula.IDE.Setup.x.x.x.exe`, `Nebula.IDE-x.x.x.dmg`, `latest.yml`, `latest-mac.yml`
-- Click **Publish release** to make it live
+After the command completes, the release is published immediately and users will see the update on their next app launch.
 
 ---
 
@@ -115,7 +111,7 @@ After that first install, **all future updates are delivered automatically**.
    ```bash
    GH_TOKEN=your_token npm run dist -- --publish always
    ```
-3. Publish the GitHub Draft Release → users get the update within minutes of their next app launch.
+3. Users get the update within minutes of their next app launch.
 
 ---
 
@@ -180,7 +176,8 @@ APPLE_TEAM_ID=YOURTEAMID
 | Problem | Solution |
 |---------|----------|
 | `electron-updater` not found at runtime | Run `npm install` at project root (it's in `dependencies`) |
-| Updates not found | Check that `latest.yml` / `latest-mac.yml` are in the GitHub Release |
+| Updates not found | Check that `latest.yml` / `latest-mac.yml` are in the GitHub Release. Ensure `releaseType` is NOT set to `draft` in `package.json` publish config (otherwise updater looks for drafts only) |
+| Updates not found (private repo) | Make the repo public, or electron-updater needs `GH_TOKEN` or `GH_REPO_TOKEN` at runtime |
 | `GH_TOKEN` 401 errors | Token needs `repo` scope; check token is not expired |
 | macOS: "app is damaged" | App needs code signing + notarization for public distribution |
 | Windows: SmartScreen warning | Normal for unsigned apps; users click "More info → Run anyway" |

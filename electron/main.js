@@ -1566,7 +1566,7 @@ ipcMain.on('get-url-config-sync', (event) => {
   const productionAuthUrl = process.env.NEBULA_AUTH_URL || 'https://nebula-ide-server.up.railway.app';
   const developmentAuthUrl = process.env.NEBULA_AUTH_URL_DEV || apiUrl;
   const authUrl = isProduction ? productionAuthUrl : developmentAuthUrl;
-  event.returnValue = { apiUrl, authUrl, isProduction };
+  event.returnValue = { apiUrl, authUrl, isProduction, appVersion: app.getVersion() };
 });
 
 ipcMain.handle('get-platform', () => {
@@ -2410,6 +2410,38 @@ function _initAutoUpdater() {
     return;
   }
 
+  // For private repos, electron-updater needs an auth token.
+  // Read it from the bundled update-config.json placed by afterPack.js.
+  let ghToken = process.env.GH_TOKEN || process.env.GH_REPO_TOKEN || '';
+  if (!ghToken) {
+    try {
+      const cfgPath = path.join(process.resourcesPath || '', 'update-config.json');
+      if (fs.existsSync(cfgPath)) {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+        if (cfg.githubToken) ghToken = cfg.githubToken;
+      }
+    } catch (_) {}
+  }
+
+  if (ghToken) {
+    process.env.GH_TOKEN = ghToken;
+    // Explicitly pass the token to the updater so it uses the API (not the atom
+    // feed) for private repos.  Without this, electron-updater falls back to
+    // github.com/.../releases.atom which returns 404 for private repos.
+    try {
+      autoUpdater.setFeedURL({
+        provider: 'github',
+        owner: 'j-praneeth',
+        repo: 'ai-ide',
+        private: true,
+        token: ghToken,
+      });
+    } catch (_) {}
+    console.log('[updater] GH_TOKEN configured for private repo');
+  } else {
+    console.log('[updater] No GH_TOKEN — public repo or dev mode');
+  }
+
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
@@ -2427,7 +2459,8 @@ function _initAutoUpdater() {
   autoUpdater.on('download-progress',      (prog) => send('update:download-progress', prog));
   autoUpdater.on('update-downloaded',      (info) => send('update:downloaded',        info));
   autoUpdater.on('error',                  (err)  => {
-    console.warn('[updater] error:', err?.message || err);
+    console.error('[updater] error:', err?.message || err);
+    if (err?.message) console.error('[updater] stack:', err.stack);
     send('update:error', { message: err?.message || String(err) });
   });
 

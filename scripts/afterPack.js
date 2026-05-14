@@ -46,6 +46,23 @@ exports.default = async function afterPack(context) {
     return;
   }
 
+  const resourcesDir = path.join(appPath, 'Contents', 'Resources');
+
+  // Embed GH_TOKEN so electron-updater can authenticate with the private repo
+  // at runtime.  The token is stripped from builds that run without GH_TOKEN.
+  const ghToken = process.env.GH_TOKEN || process.env.GH_REPO_TOKEN || '';
+  if (ghToken) {
+    try {
+      const cfg = { githubToken: ghToken };
+      fs.writeFileSync(path.join(resourcesDir, 'update-config.json'), JSON.stringify(cfg), 'utf-8');
+      console.log('[afterPack] update-config.json written (GH_TOKEN embedded) ✓');
+    } catch (e) {
+      console.warn('[afterPack] failed to write update-config.json:', e.message);
+    }
+  } else {
+    console.log('[afterPack] GH_TOKEN not set — update-config.json not written (public repo only)');
+  }
+
   console.log(`[afterPack] Ad-hoc signing + quarantine removal: ${appPath}`);
 
   try {

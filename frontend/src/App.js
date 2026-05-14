@@ -92,6 +92,11 @@ const MENU_ITEMS = {
     { type: 'separator' },
     { id: 'view.settings', label: 'Settings', shortcut: '⌘ ,' },
   ],
+  Help: [
+    { id: 'help.checkUpdates', label: 'Check for Updates' },
+    { type: 'separator' },
+    { id: 'help.about', label: 'About Nebula IDE' },
+  ],
 };
 
 function App() {
@@ -131,7 +136,7 @@ function App() {
   const [extensionApps, setExtensionApps] = useState(() => extensionRegistry.getSidebarApps());
 
   // ── Auto-update state ────────────────────────────────────────
-  const [updateState, setUpdateState] = useState(null); // null | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
+  const [updateState, setUpdateState] = useState(null); // null | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'updated'
   const [updateProgress, setUpdateProgress] = useState(0);
   const [updateVersion, setUpdateVersion] = useState('');
   const workspaceCtxRef = useRef({ projectRoot: '', webFolderHandle: null });
@@ -174,16 +179,17 @@ function App() {
   }, []);
 
   // ── Auto-update IPC listeners (Electron only) ────────────────
+  const [updateError, setUpdateError] = useState('');
   useEffect(() => {
     const api = window.electronAPI?.updates;
     if (!api) return;
     const unsubs = [
-      api.onChecking?.(() => setUpdateState('checking')),
+      api.onChecking?.(() => { setUpdateState('checking'); setUpdateError(''); }),
       api.onAvailable?.((info) => { setUpdateState('available'); setUpdateVersion(info?.version || ''); }),
-      api.onNotAvailable?.(() => setUpdateState(null)),
+      api.onNotAvailable?.(() => { setUpdateState('updated'); setUpdateVersion(''); setTimeout(() => setUpdateState(s => s === 'updated' ? null : s), 4000); }),
       api.onDownloadProgress?.((p) => { setUpdateState('downloading'); setUpdateProgress(Math.round(p?.percent || 0)); }),
       api.onDownloaded?.((info) => { setUpdateState('ready'); setUpdateVersion(info?.version || ''); }),
-      api.onError?.(() => setUpdateState(null)),
+      api.onError?.((err) => { setUpdateState('error'); setUpdateError(err?.message || 'Update check failed'); }),
     ].filter(Boolean);
     return () => unsubs.forEach(fn => { try { fn(); } catch (_) {} });
   }, []);
@@ -774,6 +780,11 @@ function App() {
       case 'help.shortcuts':
         editorRef.current?.trigger('keyboard', 'editor.action.quickCommand');
         break;
+      case 'help.checkUpdates':
+        window.electronAPI?.updates?.checkForUpdates?.();
+        setUpdateState('checking');
+        setUpdateError('');
+        break;
       case 'help.about':
         setShowAbout(true);
         break;
@@ -1168,7 +1179,7 @@ function App() {
         <div className="about-dialog" onClick={e => e.stopPropagation()}>
           <div className="about-logo">✦</div>
           <h2>Nebula IDE</h2>
-          <p className="about-version">Version 1.0.0</p>
+          <p className="about-version">Version {window.NEBULA_CONFIG?.appVersion || '1.0.0'}</p>
           <p className="about-desc">A modern, AI-powered code editor with a unique deep-space theme.</p>
           <div className="about-info">
             <div><strong>Frontend:</strong> React + Monaco Editor</div>
@@ -1208,22 +1219,7 @@ function App() {
           </div>
         </div>
       )}
-      {/* ── Auto-update banner ── */}
-      {updateState === 'ready' && (
-        <div className="update-banner">
-          <VscRefresh size={14} style={{ flexShrink: 0 }} />
-          <span>Update <strong>{updateVersion}</strong> ready to install.</span>
-          <button
-            className="update-restart-btn"
-            onClick={() => window.electronAPI?.updates?.restartAndInstall?.()}
-          >
-            Restart to Update
-          </button>
-          <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => setUpdateState(null)} title="Dismiss">
-            <VscSync size={12} />
-          </button>
-        </div>
-      )}
+      {/* ── Auto-update downloading banner ── */}
       {updateState === 'downloading' && (
         <div className="update-banner update-banner-downloading">
           <VscSync size={14} className="spin" style={{ flexShrink: 0 }} />
@@ -1300,6 +1296,29 @@ function App() {
               <VscDeviceMobile size={16} />
             </button>
           </div>
+          {updateState === 'ready' && (
+            <button
+              className="title-bar-update-btn ready"
+              onClick={() => window.electronAPI?.updates?.restartAndInstall?.()}
+              title={`Update ${updateVersion} ready — click to restart and install`}
+            >
+              <VscRefresh size={14} />
+              <span>Restart to Update</span>
+            </button>
+          )}
+          {updateState === 'updated' && (
+            <span className="title-bar-updated-label">Updated</span>
+          )}
+          {updateState === 'error' && (
+            <button
+              className="title-bar-update-btn error"
+              onClick={() => { window.electronAPI?.updates?.checkForUpdates?.(); setUpdateState('checking'); setUpdateError(''); }}
+              title={updateError || 'Update check failed — click to retry'}
+            >
+              <VscRefresh size={14} />
+              <span>Update Error</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -1481,6 +1500,8 @@ function App() {
         activeFile={activeFile}
         cursorPosition={cursorPosition}
         hasWorkspace={!!projectRoot || !!webFolderHandle}
+        updateState={updateState}
+        updateError={updateError}
       />
 
       {/* Command Palette */}
