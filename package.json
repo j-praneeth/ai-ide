@@ -15,6 +15,7 @@
     "build:backend:win": "cd backend && python3 -m PyInstaller --onefile --name nebula-backend --distpath ../dist/backend main.py --add-data \"agent:agent\" --add-data \"relay_config.json:.\"",
     "build:vault": "node scripts/build-cli-vault.mjs",
     "build:packaged:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false node scripts/build-with-kek.mjs --mac",
+    "build:mac:publish": "npm run build:frontend && bash scripts/build-backend.sh && npm run build:vault && CSC_IDENTITY_AUTO_DISCOVERY=false node scripts/build-with-kek.mjs --mac --publish always",
     "build:packaged:win": "node scripts/build-with-kek.mjs --win",
     "build:packaged:all": "node scripts/build-with-kek.mjs --mac --win",
     "prebuild": "npm run build:frontend",

@@ -1526,10 +1526,23 @@ function createWindow() {
     win.loadFile(path.join(__dirname, '..', 'frontend', 'build', 'index.html'));
   }
 
-  win.once('ready-to-show', () => {
+  const showWindow = () => {
     closeSplash();
     win.show();
     win.focus();
+  };
+
+  const fallbackTimer = setTimeout(showWindow, 4000);
+
+  win.once('ready-to-show', () => {
+    clearTimeout(fallbackTimer);
+    showWindow();
+  });
+
+  win.webContents.on('did-fail-load', (_event, _code, _desc, _url, isMainFrame) => {
+    if (!isMainFrame) return;
+    clearTimeout(fallbackTimer);
+    showWindow();
   });
 
   win.webContents.on('did-finish-load', () => {

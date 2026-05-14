@@ -268,6 +268,7 @@ function App() {
   //   - Backend not ready → retry with backoff until it responds
   //   - Backend ready → succeeds immediately on first try
   const _startupFolderHandled = useRef(false);
+  const _handleOpenFolder = useRef(null);
 
   useEffect(() => {
     let active = true;
@@ -284,7 +285,7 @@ function App() {
           _startupFolderHandled.current = true;
           const name = startupPath.split(/[\\/]/).filter(Boolean).pop() || startupPath;
           setStartupFolderName(name);
-          handleOpenFolder(startupPath);
+          _handleOpenFolder.current(startupPath);
         } else {
           // Not a folder-open window — hide loading immediately.
           setWorkspaceLoading(false);
@@ -343,7 +344,7 @@ function App() {
       if (retryTimer) clearTimeout(retryTimer);
       cleanupFns.forEach(fn => { try { fn(); } catch (_) {} });
     };
-  }, [loadTree, handleOpenFolder]);
+  }, [loadTree]);
 
   // After login, Super Admin lands on Admin dashboard by default.
   useEffect(() => {
@@ -1103,6 +1104,7 @@ function App() {
       if (showBlockingLoad) setWorkspaceLoading(false);
     }
   }, [loadTree, showHiddenFiles]);
+  _handleOpenFolder.current = handleOpenFolder;
 
   // Load children for a folder (used when web folder handle is set)
   const loadChildrenFromHandle = useCallback(async (path) => {
