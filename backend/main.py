@@ -13,7 +13,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -186,7 +186,10 @@ def download_page():
     index_path = DOWNLOAD_SITE_DIR / "index.html"
     if not index_path.exists():
         return JSONResponse(status_code=404, content={"error": "Download page not found"})
-    return FileResponse(str(index_path), media_type="text/html", headers={"Cache-Control": "no-store"})
+    html = index_path.read_text(encoding="utf-8")
+    gh_token = os.environ.get("GH_TOKEN", "")
+    html = html.replace("__GH_TOKEN__", gh_token)
+    return HTMLResponse(content=html, media_type="text/html", headers={"Cache-Control": "no-store"})
 
 @app.get("/favicon.ico")
 def favicon():

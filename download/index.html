@@ -762,7 +762,13 @@
           </div>
           <div class="platform-card is-loading">
             <div class="platform-card-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><path d="M20.2 20.2A2 2 0 0 1 18 22h-12a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16.2z"/><path d="M8 2v4"/><path d="M16 2v4"/></svg></div>
-            <div class="platform-card-name">macOS</div>
+            <div class="platform-card-name">macOS (Intel)</div>
+            <div class="platform-card-meta">Loading...</div>
+            <div class="platform-card-action"><span class="btn btn-card is-loading"><span class="btn-label">Checking...</span></span></div>
+          </div>
+          <div class="platform-card is-loading">
+            <div class="platform-card-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><path d="M20.2 20.2A2 2 0 0 1 18 22h-12a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16.2z"/><path d="M8 2v4"/><path d="M16 2v4"/></svg></div>
+            <div class="platform-card-name">macOS (Apple Silicon)</div>
             <div class="platform-card-meta">Loading...</div>
             <div class="platform-card-action"><span class="btn btn-card is-loading"><span class="btn-label">Checking...</span></span></div>
           </div>
@@ -809,7 +815,7 @@
   <script>
     var NEBULA = {
       repo: "j-praneeth/ai-ide",
-      ghToken: "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"
+      ghToken: "__GH_TOKEN__"
     };
 
     function $id(id) { return document.getElementById(id); }
@@ -832,7 +838,11 @@
     function _plat() {
       var p = navigator.platform || "";
       if (p.indexOf("Win") !== -1) return "windows";
-      if (p.indexOf("Mac") !== -1) return "macos";
+      if (p.indexOf("Mac") !== -1) {
+        var ua = navigator.userAgent || "";
+        if (ua.indexOf("ARM64") !== -1 || ua.indexOf("aarch64") !== -1) return "macos-arm64";
+        return "macos-intel";
+      }
       return "windows";
     }
 
@@ -866,13 +876,14 @@
     function _cards(assets, version) {
       var icons = {
         windows: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
-        macos: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><path d="M20.2 20.2A2 2 0 0 1 18 22h-12a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16.2z"/><path d="M8 2v4"/><path d="M16 2v4"/></svg>'
+        'macos-intel': '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><path d="M20.2 20.2A2 2 0 0 1 18 22h-12a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16.2z"/><path d="M8 2v4"/><path d="M16 2v4"/></svg>',
+        'macos-arm64': '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><path d="M20.2 20.2A2 2 0 0 1 18 22h-12a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16.2z"/><path d="M8 2v4"/><path d="M16 2v4"/></svg>'
       };
-      var names = { windows: "Windows", macos: "macOS" };
+      var names = { windows: "Windows", 'macos-intel': "macOS (Intel)", 'macos-arm64': "macOS (Apple Silicon)" };
       var grid = $id("platformCards");
       if (!grid) return;
       grid.innerHTML = "";
-      ["windows", "macos"].forEach(function (k) {
+      ["windows", "macos-intel", "macos-arm64"].forEach(function (k) {
         var m = assets.filter(function (a) { return a.platform === k; });
         var c = document.createElement("div");
         c.className = "platform-card";
@@ -889,11 +900,11 @@
 
     function _cta(assets, version) {
       var user = _plat();
-      var names = { windows: "Windows", macos: "macOS" };
+      var names = { windows: "Windows", 'macos-intel': "macOS (Intel)", 'macos-arm64': "macOS (Apple Silicon)" };
       var m = assets.filter(function (a) { return a.platform === user; });
       var t = user;
       if (m.length === 0) {
-        var order = ["windows", "macos"];
+        var order = ["windows", "macos-arm64", "macos-intel"];
         for (var i = 0; i < order.length; i++) {
           if (assets.some(function (a) { return a.platform === order[i]; })) { t = order[i]; break; }
         }
@@ -967,7 +978,10 @@
           var n = a.name.toLowerCase();
           var p = "other";
           if (n.indexOf("windows") !== -1 || n.indexOf(".exe") !== -1) p = "windows";
-          else if (n.indexOf("macos") !== -1 || n.indexOf(".dmg") !== -1 || n.indexOf("mac-") !== -1) p = "macos";
+          else if (n.indexOf(".dmg") !== -1) {
+            if (n.indexOf("arm64") !== -1) p = "macos-arm64";
+            else p = "macos-intel";
+          }
           return {
             name: a.name, size: a.size,
             size_formatted: a.size < 1048576 ? Math.round(a.size / 1024) + " KB" : (a.size / 1048576).toFixed(1) + " MB",

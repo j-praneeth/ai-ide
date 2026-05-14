@@ -1526,7 +1526,24 @@ function createWindow() {
     win.loadFile(path.join(__dirname, '..', 'frontend', 'build', 'index.html'));
   }
 
+  const readyTimeout = setTimeout(() => {
+    if (!win.isVisible()) {
+      closeSplash();
+      win.show();
+      win.focus();
+    }
+  }, 5000);
+
   win.once('ready-to-show', () => {
+    clearTimeout(readyTimeout);
+    closeSplash();
+    win.show();
+    win.focus();
+  });
+
+  win.webContents.on('did-fail-load', (_event, _code, _desc, _url, isMainFrame) => {
+    if (!isMainFrame) return;
+    clearTimeout(readyTimeout);
     closeSplash();
     win.show();
     win.focus();
