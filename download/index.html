@@ -1,371 +1,997 @@
 <!doctype html>
 <html lang="en">
+
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Download Nebula IDE</title>
-<style>
-:root{--bg:#ffffff;--bg-subtle:#f8f9fb;--text:#0b0d12;--text-secondary:rgba(11,13,18,0.62);--text-tertiary:rgba(11,13,18,0.42);--hairline:rgba(11,13,18,0.08);--hairline-strong:rgba(11,13,18,0.14);--shadow-sm:0 1px 3px rgba(0,0,0,0.04);--shadow-md:0 4px 20px rgba(0,0,0,0.06);--shadow-lg:0 12px 48px rgba(0,0,0,0.08);--btn-bg:#0b0d12;--btn-text:#ffffff;--btn-hover:#1a1d24;--btn-soft:rgba(11,13,18,0.06);--radius-sm:8px;--radius-md:12px;--radius-lg:16px;--max:1040px;--accent:#0b0d12;--error:#bc1c1c}
-*{box-sizing:border-box}
-html{scroll-behavior:smooth}
-html,body{height:100%}
-body{margin:0;color:var(--text);background:var(--bg);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
-.topbar{position:sticky;top:0;z-index:20;background:rgba(255,255,255,0.88);backdrop-filter:blur(14px) saturate(1.4);-webkit-backdrop-filter:blur(14px) saturate(1.4);border-bottom:1px solid var(--hairline)}
-.topbar-inner{max-width:var(--max);margin:0 auto;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between;gap:12px}
-.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--text);font-weight:700;font-size:15px;letter-spacing:-0.01em;flex-shrink:0}
-.brand-mark{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;background:var(--accent);color:white;font-size:13px;font-weight:800}
-.nav{display:flex;gap:4px;align-items:center}
-.nav-link{text-decoration:none;color:var(--text-secondary);font-size:13px;font-weight:600;padding:8px 14px;border-radius:8px;transition:background .15s,color .15s}
-.nav-link:hover{background:var(--btn-soft);color:var(--text)}
-.nav-link.active{color:var(--text);background:var(--btn-soft)}
-.topbar-actions{display:flex;gap:8px;align-items:center;flex-shrink:0}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:999px;border:1px solid transparent;padding:8px 16px;font-size:13px;font-weight:600;text-decoration:none;cursor:pointer;user-select:none;transition:all .15s;white-space:nowrap;line-height:1}
-.btn-ghost{background:transparent;border-color:var(--hairline-strong);color:var(--text-secondary)}
-.btn-ghost:hover{background:var(--btn-soft);color:var(--text)}
-.page{display:flex;flex-direction:column;min-height:calc(100vh - 56px)}
-.hero{padding:72px 24px 48px;text-align:center;position:relative;overflow:hidden}
-.hero::before{content:'';position:absolute;inset:0;background:linear-gradient(to right,rgba(11,13,18,0.025) 1px,transparent 1px) 0 0/80px 80px,linear-gradient(to bottom,rgba(11,13,18,0.025) 1px,transparent 1px) 0 0/80px 80px,radial-gradient(ellipse at 50% -20%,rgba(11,13,18,0.04),transparent 50%);pointer-events:none}
-.hero-inner{max-width:720px;margin:0 auto;position:relative}
-.hero-badge{display:inline-flex;align-items:center;gap:6px;background:var(--btn-soft);border:1px solid var(--hairline);border-radius:999px;padding:6px 14px;font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:24px}
-.hero-title{font-size:52px;line-height:1.08;margin:0;letter-spacing:-0.03em;font-weight:800}
-.hero-title-highlight{background:linear-gradient(135deg,#0b0d12,#404552);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.hero-subtitle{margin-top:14px;font-size:16px;line-height:1.6;color:var(--text-secondary);font-weight:500;max-width:500px;margin-left:auto;margin-right:auto}
-.hero-cta{margin-top:28px;display:flex;justify-content:center}
-.btn-primary{background:var(--btn-bg);color:var(--btn-text);padding:12px 28px;font-size:15px;font-weight:700;gap:10px;border:none;box-shadow:var(--shadow-md);transition:transform .15s,box-shadow .15s,background .15s}
-.btn-primary:hover{background:var(--btn-hover);transform:translateY(-1px);box-shadow:var(--shadow-lg)}
-.btn-primary:active{transform:translateY(0)}
-.btn-icon{width:18px;height:18px;flex-shrink:0}
-.hero-meta{margin-top:8px;font-size:12px;color:var(--text-tertiary);font-weight:500}
-.platforms{padding:16px 24px 64px}
-.platforms-inner{max-width:var(--max);margin:0 auto}
-.platforms-header{text-align:center;margin-bottom:36px}
-.section-title{font-size:20px;font-weight:700;margin:0 0 6px;letter-spacing:-0.02em}
-.section-desc{margin:0;font-size:14px;color:var(--text-secondary);font-weight:500}
-.platforms-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
-.platform-card{background:var(--bg-subtle);border:1px solid var(--hairline);border-radius:var(--radius-lg);padding:32px 28px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:16px;transition:border-color .2s,box-shadow .2s,transform .2s}
-.platform-card:hover{border-color:var(--hairline-strong);box-shadow:var(--shadow-sm);transform:translateY(-2px)}
-.platform-card.is-loading{opacity:.6}
-.platform-card-icon{width:52px;height:52px;border-radius:var(--radius-md);background:var(--btn-soft);border:1px solid var(--hairline);display:grid;place-items:center;color:var(--text)}
-.platform-card-name{font-size:17px;font-weight:700;letter-spacing:-0.01em}
-.platform-card-meta{font-size:12px;color:var(--text-secondary);font-weight:500;min-height:18px}
-.platform-card-action{margin-top:4px}
-.btn-card{background:var(--btn-bg);color:var(--btn-text);padding:10px 22px;font-size:13px;font-weight:700;border:none;transition:background .15s,transform .15s,opacity .15s}
-.btn-card:hover{background:var(--btn-hover);transform:translateY(-1px)}
-.btn-card:active{transform:translateY(0)}
-.btn-card.is-loading{opacity:.5;cursor:default;background:var(--btn-soft);color:var(--text-secondary)}
-.btn-card.is-loading:hover{transform:none}
-.btn-card.is-disabled{opacity:.4;cursor:not-allowed;background:var(--btn-soft);color:var(--text-secondary)}
-.btn-card.is-disabled:hover{transform:none}
-.notes{padding:0 24px 64px}
-.notes-inner{max-width:720px;margin:0 auto}
-.notes-header{display:flex;align-items:center;gap:12px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--hairline)}
-.notes-header .section-title{font-size:16px;margin:0}
-.notes-badge{font-size:11px;font-weight:700;background:var(--btn-soft);border:1px solid var(--hairline);border-radius:999px;padding:3px 10px;color:var(--text-secondary)}
-.notes-body{font-size:14px;line-height:1.7;color:var(--text-secondary)}
-.notes-body h1,.notes-body h2,.notes-body h3,.notes-body h4{color:var(--text);margin:20px 0 10px;font-weight:700}
-.notes-body h1{font-size:18px}
-.notes-body h2{font-size:16px}
-.notes-body h3{font-size:14px}
-.notes-body p{margin:0 0 12px}
-.notes-body ul,.notes-body ol{margin:0 0 12px;padding-left:22px}
-.notes-body li{margin-bottom:4px}
-.notes-body code{background:var(--btn-soft);border:1px solid var(--hairline);border-radius:4px;padding:1px 5px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
-.notes-body pre{background:var(--bg-subtle);border:1px solid var(--hairline);border-radius:var(--radius-sm);padding:16px;overflow-x:auto;font-size:13px;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
-.notes-body a{color:var(--text);font-weight:600;text-decoration:underline;text-underline-offset:2px}
-.notes-body hr{border:none;border-top:1px solid var(--hairline);margin:20px 0}
-.notes-body blockquote{border-left:3px solid var(--hairline-strong);margin:0 0 12px;padding:4px 0 4px 16px;color:var(--text-secondary)}
-.footer{border-top:1px solid var(--hairline);padding:24px;margin-top:auto}
-.footer-inner{max-width:var(--max);margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:16px}
-.footer-brand{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600}
-.footer-brand .brand-mark{width:20px;height:20px;font-size:10px;border-radius:5px}
-.footer-links{display:flex;gap:20px}
-.footer-links a{color:var(--text-secondary);text-decoration:none;font-size:13px;font-weight:500;transition:color .15s}
-.footer-links a:hover{color:var(--text)}
-.footer-copy{font-size:12px;color:var(--text-tertiary);font-weight:500}
-.notice{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;font-size:13px;font-weight:600;padding:12px 20px;border-radius:var(--radius-md);background:var(--bg);border:1px solid var(--hairline);box-shadow:var(--shadow-lg);display:none;max-width:480px;text-align:center}
-.notice.is-visible{display:block}
-.notice.is-error{border-color:var(--error);color:var(--error)}
-@media(max-width:860px){.hero{padding:56px 20px 36px}.hero-title{font-size:38px}.hero-subtitle{font-size:14px}.platforms-grid{grid-template-columns:1fr;gap:16px}.platform-card{padding:28px 24px}.nav{display:none}.topbar-inner{padding:0 16px}.footer-inner{flex-direction:column;text-align:center}}
-@media(max-width:420px){.hero-title{font-size:30px}.btn-primary{padding:10px 22px;font-size:14px}}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Download Nebula IDE</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-subtle: #f8f9fb;
+      --text: #0b0d12;
+      --text-secondary: rgba(11, 13, 18, 0.62);
+      --text-tertiary: rgba(11, 13, 18, 0.42);
+      --hairline: rgba(11, 13, 18, 0.08);
+      --hairline-strong: rgba(11, 13, 18, 0.14);
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04);
+      --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.06);
+      --shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.08);
+      --btn-bg: #0b0d12;
+      --btn-text: #ffffff;
+      --btn-hover: #1a1d24;
+      --btn-soft: rgba(11, 13, 18, 0.06);
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --max: 1040px;
+      --accent: #0b0d12;
+      --error: #bc1c1c
+    }
+
+    * {
+      box-sizing: border-box
+    }
+
+    html {
+      scroll-behavior: smooth
+    }
+
+    html,
+    body {
+      height: 100%
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background: var(--bg);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(14px) saturate(1.4);
+      -webkit-backdrop-filter: blur(14px) saturate(1.4);
+      border-bottom: 1px solid var(--hairline)
+    }
+
+    .topbar-inner {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 24px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: var(--text);
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+      flex-shrink: 0
+    }
+
+    .brand-mark {
+      width: 26px;
+      height: 26px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      background: var(--accent);
+      color: white;
+      font-size: 13px;
+      font-weight: 800
+    }
+
+    .nav {
+      display: flex;
+      gap: 4px;
+      align-items: center
+    }
+
+    .nav-link {
+      text-decoration: none;
+      color: var(--text-secondary);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 14px;
+      border-radius: 8px;
+      transition: background .15s, color .15s
+    }
+
+    .nav-link:hover {
+      background: var(--btn-soft);
+      color: var(--text)
+    }
+
+    .nav-link.active {
+      color: var(--text);
+      background: var(--btn-soft)
+    }
+
+    .topbar-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-shrink: 0
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      user-select: none;
+      transition: all .15s;
+      white-space: nowrap;
+      line-height: 1
+    }
+
+    .btn-ghost {
+      background: transparent;
+      border-color: var(--hairline-strong);
+      color: var(--text-secondary)
+    }
+
+    .btn-ghost:hover {
+      background: var(--btn-soft);
+      color: var(--text)
+    }
+
+    .page {
+      display: flex;
+      flex-direction: column;
+      min-height: calc(100vh - 56px)
+    }
+
+    .hero {
+      padding: 72px 24px 48px;
+      text-align: center;
+      position: relative;
+      overflow: hidden
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(to right, rgba(11, 13, 18, 0.025) 1px, transparent 1px) 0 0/80px 80px, linear-gradient(to bottom, rgba(11, 13, 18, 0.025) 1px, transparent 1px) 0 0/80px 80px, radial-gradient(ellipse at 50% -20%, rgba(11, 13, 18, 0.04), transparent 50%);
+      pointer-events: none
+    }
+
+    .hero-inner {
+      max-width: 720px;
+      margin: 0 auto;
+      position: relative
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--btn-soft);
+      border: 1px solid var(--hairline);
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 24px
+    }
+
+    .hero-title {
+      font-size: 52px;
+      line-height: 1.08;
+      margin: 0;
+      letter-spacing: -0.03em;
+      font-weight: 800
+    }
+
+    .hero-title-highlight {
+      background: linear-gradient(135deg, #0b0d12, #404552);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text
+    }
+
+    .hero-subtitle {
+      margin-top: 14px;
+      font-size: 16px;
+      line-height: 1.6;
+      color: var(--text-secondary);
+      font-weight: 500;
+      max-width: 500px;
+      margin-left: auto;
+      margin-right: auto
+    }
+
+    .hero-cta {
+      margin-top: 28px;
+      display: flex;
+      justify-content: center
+    }
+
+    .btn-primary {
+      background: var(--btn-bg);
+      color: var(--btn-text);
+      padding: 12px 28px;
+      font-size: 15px;
+      font-weight: 700;
+      gap: 10px;
+      border: none;
+      box-shadow: var(--shadow-md);
+      transition: transform .15s, box-shadow .15s, background .15s
+    }
+
+    .btn-primary:hover {
+      background: var(--btn-hover);
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-lg)
+    }
+
+    .btn-primary:active {
+      transform: translateY(0)
+    }
+
+    .btn-icon {
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0
+    }
+
+    .hero-meta {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--text-tertiary);
+      font-weight: 500
+    }
+
+    .platforms {
+      padding: 16px 24px 64px
+    }
+
+    .platforms-inner {
+      max-width: var(--max);
+      margin: 0 auto
+    }
+
+    .platforms-header {
+      text-align: center;
+      margin-bottom: 36px
+    }
+
+    .section-title {
+      font-size: 20px;
+      font-weight: 700;
+      margin: 0 0 6px;
+      letter-spacing: -0.02em
+    }
+
+    .section-desc {
+      margin: 0;
+      font-size: 14px;
+      color: var(--text-secondary);
+      font-weight: 500
+    }
+
+    .platforms-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px
+    }
+
+    .platform-card {
+      background: var(--bg-subtle);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-lg);
+      padding: 32px 28px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      transition: border-color .2s, box-shadow .2s, transform .2s
+    }
+
+    .platform-card:hover {
+      border-color: var(--hairline-strong);
+      box-shadow: var(--shadow-sm);
+      transform: translateY(-2px)
+    }
+
+    .platform-card.is-loading {
+      opacity: .6
+    }
+
+    .platform-card-icon {
+      width: 52px;
+      height: 52px;
+      border-radius: var(--radius-md);
+      background: var(--btn-soft);
+      border: 1px solid var(--hairline);
+      display: grid;
+      place-items: center;
+      color: var(--text)
+    }
+
+    .platform-card-name {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: -0.01em
+    }
+
+    .platform-card-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-weight: 500;
+      min-height: 18px
+    }
+
+    .platform-card-action {
+      margin-top: 4px
+    }
+
+    .btn-card {
+      background: var(--btn-bg);
+      color: var(--btn-text);
+      padding: 10px 22px;
+      font-size: 13px;
+      font-weight: 700;
+      border: none;
+      transition: background .15s, transform .15s, opacity .15s
+    }
+
+    .btn-card:hover {
+      background: var(--btn-hover);
+      transform: translateY(-1px)
+    }
+
+    .btn-card:active {
+      transform: translateY(0)
+    }
+
+    .btn-card.is-loading {
+      opacity: .5;
+      cursor: default;
+      background: var(--btn-soft);
+      color: var(--text-secondary)
+    }
+
+    .btn-card.is-loading:hover {
+      transform: none
+    }
+
+    .btn-card.is-disabled {
+      opacity: .4;
+      cursor: not-allowed;
+      background: var(--btn-soft);
+      color: var(--text-secondary)
+    }
+
+    .btn-card.is-disabled:hover {
+      transform: none
+    }
+
+    .mac-notice {
+      max-width: var(--max);
+      margin: 16px auto 0;
+      padding: 14px 18px;
+      border-radius: var(--radius-md);
+      background: #fff8e6;
+      border: 1px solid #f0d78e;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #5a4a1a;
+    }
+
+    .mac-notice-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      background: #f0d78e;
+      color: #5a4a1a;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+
+    .mac-notice-content {
+      flex: 1;
+    }
+
+    .mac-notice-content strong {
+      font-weight: 700;
+    }
+
+    .mac-notice-cmd {
+      display: block;
+      margin-top: 6px;
+      padding: 8px 12px;
+      background: rgba(0,0,0,0.06);
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      word-break: break-all;
+      color: #0b0d12;
+    }
+
+    .mac-notice-copy {
+      flex-shrink: 0;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid rgba(90,74,26,0.25);
+      background: rgba(255,255,255,0.6);
+      font-size: 12px;
+      font-weight: 600;
+      color: #5a4a1a;
+      cursor: pointer;
+      transition: background .15s;
+    }
+
+    .mac-notice-copy:hover {
+      background: #fff;
+    }
+
+    .mac-notice-copy:active {
+      background: #f0d78e;
+    }
+
+    .notes {
+      padding: 0 24px 64px
+    }
+
+    .notes-inner {
+      max-width: 720px;
+      margin: 0 auto
+    }
+
+    .notes-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--hairline)
+    }
+
+    .notes-header .section-title {
+      font-size: 16px;
+      margin: 0
+    }
+
+    .notes-badge {
+      font-size: 11px;
+      font-weight: 700;
+      background: var(--btn-soft);
+      border: 1px solid var(--hairline);
+      border-radius: 999px;
+      padding: 3px 10px;
+      color: var(--text-secondary)
+    }
+
+    .notes-body {
+      font-size: 14px;
+      line-height: 1.7;
+      color: var(--text-secondary)
+    }
+
+    .notes-body h1,
+    .notes-body h2,
+    .notes-body h3,
+    .notes-body h4 {
+      color: var(--text);
+      margin: 20px 0 10px;
+      font-weight: 700
+    }
+
+    .notes-body h1 {
+      font-size: 18px
+    }
+
+    .notes-body h2 {
+      font-size: 16px
+    }
+
+    .notes-body h3 {
+      font-size: 14px
+    }
+
+    .notes-body p {
+      margin: 0 0 12px
+    }
+
+    .notes-body ul,
+    .notes-body ol {
+      margin: 0 0 12px;
+      padding-left: 22px
+    }
+
+    .notes-body li {
+      margin-bottom: 4px
+    }
+
+    .notes-body code {
+      background: var(--btn-soft);
+      border: 1px solid var(--hairline);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 13px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace
+    }
+
+    .notes-body pre {
+      background: var(--bg-subtle);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-sm);
+      padding: 16px;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.5;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace
+    }
+
+    .notes-body a {
+      color: var(--text);
+      font-weight: 600;
+      text-decoration: underline;
+      text-underline-offset: 2px
+    }
+
+    .notes-body hr {
+      border: none;
+      border-top: 1px solid var(--hairline);
+      margin: 20px 0
+    }
+
+    .notes-body blockquote {
+      border-left: 3px solid var(--hairline-strong);
+      margin: 0 0 12px;
+      padding: 4px 0 4px 16px;
+      color: var(--text-secondary)
+    }
+
+    .footer {
+      border-top: 1px solid var(--hairline);
+      padding: 24px;
+      margin-top: auto
+    }
+
+    .footer-inner {
+      max-width: var(--max);
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px
+    }
+
+    .footer-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600
+    }
+
+    .footer-brand .brand-mark {
+      width: 20px;
+      height: 20px;
+      font-size: 10px;
+      border-radius: 5px
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 20px
+    }
+
+    .footer-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      transition: color .15s
+    }
+
+    .footer-links a:hover {
+      color: var(--text)
+    }
+
+    .footer-copy {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      font-weight: 500
+    }
+
+    .notice {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 100;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 12px 20px;
+      border-radius: var(--radius-md);
+      background: var(--bg);
+      border: 1px solid var(--hairline);
+      box-shadow: var(--shadow-lg);
+      display: none;
+      max-width: 480px;
+      text-align: center
+    }
+
+    .notice.is-visible {
+      display: block
+    }
+
+    .notice.is-error {
+      border-color: var(--error);
+      color: var(--error)
+    }
+
+    @media(max-width:860px) {
+      .hero {
+        padding: 56px 20px 36px
+      }
+
+      .hero-title {
+        font-size: 38px
+      }
+
+      .hero-subtitle {
+        font-size: 14px
+      }
+
+      .platforms-grid {
+        grid-template-columns: 1fr;
+        gap: 16px
+      }
+
+      .platform-card {
+        padding: 28px 24px
+      }
+
+      .nav {
+        display: none
+      }
+
+      .topbar-inner {
+        padding: 0 16px
+      }
+
+      .footer-inner {
+        flex-direction: column;
+        text-align: center
+      }
+    }
+
+    @media(max-width:420px) {
+      .hero-title {
+        font-size: 30px
+      }
+
+      .btn-primary {
+        padding: 10px 22px;
+        font-size: 14px
+      }
+    }
+  </style>
 </head>
+
 <body>
 
-<header class="topbar">
-<div class="topbar-inner">
-<a class="brand" href="/" aria-label="Nebula IDE home">
-<span class="brand-mark">N</span>
-<span class="brand-name">nebula</span>
-</a>
-<nav class="nav" aria-label="Primary">
-<a class="nav-link" href="#">Features</a>
-<a class="nav-link" href="#">Docs</a>
-<a class="nav-link active" href="/download">Download</a>
-<a class="nav-link" href="#">Changelog</a>
-</nav>
-<div class="topbar-actions">
-<a class="btn btn-ghost" href="https://github.com/j-praneeth/ai-ide" target="_blank">GitHub</a>
-</div>
-</div>
-</header>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/" aria-label="Nebula IDE home">
+        <span class="brand-mark">N</span>
+        <span class="brand-name">nebula</span>
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <a class="nav-link" href="#">Features</a>
+        <a class="nav-link" href="#">Docs</a>
+        <a class="nav-link active" href="/download">Download</a>
+        <a class="nav-link" href="#">Changelog</a>
+      </nav>
+      <div class="topbar-actions">
+        <a class="btn btn-ghost" href="https://github.com/j-praneeth/ai-ide" target="_blank">GitHub</a>
+      </div>
+    </div>
+  </header>
 
-<main class="page">
-<section class="hero">
-<div class="hero-inner">
-<div id="versionBadge" class="hero-badge">Loading...</div>
-<h1 class="hero-title">
-Download <span class="hero-title-highlight">Nebula</span>
-</h1>
-<p class="hero-subtitle">The modern AI-powered code editor. Choose your platform and start coding smarter.</p>
-<div id="primaryCta" class="hero-cta" style="display:none">
-<a id="downloadPrimary" class="btn btn-primary" href="#">
-<svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-<span class="btn-label">Download for <span id="primaryPlatform">Windows</span></span>
-</a>
-</div>
-<div id="primaryMeta" class="hero-meta"></div>
-</div>
-</section>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div id="versionBadge" class="hero-badge">Loading...</div>
+        <h1 class="hero-title">
+          Download <span class="hero-title-highlight">Nebula</span>
+        </h1>
+        <p class="hero-subtitle">The modern AI-powered code editor. Choose your platform and start coding smarter.</p>
+        <div id="primaryCta" class="hero-cta" style="display:none">
+          <a id="downloadPrimary" class="btn btn-primary" href="#">
+            <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span class="btn-label">Download for <span id="primaryPlatform">Windows</span></span>
+          </a>
+        </div>
+        <div id="primaryMeta" class="hero-meta"></div>
+      </div>
+    </section>
 
-<section class="platforms">
-<div class="platforms-inner">
-<div class="platforms-header">
-<h2 class="section-title">All platforms</h2>
-<p class="section-desc">Available for desktop and mobile.</p>
-</div>
-<div id="platformCards" class="platforms-grid">
-<div class="platform-card is-loading">
-<div class="platform-card-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
-<div class="platform-card-name">Windows</div>
-<div class="platform-card-meta">Loading...</div>
-<div class="platform-card-action"><span class="btn btn-card is-loading"><span class="btn-label">Checking...</span></span></div>
-</div>
-<div class="platform-card is-loading">
-<div class="platform-card-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><path d="M20.2 20.2A2 2 0 0 1 18 22h-12a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16.2z"/><path d="M8 2v4"/><path d="M16 2v4"/></svg></div>
-<div class="platform-card-name">macOS</div>
-<div class="platform-card-meta">Loading...</div>
-<div class="platform-card-action"><span class="btn btn-card is-loading"><span class="btn-label">Checking...</span></span></div>
-</div>
-<div class="platform-card is-loading">
-<div class="platform-card-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>
-<div class="platform-card-name">Linux</div>
-<div class="platform-card-meta">Loading...</div>
-<div class="platform-card-action"><span class="btn btn-card is-loading"><span class="btn-label">Checking...</span></span></div>
-</div>
-</div>
-</div>
-</section>
+    <section class="platforms">
+      <div class="platforms-inner">
+        <div class="platforms-header">
+          <h2 class="section-title">All platforms</h2>
+          <p class="section-desc">Available for desktop and mobile.</p>
+        </div>
+        <div id="platformCards" class="platforms-grid">
+          <div class="platform-card is-loading">
+            <div class="platform-card-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
+            <div class="platform-card-name">Windows</div>
+            <div class="platform-card-meta">Loading...</div>
+            <div class="platform-card-action"><span class="btn btn-card is-loading"><span class="btn-label">Checking...</span></span></div>
+          </div>
+          <div class="platform-card is-loading">
+            <div class="platform-card-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><path d="M20.2 20.2A2 2 0 0 1 18 22h-12a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16.2z"/><path d="M8 2v4"/><path d="M16 2v4"/></svg></div>
+            <div class="platform-card-name">macOS</div>
+            <div class="platform-card-meta">Loading...</div>
+            <div class="platform-card-action"><span class="btn btn-card is-loading"><span class="btn-label">Checking...</span></span></div>
+          </div>
+        </div>
+        <div id="macNotice" class="mac-notice" style="display:none">
+          <div class="mac-notice-icon">!</div>
+          <div class="mac-notice-content">
+            <strong>macOS users:</strong> After installing, run this command in Terminal:
+            <code class="mac-notice-cmd">xattr -dr com.apple.quarantine "/Applications/Nebula IDE.app"</code>
+          </div>
+          <button class="mac-notice-copy" onclick="__copyMacCmd(this)" aria-label="Copy command">Copy</button>
+        </div>
+      </div>
+    </section>
 
-<section id="releaseNotes" class="notes" style="display:none">
-<div class="notes-inner">
-<div class="notes-header">
-<h2 class="section-title">Release notes</h2>
-<span id="notesVersion" class="notes-badge"></span>
-</div>
-<div id="notesBody" class="notes-body"></div>
-</div>
-</section>
-</main>
+    <section id="releaseNotes" class="notes" style="display:none">
+      <div class="notes-inner">
+        <div class="notes-header">
+          <h2 class="section-title">Release notes</h2>
+          <span id="notesVersion" class="notes-badge"></span>
+        </div>
+        <div id="notesBody" class="notes-body"></div>
+      </div>
+    </section>
+  </main>
 
-<footer class="footer">
-<div class="footer-inner">
-<div class="footer-brand">
-<span class="brand-mark">N</span>
-<span class="brand-name">nebula</span>
-</div>
-<div class="footer-links">
-<a href="https://github.com/j-praneeth/ai-ide" target="_blank">GitHub</a>
-<a href="#">Privacy</a>
-<a href="#">Terms</a>
-</div>
-<div class="footer-copy">&copy; 2026 Nebula IDE</div>
-</div>
-</footer>
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <span class="brand-mark">N</span>
+        <span class="brand-name">nebula</span>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/j-praneeth/ai-ide" target="_blank">GitHub</a>
+        <a href="#">Privacy</a>
+        <a href="#">Terms</a>
+      </div>
+      <div class="footer-copy">&copy; 2026 Nebula IDE</div>
+    </div>
+  </footer>
 
-<div id="notice" class="notice" role="status" aria-live="polite"></div>
+  <div id="notice" class="notice" role="status" aria-live="polite"></div>
 
-<script>
-var NEBULA = {
-  repo: "j-praneeth/ai-ide",
-  ghToken: "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"
-};
+  <script>
+    var NEBULA = {
+      repo: "j-praneeth/ai-ide",
+      ghToken: "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"
+    };
 
-function $id(id) { return document.getElementById(id); }
-function $all(sel) { return document.querySelectorAll(sel); }
+    function $id(id) { return document.getElementById(id); }
+    function $all(sel) { return document.querySelectorAll(sel); }
 
-function _notice(msg, opts) {
-  opts = opts || {};
-  var el = $id("notice");
-  if (!el) return;
-  el.textContent = msg;
-  el.classList.toggle("is-visible", true);
-  el.classList.toggle("is-error", !!opts.isError);
-  setTimeout(function() { el.classList.remove("is-visible"); }, opts.isError ? 8000 : 4000);
-}
-
-function _esc(s) {
-  return String(s || "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
-}
-
-function _plat() {
-  var p = navigator.platform || "";
-  if (p.indexOf("Win") !== -1) return "windows";
-  if (p.indexOf("Mac") !== -1) return "macos";
-  if (p.indexOf("Linux") !== -1) return "linux";
-  return "windows";
-}
-
-function _md(md) {
-  if (!md) return "";
-  var h = _esc(md);
-  h = h.replace(/^### (.+)$/gm, "<h3>$1</h3>");
-  h = h.replace(/^## (.+)$/gm, "<h2>$1</h2>");
-  h = h.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-  h = h.replace(/^> (.+)$/gm, "<blockquote>$1</blockquote>");
-  h = h.replace(/^- (.+)$/gm, "<li>$1</li>");
-  h = h.replace(/<\/li>\n<li>/g, "</li>\n<li>");
-  h = h.replace(/(<li>.*<\/li>)/gs, function(m) {
-    return m.split("\n").length > 1
-      ? "<ul>\n" + m.split("\n").map(function(l) { return "  " + l; }).join("\n") + "\n</ul>"
-      : "<ul>\n  " + m + "\n</ul>";
-  });
-  h = h.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  h = h.replace(/\*(.+?)\*/g, "<em>$1</em>");
-  h = h.replace(/`([^`]+)`/g, "<code>$1</code>");
-  h = h.replace(/\n{2,}/g, "</p><p>");
-  h = h.replace(/\n/g, "<br>");
-  h = "<p>" + h + "</p>";
-  h = h.replace(/<p><\/p>/g, "");
-  h = h.replace(/<\/ul>\n?<br>/g, "</ul>");
-  h = h.replace(/<br>\n?<ul>/g, "\n<ul>");
-  h = h.replace(/<\/blockquote>\n?<br>/g, "</blockquote>");
-  return h;
-}
-
-function _cards(assets, version) {
-  var icons = {
-    windows: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
-    macos: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><path d="M20.2 20.2A2 2 0 0 1 18 22h-12a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16.2z"/><path d="M8 2v4"/><path d="M16 2v4"/></svg>',
-    linux: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>'
-  };
-  var names = { windows: "Windows", macos: "macOS", linux: "Linux" };
-  var grid = $id("platformCards");
-  if (!grid) return;
-  grid.innerHTML = "";
-  ["windows","macos","linux"].forEach(function(k) {
-    var m = assets.filter(function(a) { return a.platform === k; });
-    var c = document.createElement("div");
-    c.className = "platform-card";
-    if (m.length > 0) {
-      var best = m.reduce(function(a,b) { return (a.size||0) > (b.size||0) ? a : b; });
-      c.classList.add("has-download");
-      c.innerHTML = '<div class="platform-card-icon">' + icons[k] + '</div><div class="platform-card-name">' + names[k] + '</div><div class="platform-card-meta">v' + _esc(version) + ' &middot; ' + _esc(best.size_formatted) + '</div><div class="platform-card-action"><a class="btn btn-card" href="' + _esc(best.url) + '" download>Download for ' + names[k] + '</a></div>';
-    } else {
-      c.innerHTML = '<div class="platform-card-icon">' + icons[k] + '</div><div class="platform-card-name">' + names[k] + '</div><div class="platform-card-meta">Not available</div><div class="platform-card-action"><span class="btn btn-card is-disabled">Unavailable</span></div>';
+    function _notice(msg, opts) {
+      opts = opts || {};
+      var el = $id("notice");
+      if (!el) return;
+      el.textContent = msg;
+      el.classList.toggle("is-visible", true);
+      el.classList.toggle("is-error", !!opts.isError);
+      setTimeout(function () { el.classList.remove("is-visible"); }, opts.isError ? 8000 : 4000);
     }
-    grid.appendChild(c);
-  });
-}
 
-function _cta(assets, version) {
-  var user = _plat();
-  var names = { windows: "Windows", macos: "macOS", linux: "Linux" };
-  var m = assets.filter(function(a) { return a.platform === user; });
-  var t = user;
-  if (m.length === 0) {
-    var order = ["windows","macos","linux"];
-    for (var i = 0; i < order.length; i++) {
-      if (assets.some(function(a) { return a.platform === order[i]; })) { t = order[i]; break; }
+    function _esc(s) {
+      return String(s || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
     }
-    m = assets.filter(function(a) { return a.platform === t; });
-  }
-  if (m.length === 0) {
-    $id("primaryCta").style.display = "none";
-    $id("primaryMeta").textContent = "No downloads available at this time.";
-    return;
-  }
-  var best = m.reduce(function(a,b) { return (a.size||0) > (b.size||0) ? a : b; });
-  $id("primaryCta").style.display = "flex";
-  $id("primaryPlatform").textContent = names[t] || "Desktop";
-  $id("downloadPrimary").href = best.url;
-  $id("primaryMeta").textContent = "Version " + version + " &middot; " + best.size_formatted + " &middot; " + (names[t] || "Desktop");
-}
 
-function _notes(data) {
-  var s = $id("releaseNotes");
-  if (!data.release_notes) { s.style.display = "none"; return; }
-  s.style.display = "block";
-  $id("notesVersion").textContent = "v" + data.version;
-  $id("notesBody").innerHTML = _md(data.release_notes);
-}
-
-function _unavail(msg) {
-  var cards = $all(".platform-card.is-loading");
-  for (var i = 0; i < cards.length; i++) {
-    cards[i].classList.remove("is-loading");
-    cards[i].querySelector(".platform-card-meta").textContent = msg || "Unavailable";
-    var a = cards[i].querySelector(".platform-card-action");
-    if (a) a.innerHTML = '<span class="btn btn-card is-disabled">' + (msg || "Unavailable") + '</span>';
-  }
-}
-
-function _apply(data) {
-  var v = data.version || "";
-  var a = data.assets || [];
-  if (v) { $id("versionBadge").textContent = "v" + v + " \u2014 Latest release"; }
-  else { $id("versionBadge").textContent = data.message || "No releases yet"; }
-  if (a.length > 0) { _cards(a, v); _cta(a, v); _notes(data); }
-  else {
-    $id("primaryCta").style.display = "none";
-    $id("primaryMeta").textContent = data.message || "No downloads available yet. Check back soon.";
-    _unavail("Coming soon");
-  }
-}
-
-async function init() {
-  var url = "https://api.github.com/repos/" + NEBULA.repo + "/releases?per_page=1";
-  var headers = { "Accept": "application/vnd.github+json", "User-Agent": "Nebula-IDE/1.0" };
-  if (NEBULA.ghToken) { headers["Authorization"] = "Bearer " + NEBULA.ghToken; }
-
-  try {
-    var resp = await fetch(url, { cache: "no-store", headers: headers });
-    if (!resp.ok) throw new Error("GitHub API error (" + resp.status + ")");
-    var list = await resp.json();
-    if (!list || list.length === 0) {
-      _apply({ found: true, assets: [], version: "", message: "No releases published yet." });
-      return;
+    function _plat() {
+      var p = navigator.platform || "";
+      if (p.indexOf("Win") !== -1) return "windows";
+      if (p.indexOf("Mac") !== -1) return "macos";
+      return "windows";
     }
-    var release = list[0];
-    var version = String(release.tag_name || "v1.0.0").replace(/^v/i, "");
-    var assets = (release.assets || []).map(function(a) {
-      var n = a.name.toLowerCase();
-      var p = "other";
-      if (n.indexOf("windows") !== -1 || n.indexOf(".exe") !== -1) p = "windows";
-      else if (n.indexOf("macos") !== -1 || n.indexOf(".dmg") !== -1 || n.indexOf("mac-") !== -1) p = "macos";
-      else if (n.indexOf("linux") !== -1 || n.indexOf(".appimage") !== -1 || n.indexOf(".deb") !== -1) p = "linux";
-      return {
-        name: a.name, size: a.size,
-        size_formatted: a.size < 1048576 ? Math.round(a.size/1024) + " KB" : (a.size / 1048576).toFixed(1) + " MB",
-        url: a.browser_download_url, platform: p, content_type: a.content_type || ""
+
+    function _md(md) {
+      if (!md) return "";
+      var h = _esc(md);
+      h = h.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+      h = h.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+      h = h.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+      h = h.replace(/^> (.+)$/gm, "<blockquote>$1</blockquote>");
+      h = h.replace(/^- (.+)$/gm, "<li>$1</li>");
+      h = h.replace(/<\/li>\n<li>/g, "</li>\n<li>");
+      h = h.replace(/(<li>.*<\/li>)/gs, function (m) {
+        return m.split("\n").length > 1
+          ? "<ul>\n" + m.split("\n").map(function (l) { return "  " + l; }).join("\n") + "\n</ul>"
+          : "<ul>\n  " + m + "\n</ul>";
+      });
+      h = h.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+      h = h.replace(/\*(.+?)\*/g, "<em>$1</em>");
+      h = h.replace(/`([^`]+)`/g, "<code>$1</code>");
+      h = h.replace(/\n{2,}/g, "</p><p>");
+      h = h.replace(/\n/g, "<br>");
+      h = "<p>" + h + "</p>";
+      h = h.replace(/<p><\/p>/g, "");
+      h = h.replace(/<\/ul>\n?<br>/g, "</ul>");
+      h = h.replace(/<br>\n?<ul>/g, "\n<ul>");
+      h = h.replace(/<\/blockquote>\n?<br>/g, "</blockquote>");
+      return h;
+    }
+
+    function _cards(assets, version) {
+      var icons = {
+        windows: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
+        macos: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><path d="M20.2 20.2A2 2 0 0 1 18 22h-12a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v16.2z"/><path d="M8 2v4"/><path d="M16 2v4"/></svg>'
       };
-    });
-    _apply({
-      found: true, version: version, release_name: release.name || "v" + version,
-      release_notes: release.body || "", published_at: release.published_at || "",
-      html_url: release.html_url || "", assets: assets, source: "github"
-    });
-  } catch(e) {
-    $id("versionBadge").textContent = "Release data unavailable";
-    _notice(e && e.message ? e.message : "Failed to load release data.", { isError: true });
-    _unavail("Unavailable");
-  }
-}
+      var names = { windows: "Windows", macos: "macOS" };
+      var grid = $id("platformCards");
+      if (!grid) return;
+      grid.innerHTML = "";
+      ["windows", "macos"].forEach(function (k) {
+        var m = assets.filter(function (a) { return a.platform === k; });
+        var c = document.createElement("div");
+        c.className = "platform-card";
+        if (m.length > 0) {
+          var best = m.reduce(function (a, b) { return (a.size || 0) > (b.size || 0) ? a : b; });
+          c.classList.add("has-download");
+          c.innerHTML = '<div class="platform-card-icon">' + icons[k] + '</div><div class="platform-card-name">' + names[k] + '</div><div class="platform-card-meta">v' + _esc(version) + ' &middot; ' + _esc(best.size_formatted) + '</div><div class="platform-card-action"><a class="btn btn-card" href="' + _esc(best.url) + '" download>Download for ' + names[k] + '</a></div>';
+        } else {
+          c.innerHTML = '<div class="platform-card-icon">' + icons[k] + '</div><div class="platform-card-name">' + names[k] + '</div><div class="platform-card-meta">Not available</div><div class="platform-card-action"><span class="btn btn-card is-disabled">Unavailable</span></div>';
+        }
+        grid.appendChild(c);
+      });
+    }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", init);
-} else {
-  init();
-}
-</script>
+    function _cta(assets, version) {
+      var user = _plat();
+      var names = { windows: "Windows", macos: "macOS" };
+      var m = assets.filter(function (a) { return a.platform === user; });
+      var t = user;
+      if (m.length === 0) {
+        var order = ["windows", "macos"];
+        for (var i = 0; i < order.length; i++) {
+          if (assets.some(function (a) { return a.platform === order[i]; })) { t = order[i]; break; }
+        }
+        m = assets.filter(function (a) { return a.platform === t; });
+      }
+      if (m.length === 0) {
+        $id("primaryCta").style.display = "none";
+        $id("primaryMeta").textContent = "No downloads available at this time.";
+        return;
+      }
+      var best = m.reduce(function (a, b) { return (a.size || 0) > (b.size || 0) ? a : b; });
+      $id("primaryCta").style.display = "flex";
+      $id("primaryPlatform").textContent = names[t] || "Desktop";
+      $id("downloadPrimary").href = best.url;
+      $id("primaryMeta").textContent = "Version " + version + " &middot; " + best.size_formatted + " &middot; " + (names[t] || "Desktop");
+    }
+
+    function _notes(data) {
+      var s = $id("releaseNotes");
+      if (!data.release_notes) { s.style.display = "none"; return; }
+      s.style.display = "block";
+      $id("notesVersion").textContent = "v" + data.version;
+      $id("notesBody").innerHTML = _md(data.release_notes);
+    }
+
+    function _unavail(msg) {
+      var cards = $all(".platform-card.is-loading");
+      for (var i = 0; i < cards.length; i++) {
+        cards[i].classList.remove("is-loading");
+        cards[i].querySelector(".platform-card-meta").textContent = msg || "Unavailable";
+        var a = cards[i].querySelector(".platform-card-action");
+        if (a) a.innerHTML = '<span class="btn btn-card is-disabled">' + (msg || "Unavailable") + '</span>';
+      }
+    }
+
+    function _showMacNotice() {
+      var el = $id("macNotice");
+      if (el) el.style.display = "flex";
+    }
+
+    function _apply(data) {
+      var v = data.version || "";
+      var a = data.assets || [];
+      if (v) { $id("versionBadge").textContent = "v" + v + " \u2014 Latest release"; }
+      else { $id("versionBadge").textContent = data.message || "No releases yet"; }
+      if (a.length > 0) { _cards(a, v); _cta(a, v); _notes(data); }
+      else {
+        $id("primaryCta").style.display = "none";
+        $id("primaryMeta").textContent = data.message || "No downloads available yet. Check back soon.";
+        _unavail("Coming soon");
+      }
+      _showMacNotice();
+    }
+
+    async function init() {
+      var url = "https://api.github.com/repos/" + NEBULA.repo + "/releases?per_page=1";
+      var headers = { "Accept": "application/vnd.github+json", "User-Agent": "Nebula-IDE/1.0" };
+      if (NEBULA.ghToken) { headers["Authorization"] = "Bearer " + NEBULA.ghToken; }
+
+      try {
+        var resp = await fetch(url, { cache: "no-store", headers: headers });
+        if (!resp.ok) throw new Error("GitHub API error (" + resp.status + ")");
+        var list = await resp.json();
+        if (!list || list.length === 0) {
+          _apply({ found: true, assets: [], version: "", message: "No releases published yet." });
+          return;
+        }
+        var release = list[0];
+        var version = String(release.tag_name || "v1.0.0").replace(/^v/i, "");
+        var assets = (release.assets || []).map(function (a) {
+          var n = a.name.toLowerCase();
+          var p = "other";
+          if (n.indexOf("windows") !== -1 || n.indexOf(".exe") !== -1) p = "windows";
+          else if (n.indexOf("macos") !== -1 || n.indexOf(".dmg") !== -1 || n.indexOf("mac-") !== -1) p = "macos";
+          return {
+            name: a.name, size: a.size,
+            size_formatted: a.size < 1048576 ? Math.round(a.size / 1024) + " KB" : (a.size / 1048576).toFixed(1) + " MB",
+            url: a.browser_download_url, platform: p, content_type: a.content_type || ""
+          };
+        });
+        _apply({
+          found: true, version: version, release_name: release.name || "v" + version,
+          release_notes: release.body || "", published_at: release.published_at || "",
+          html_url: release.html_url || "", assets: assets, source: "github"
+        });
+      } catch (e) {
+        $id("versionBadge").textContent = "Release data unavailable";
+        _notice(e && e.message ? e.message : "Failed to load release data.", { isError: true });
+        _unavail("Unavailable");
+      }
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", init);
+    } else {
+      init();
+    }
+  </script>
 </body>
+
 </html>
