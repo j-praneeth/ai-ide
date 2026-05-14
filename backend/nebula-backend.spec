@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('agent', 'agent'), ('relay_config.json', '.')],
+    datas=[('agent', 'agent'), ('../download', 'download'), ('relay_config.json', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

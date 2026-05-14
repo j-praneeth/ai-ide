@@ -170,7 +170,11 @@ def health():
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "j-praneeth/ai-ide")
 GH_TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GH_REPO_TOKEN") or ""
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if getattr(sys, 'frozen', False):
+    PROJECT_ROOT = Path(sys._MEIPASS)
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 DOWNLOAD_SITE_DIR = PROJECT_ROOT / "download"
 FAVICON_PATH = PROJECT_ROOT / "frontend" / "public" / "favicon.ico"
 
