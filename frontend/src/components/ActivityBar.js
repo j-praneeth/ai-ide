@@ -6,8 +6,6 @@ import {
   VscExtensions,
   VscSettingsGear,
   VscAccount,
-  VscComment,
-  VscGraph,
 } from 'react-icons/vsc';
 import { getAuthUser, logout } from '../lib/auth';
 import { AUTH_URL as AUTH } from '../config';
@@ -18,8 +16,6 @@ const TOP_ITEMS = [
   { id: 'search', icon: VscSearch, label: 'Search (⌘⇧F)' },
   { id: 'source-control', icon: VscSourceControl, label: 'Source Control (⌘⇧G)' },
   { id: 'extensions', icon: VscExtensions, label: 'Extensions (⌘⇧X)' },
-  { id: 'usage', icon: VscGraph, label: 'Token Usage' },
-  { id: 'chat', icon: VscComment, label: 'AI Chat (⌘L)' },
 ];
 
 const BOTTOM_ITEMS = [
@@ -59,9 +55,7 @@ function ExtensionIcon({ ext }) {
 export default function ActivityBar({
   activePanel,
   onPanelChange,
-  chatOpen,
-  onToggleChat,
-  extensionApps = [],       // sidebar-capable installed extensions
+  extensionApps = [],
 }) {
   const showAccountMenu = (_e) => {
     const existing = document.getElementById('account-context-menu');
@@ -124,19 +118,14 @@ export default function ActivityBar({
   };
 
   const handleItemClick = (e, item) => {
-    if (item.id === 'chat') {
-      if (typeof onToggleChat === 'function') onToggleChat();
-      else onPanelChange(activePanel === item.id ? null : item.id);
-    } else if (item.id === 'account') {
+    if (item.id === 'account') {
       showAccountMenu(e);
     } else {
       onPanelChange(activePanel === item.id ? null : item.id);
     }
   };
 
-  const isActive = (id) =>
-    (id === 'chat' && (chatOpen || activePanel === 'chat')) ||
-    (id !== 'chat' && activePanel === id);
+  const isActive = (id) => activePanel === id;
 
   const renderItem = (item) => (
     <button

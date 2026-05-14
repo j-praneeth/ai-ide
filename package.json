@@ -12,7 +12,7 @@
     "start:backend": "cd backend && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
     "build:frontend": "cd frontend && set \"CI=false\" && npm run build",
     "build:backend:mac": "cd backend && pyinstaller --onefile --name nebula-backend --distpath ../dist/backend main.py --add-data 'agent:agent' --add-data 'relay_config.json:.'",
-    "build:backend:win": "cd backend && python -m PyInstaller --onefile --name nebula-backend --distpath ../dist/backend main.py --add-data \"agent;agent\" --add-data \"relay_config.json;.\"",
+    "build:backend:win": "cd backend && python3 -m PyInstaller --onefile --name nebula-backend --distpath ../dist/backend main.py --add-data \"agent:agent\" --add-data \"relay_config.json:.\"",
     "build:vault": "node scripts/build-cli-vault.mjs",
     "build:packaged:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false node scripts/build-with-kek.mjs --mac",
     "build:packaged:win": "node scripts/build-with-kek.mjs --win",
@@ -41,6 +41,7 @@
       "buildResources": "assets"
     },
     "afterPack": "scripts/afterPack.js",
+    "npmRebuild": false,
     "asar": true,
     "asarUnpack": [
       "**/node_modules/node-pty/**/*"
@@ -149,8 +150,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Nebula IDE",
-      "include": "build/installer.nsh"
+      "shortcutName": "Nebula IDE"
     },
     "linux": {
       "target": [

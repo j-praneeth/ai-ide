@@ -3990,6 +3990,33 @@
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
+.scm-commit-error-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px 6px 10px;
+  background: rgba(220, 38, 38, 0.12);
+  border-left: 3px solid #dc2626;
+  font-size: var(--font-size-xs);
+  color: #f87171;
+  margin: 0 0 6px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  line-height: 1.4;
+}
+.scm-commit-error-dismiss {
+  background: none;
+  border: none;
+  color: #f87171;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 2px;
+  flex-shrink: 0;
+  opacity: 0.7;
+  line-height: 1;
+}
+.scm-commit-error-dismiss:hover { opacity: 1; }
+
 .scm-publish-btn {
   display: flex;
   align-items: center;

@@ -568,11 +568,26 @@ export default function FileExplorer({
     function connect() {
       try {
         ws = new WebSocket(wsUrl);
+        let graceUntil = Date.now() + 1500; // ignore messages for 1.5s after connect
+        let pingTimer = null;
+
+        ws.onopen = () => {
+          graceUntil = Date.now() + 1500;
+          // Send a keepalive ping every 45s so the server doesn't close idle connections.
+          pingTimer = setInterval(() => {
+            try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' })); }
+            catch (_) {}
+          }, 45000);
+        };
+
         ws.onmessage = (ev) => {
           try {
+            // Skip the initial snapshot the server sends on connect — it would
+            // cause a spurious full tree refresh every time the WS reconnects.
+            if (Date.now() < graceUntil) return;
             const msg = JSON.parse(ev.data);
+            if (msg.type === 'pong') return; // ignore keepalive replies
             if (msg.changes && msg.changes.length > 0) {
-              // Invalidate cached children for affected paths
               setLazyChildren(prev => {
                 const next = { ...prev };
                 for (const { path } of msg.changes) {
@@ -581,23 +596,24 @@ export default function FileExplorer({
                     : '';
                   delete next[path];
                   if (parent) delete next[parent];
-                  // Also purge from LRU cache
                   lruCacheRef.current.delete(path);
                   if (parent) lruCacheRef.current.delete(parent);
                 }
                 return next;
               });
-              // Schedule a single tree refresh (debounced)
               refreshScheduler.schedule();
             }
           } catch (_) {}
         };
+
         ws.onclose = () => {
-          if (active) {
-            reconnectTimer = setTimeout(connect, 3000);
-          }
+          if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+          if (active) reconnectTimer = setTimeout(connect, 3000);
         };
-        ws.onerror = () => { try { ws.close(); } catch (_) {} };
+        ws.onerror = () => {
+          if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+          try { ws.close(); } catch (_) {}
+        };
       } catch (_) {}
     }
 

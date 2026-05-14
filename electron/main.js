@@ -10,6 +10,8 @@ const cliBundle = require('./cli-bundle');
 
 // Keep a global reference of the window object
 let mainWindow = null;
+// Maps webContents.id → folderPath for in-process new windows (Windows only)
+const windowStartupFolders = new Map();
 let backendProcess = null;
 let backendPort = null;
 let splashWindow = null;
@@ -168,12 +170,18 @@ function killAllIntegratedTerminals() {
   integratedTermSessions.clear();
 }
 
-/** Spawn another app process so the user can open a different project in a separate window.
- *  Pass folderPath to auto-open a specific project in the new window. */
-function spawnNewAppInstance(folderPath) {
+/** Open a different project in a separate window.
+ *
+ *  macOS packaged → `open -n -a` (OS handles multi-instance properly).
+ *  Windows        → in-process BrowserWindow (spawning a second Electron process
+ *                   fails silently on Windows due to Chromium's userData lockfile).
+ *  Linux / dev    → direct spawn of the exe.
+ */
+function spawnNewAppInstance(folderPath, prevWindow) {
   try {
     const exe = process.execPath;
     const folderArg = folderPath ? `--nebula-open-folder=${encodeURIComponent(folderPath)}` : '--nebula-fresh-window';
+
     if (process.platform === 'darwin' && app.isPackaged) {
       const idx = exe.indexOf('.app/');
       if (idx >= 0) {
@@ -186,6 +194,12 @@ function spawnNewAppInstance(folderPath) {
         return { ok: true };
       }
     }
+
+    if (process.platform === 'win32') {
+      return openFolderInProcessWindow(folderPath, prevWindow || mainWindow);
+    }
+
+    // Linux / macOS dev mode
     const child = spawn(exe, [folderArg], {
       detached: true,
       stdio: 'ignore',
@@ -1460,8 +1474,9 @@ function stopBackend() {
 
 // ─── Create Main Window ─────────────────────────────────────────
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
+// Shared BrowserWindow factory — used by both createWindow() and openFolderInProcessWindow().
+function _makeBrowserWindow() {
+  const win = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 800,
@@ -1481,36 +1496,9 @@ function createWindow() {
     icon: getAppIcon(),
     show: false,
   });
-
-  try {
-    Menu.setApplicationMenu(null);
-  } catch (_) {}
-  try {
-    mainWindow.setMenuBarVisibility(false);
-    mainWindow.setMenu(null);
-  } catch (_) {}
-
-  if (isDev) {
-    mainWindow.loadURL('http://localhost:3000');
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
-  } else {
-    const indexPath = path.join(__dirname, '..', 'frontend', 'build', 'index.html');
-    mainWindow.loadFile(indexPath);
-  }
-
-  mainWindow.once('ready-to-show', () => {
-    closeSplash();
-    mainWindow.show();
-    mainWindow.focus();
-  });
-
-  mainWindow.webContents.on('did-finish-load', () => {
-    if (pendingAuthCallbackUrl) {
-      handleAuthCallbackUrl(pendingAuthCallbackUrl);
-    }
-  });
-
-  mainWindow.webContents.on('will-navigate', (event, url) => {
+  try { Menu.setApplicationMenu(null); } catch (_) {}
+  try { win.setMenuBarVisibility(false); win.setMenu(null); } catch (_) {}
+  win.webContents.on('will-navigate', (event, url) => {
     try {
       if (!url || typeof url !== 'string') return;
       const isFile = url.startsWith('file://');
@@ -1520,15 +1508,98 @@ function createWindow() {
       shell.openExternal(url);
     } catch (_) {}
   });
-
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
   });
+  return win;
+}
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
+function createWindow() {
+  const win = _makeBrowserWindow();
+  mainWindow = win;
+
+  if (isDev) {
+    win.loadURL('http://localhost:3000');
+    win.webContents.openDevTools({ mode: 'detach' });
+  } else {
+    win.loadFile(path.join(__dirname, '..', 'frontend', 'build', 'index.html'));
+  }
+
+  win.once('ready-to-show', () => {
+    closeSplash();
+    win.show();
+    win.focus();
   });
+
+  win.webContents.on('did-finish-load', () => {
+    if (pendingAuthCallbackUrl) handleAuthCallbackUrl(pendingAuthCallbackUrl);
+  });
+
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+}
+
+// Windows: open a folder in a new in-process BrowserWindow rather than spawning
+// a second Electron process. Spawning on Windows is unreliable because Chromium
+// places a lockfile in the shared userData directory, causing the second instance
+// to crash silently before its window appears.
+function openFolderInProcessWindow(folderPath, prevWindow) {
+  try {
+    const win = _makeBrowserWindow();
+
+    // Register startup folder so app:get-startup-folder IPC returns it for this window.
+    if (folderPath) {
+      windowStartupFolders.set(win.webContents.id, folderPath);
+      setCurrentProjectRoot(folderPath);
+    }
+
+    // Notify the running backend of the new project root so the new
+    // window's frontend loads the correct file tree.
+    if (folderPath && backendPort) {
+      try {
+        const qpath = encodeURIComponent(folderPath);
+        const req = http.request(
+          { hostname: '127.0.0.1', port: backendPort, path: `/files/open-folder?path=${qpath}`, method: 'POST', headers: { 'Content-Length': 0 } },
+          (res) => { res.resume(); },
+        );
+        req.on('error', () => {});
+        req.end();
+      } catch (_) {}
+    }
+
+    // Promote to main window before loading so IPC events (backend:ready, etc.)
+    // route to the new window from this point on.
+    mainWindow = win;
+
+    if (isDev) {
+      win.loadURL('http://localhost:3000');
+    } else {
+      win.loadFile(path.join(__dirname, '..', 'frontend', 'build', 'index.html'));
+    }
+
+    win.webContents.on('did-finish-load', () => {
+      if (pendingAuthCallbackUrl) handleAuthCallbackUrl(pendingAuthCallbackUrl);
+    });
+
+    win.once('ready-to-show', () => {
+      win.show();
+      win.focus();
+      // Close the old window only after the new one is visible — no white flash.
+      setTimeout(() => {
+        try { if (prevWindow && !prevWindow.isDestroyed()) prevWindow.close(); } catch (_) {}
+      }, 300);
+    });
+
+    win.on('closed', () => {
+      if (mainWindow === win) mainWindow = null;
+    });
+
+    return { ok: true, inProcess: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
 }
 
 // ─── App Icon ───────────────────────────────────────────────────
@@ -1670,15 +1741,27 @@ ipcMain.handle('fs:list-project-dir', async (_event, payload) => {
 
 ipcMain.handle('app:new-window', () => spawnNewAppInstance());
 
-ipcMain.handle('app:get-startup-folder', () => NEBULA_OPEN_FOLDER || null);
+ipcMain.handle('app:get-startup-folder', (event) => {
+  // In-process new windows (Windows): folder was registered in windowStartupFolders.
+  const perWindowFolder = windowStartupFolders.get(event.sender.id);
+  if (perWindowFolder) {
+    windowStartupFolders.delete(event.sender.id); // consume once
+    return perWindowFolder;
+  }
+  // Out-of-process new windows (macOS/Linux): folder arrives via CLI flag.
+  return NEBULA_OPEN_FOLDER || null;
+});
 
-/** Open a folder in a brand-new window and close this window after the new one has time to launch. */
+/** Open a folder in a brand-new window and close this one after the new one launches. */
 ipcMain.handle('app:open-in-new-window', (_event, folderPath) => {
-  const result = spawnNewAppInstance(folderPath);
-  if (result.ok) {
-    // Give the new process ~1.5s to start before closing this window.
+  const prevWindow = mainWindow; // capture before mainWindow may change
+  const result = spawnNewAppInstance(folderPath, prevWindow);
+  if (result.ok && !result.inProcess) {
+    // Out-of-process spawn (macOS/Linux): give the new process ~1.5s to start,
+    // then close this window. For in-process windows (Windows), openFolderInProcessWindow
+    // closes prevWindow itself once ready-to-show fires.
     setTimeout(() => {
-      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close(); } catch (_) {}
+      try { if (prevWindow && !prevWindow.isDestroyed()) prevWindow.close(); } catch (_) {}
     }, 1500);
   }
   return result;
@@ -2391,27 +2474,89 @@ function handleRemoteInput(evt) {
 }
 
 // ─── Auto-Update (electron-updater) ─────────────────────────────────────────
-//
-// electron-updater checks GitHub Releases for a newer version.
-// It downloads the update in the background and emits events to the renderer.
-// The renderer shows a "Restart to Update" button when ready.
-//
-// Setup: see AUTOUPDATE.md — you need to:
-//  1. Set "publish" in electron-builder config (already done in package.json)
-//  2. Set GH_TOKEN env var during `npm run dist` to publish the release
-//  3. Every release must include the RELEASES file / latest.yml generated by builder
+
+// Simple semver comparison (no extra dependency needed).
+function _semverGt(a, b) {
+  const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return true;
+    if (pa[i] < pb[i]) return false;
+  }
+  return false;
+}
+
+// Fallback: hit the GitHub Releases API directly to detect a newer version when
+// electron-updater can't (draft releases, missing latest.yml, private repo, etc.).
+// If a newer version is found, fires update:available with manualDownload:true so
+// the renderer shows a "Download" link instead of waiting for auto-install.
+function _githubReleaseFallback(send, ghToken) {
+  const https = require('https');
+  const currentVersion = app.getVersion();
+  const headers = {
+    'User-Agent': `Nebula-IDE/${currentVersion}`,
+    'Accept': 'application/vnd.github+json',
+  };
+  if (ghToken) headers['Authorization'] = `Bearer ${ghToken}`;
+
+  return new Promise((resolve) => {
+    const req = https.get(
+      { hostname: 'api.github.com', path: '/repos/j-praneeth/ai-ide/releases/latest', headers },
+      (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          try {
+            if (res.statusCode === 200) {
+              const release = JSON.parse(data);
+              const latestVer = String(release.tag_name || '').replace(/^v/i, '');
+              if (latestVer && _semverGt(latestVer, currentVersion)) {
+                console.log(`[updater] GitHub API: newer version ${latestVer} > ${currentVersion}`);
+                send('update:available', {
+                  version: latestVer,
+                  releaseNotes: release.body || '',
+                  downloadUrl: release.html_url,
+                  manualDownload: true,
+                });
+                resolve(true);
+                return;
+              }
+              console.log(`[updater] GitHub API: up to date (latest=${latestVer}, installed=${currentVersion})`);
+            } else {
+              console.log(`[updater] GitHub API: HTTP ${res.statusCode}`);
+            }
+          } catch (e) {
+            console.log('[updater] GitHub API parse error:', e.message);
+          }
+          resolve(false);
+        });
+      },
+    );
+    req.on('error', (e) => { console.log('[updater] GitHub API request error:', e.message); resolve(false); });
+    req.setTimeout(10000, () => { req.destroy(); resolve(false); });
+  });
+}
 
 function _initAutoUpdater() {
   let autoUpdater;
   try {
     autoUpdater = require('electron-updater').autoUpdater;
   } catch (e) {
-    console.log('[updater] electron-updater not installed — skipping auto-update');
+    console.log('[updater] electron-updater not available — using GitHub API fallback only');
+    // Still register the IPC handlers so the renderer's "Check for Updates" works
+    const send = (ch, p) => {
+      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ch, p); } catch (_) {}
+    };
+    ipcMain.handle('update:check', async () => {
+      send('update:checking', null);
+      const found = await _githubReleaseFallback(send, '');
+      if (!found) send('update:not-available', null);
+    });
+    ipcMain.handle('update:restart-and-install', () => {});
     return;
   }
 
-  // For private repos, electron-updater needs an auth token.
-  // Read it from the bundled update-config.json placed by afterPack.js.
+  // Read optional GH token (for private repo access).
   let ghToken = process.env.GH_TOKEN || process.env.GH_REPO_TOKEN || '';
   if (!ghToken) {
     try {
@@ -2422,55 +2567,160 @@ function _initAutoUpdater() {
       }
     } catch (_) {}
   }
+  if (ghToken) process.env.GH_TOKEN = ghToken;
 
-  if (ghToken) {
-    process.env.GH_TOKEN = ghToken;
-    // Explicitly pass the token to the updater so it uses the API (not the atom
-    // feed) for private repos.  Without this, electron-updater falls back to
-    // github.com/.../releases.atom which returns 404 for private repos.
-    try {
-      autoUpdater.setFeedURL({
-        provider: 'github',
-        owner: 'j-praneeth',
-        repo: 'ai-ide',
-        private: true,
-        token: ghToken,
-      });
-    } catch (_) {}
-    console.log('[updater] GH_TOKEN configured for private repo');
-  } else {
-    console.log('[updater] No GH_TOKEN — public repo or dev mode');
-  }
+  // Always set feedURL explicitly — avoids falling back to releases.atom which
+  // returns 404 for private repos or repos with no releases.
+  try {
+    const feedConfig = { provider: 'github', owner: 'j-praneeth', repo: 'ai-ide' };
+    if (ghToken) { feedConfig.private = true; feedConfig.token = ghToken; }
+    autoUpdater.setFeedURL(feedConfig);
+    console.log('[updater] feedURL configured — token:', ghToken ? 'yes' : 'no');
+  } catch (_) {}
 
   autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  // Disable auto-install — we handle macOS manually (ditto fails on ad-hoc signed apps)
+  autoUpdater.autoInstallOnAppQuit = false;
+  let _downloadedPath = null;
 
   const send = (channel, payload) => {
     try {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(channel, payload);
-      }
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
     } catch (_) {}
   };
 
-  autoUpdater.on('checking-for-update',    ()     => send('update:checking',          null));
-  autoUpdater.on('update-available',       (info) => send('update:available',         info));
-  autoUpdater.on('update-not-available',   (info) => send('update:not-available',     info));
-  autoUpdater.on('download-progress',      (prog) => send('update:download-progress', prog));
-  autoUpdater.on('update-downloaded',      (info) => send('update:downloaded',        info));
-  autoUpdater.on('error',                  (err)  => {
-    console.error('[updater] error:', err?.message || err);
-    if (err?.message) console.error('[updater] stack:', err.stack);
-    send('update:error', { message: err?.message || String(err) });
+  autoUpdater.on('checking-for-update', () => send('update:checking', null));
+
+  // update-available: electron-updater found a newer latest.yml — auto-download starts.
+  autoUpdater.on('update-available', (info) => send('update:available', info));
+
+  // update-not-available: latest.yml matched current version. Run GitHub API fallback
+  // to catch cases where a newer published release exists but latest.yml wasn't refreshed.
+  autoUpdater.on('update-not-available', (info) => {
+    _githubReleaseFallback(send, ghToken).then(found => {
+      if (!found) send('update:not-available', info);
+    });
   });
 
-  ipcMain.handle('update:check',             () => autoUpdater.checkForUpdates().catch(() => {}));
-  ipcMain.handle('update:restart-and-install', () => autoUpdater.quitAndInstall(false, true));
+  autoUpdater.on('download-progress', (prog) => send('update:download-progress', prog));
 
-  // Check for updates 8 seconds after window is ready (avoid blocking startup)
+  autoUpdater.on('update-downloaded', (info) => {
+    _downloadedPath = info.downloadedFile || null;
+    // Strip quarantine on the DMG itself
+    if (process.platform === 'darwin' && _downloadedPath) {
+      try { execSync(`xattr -dr com.apple.quarantine "${_downloadedPath}"`, { stdio: 'pipe' }); } catch (_) {}
+    }
+    send('update:downloaded', info);
+  });
+
+  autoUpdater.on('error', (err) => {
+    const msg = err?.message || String(err);
+    // 404 / network errors mean electron-updater couldn't reach latest.yml.
+    // Run GitHub API fallback before telling the renderer "no update".
+    if (/404|net::ERR_|ENOTFOUND|ECONNREFUSED|ETIMEDOUT/.test(msg)) {
+      console.log('[updater] latest.yml unreachable — running GitHub API fallback:', msg);
+      _githubReleaseFallback(send, ghToken).then(found => {
+        if (!found) send('update:not-available', null);
+      });
+      return;
+    }
+    console.error('[updater] error:', msg);
+    send('update:error', { message: msg });
+  });
+
+  ipcMain.handle('update:check', async () => {
+    send('update:checking', null);
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      // checkForUpdates() returns null when it can't reach the feed at all
+      // (no network, no releases). Run fallback in that case.
+      if (!result) {
+        const found = await _githubReleaseFallback(send, ghToken);
+        if (!found) send('update:not-available', null);
+      }
+    } catch (e) {
+      const msg = e?.message || String(e);
+      console.log('[updater] checkForUpdates threw:', msg);
+      const found = await _githubReleaseFallback(send, ghToken);
+      if (!found) {
+        if (!/404|net::ERR_|ENOTFOUND|ECONNREFUSED|ETIMEDOUT/.test(msg)) {
+          send('update:error', { message: msg });
+        } else {
+          send('update:not-available', null);
+        }
+      }
+    }
+  });
+
+  ipcMain.handle('update:restart-and-install', () => {
+    // macOS manual install: bypasses ditto entirely (ditto fails with "Couldn't read PKZip
+    // Signature" on quarantined files). We strip quarantine first, then extract manually.
+    if (process.platform === 'darwin' && _downloadedPath) {
+      const ext = path.extname(_downloadedPath).toLowerCase();
+      const tmpBase = `/tmp/nebula-update-${Date.now()}`;
+
+      // Always strip quarantine from the downloaded archive first
+      try { execSync(`xattr -dr com.apple.quarantine "${_downloadedPath}"`, { stdio: 'pipe' }); } catch (_) {}
+
+      try {
+        if (ext === '.zip') {
+          // ZIP update — extract with unzip (not ditto) to avoid PKZip signature checks
+          fs.mkdirSync(tmpBase, { recursive: true });
+          execSync(`unzip -o "${_downloadedPath}" -d "${tmpBase}"`, { stdio: 'pipe', timeout: 60000 });
+          // Find the .app bundle in the extracted directory
+          const entries = fs.readdirSync(tmpBase);
+          const appName = entries.find(e => e.endsWith('.app'));
+          if (appName) {
+            const extractedApp = path.join(tmpBase, appName);
+            try { execSync(`xattr -dr com.apple.quarantine "${extractedApp}"`, { stdio: 'pipe', timeout: 10000 }); } catch (_) {}
+            execSync(`rm -rf "/Applications/${appName}"`, { stdio: 'pipe', timeout: 30000 });
+            execSync(`cp -R "${extractedApp}" "/Applications/${appName}"`, { stdio: 'pipe', timeout: 60000 });
+            try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch (_) {}
+            console.log('[updater] zip install complete, relaunching...');
+            app.relaunch();
+            app.quit();
+            return;
+          }
+        } else {
+          // DMG update — mount, find the .app by scanning the mount point, copy with cp -R
+          fs.mkdirSync(tmpBase, { recursive: true });
+          execSync(`hdiutil attach "${_downloadedPath}" -nobrowse -mountpoint "${tmpBase}"`, { stdio: 'pipe', timeout: 30000 });
+          // Scan mount point for any .app bundle (handles name variations)
+          const mountEntries = fs.readdirSync(tmpBase);
+          const appName = mountEntries.find(e => e.endsWith('.app'));
+          if (appName) {
+            const appBundle = path.join(tmpBase, appName);
+            try { execSync(`xattr -dr com.apple.quarantine "${appBundle}"`, { stdio: 'pipe', timeout: 10000 }); } catch (_) {}
+            execSync(`rm -rf "/Applications/${appName}"`, { stdio: 'pipe', timeout: 30000 });
+            execSync(`cp -R "${appBundle}" "/Applications/${appName}"`, { stdio: 'pipe', timeout: 60000 });
+            try { execSync(`hdiutil detach "${tmpBase}" 2>/dev/null || true`, { stdio: 'pipe' }); } catch (_) {}
+            try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch (_) {}
+            console.log('[updater] dmg install complete, relaunching...');
+            app.relaunch();
+            app.quit();
+            return;
+          }
+          try { execSync(`hdiutil detach "${tmpBase}" 2>/dev/null || true`, { stdio: 'pipe' }); } catch (_) {}
+        }
+      } catch (e) {
+        console.error('[updater] manual install failed:', e.message);
+        // Clean up temp dir
+        try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch (_) {}
+      }
+    }
+    // Windows / Linux — electron-updater handles natively
+    autoUpdater.quitAndInstall(false, true);
+  });
+
+  // Silent background check 8s after first window opens.
   app.once('browser-window-created', () => {
-    setTimeout(() => {
-      autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+    setTimeout(async () => {
+      try {
+        const result = await autoUpdater.checkForUpdatesAndNotify();
+        if (!result) _githubReleaseFallback(send, ghToken);
+      } catch (_) {
+        _githubReleaseFallback(send, ghToken);
+      }
     }, 8000);
   });
 

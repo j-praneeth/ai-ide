@@ -642,13 +642,15 @@ def run_command(
         else:
             # Not a cd command, run it
             try:
+                # Use a longer timeout for git commands (log, diff on large repos can be slow)
+                _cmd_timeout = 120 if remaining.lstrip().startswith("git ") else 60
                 if IS_WINDOWS:
                     if shell == 'cmd':
                         result = subprocess.run(
                             ["cmd.exe", "/c", remaining],
                             capture_output=True,
                             text=True,
-                            timeout=30,
+                            timeout=_cmd_timeout,
                             cwd=cwd,
                             env=_build_env(),
                         )
@@ -658,7 +660,7 @@ def run_command(
                             ["powershell", "-NoProfile", "-Command", remaining],
                             capture_output=True,
                             text=True,
-                            timeout=30,
+                            timeout=_cmd_timeout,
                             cwd=cwd,
                             env=_build_env(),
                         )
@@ -668,7 +670,7 @@ def run_command(
                         shell=True,
                         capture_output=True,
                         text=True,
-                        timeout=30,
+                        timeout=_cmd_timeout,
                         cwd=cwd,
                         env=_build_env(),
                     )
@@ -677,7 +679,7 @@ def run_command(
                     output += result.stderr
                 exit_code = result.returncode
             except subprocess.TimeoutExpired:
-                output += "Command timed out after 30 seconds\n"
+                output += f"Command timed out\n"
                 exit_code = -1
             except Exception as e:
                 output += f"Error: {str(e)}\n"

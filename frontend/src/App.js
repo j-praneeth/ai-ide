@@ -10,8 +10,6 @@ import SourceControlPanel from './components/SourceControlPanel';
 import ExtensionsPanel from './components/ExtensionsPanel';
 import ExtensionAppPanel from './components/ExtensionAppPanel';
 import SettingsPanel from './components/SettingsPanel';
-import UsagePanel from './components/UsagePanel';
-import ChatPanel from './components/ChatPanel';
 import EditorTabs from './components/EditorTabs';
 import TerminalPanel from './components/TerminalPanel';
 import StatusBar from './components/StatusBar';
@@ -139,6 +137,7 @@ function App() {
   const [updateState, setUpdateState] = useState(null); // null | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'updated'
   const [updateProgress, setUpdateProgress] = useState(0);
   const [updateVersion, setUpdateVersion] = useState('');
+  const [updateDownloadUrl, setUpdateDownloadUrl] = useState(''); // set when manualDownload:true
   const workspaceCtxRef = useRef({ projectRoot: '', webFolderHandle: null });
   const [sidebarWidth, setSidebarWidth] = useState(270);
   const sidebarResizingRef = useRef(false);
@@ -185,7 +184,18 @@ function App() {
     if (!api) return;
     const unsubs = [
       api.onChecking?.(() => { setUpdateState('checking'); setUpdateError(''); }),
-      api.onAvailable?.((info) => { setUpdateState('available'); setUpdateVersion(info?.version || ''); }),
+      api.onAvailable?.((info) => {
+        setUpdateVersion(info?.version || '');
+        if (info?.manualDownload) {
+          // GitHub API fallback: we know a newer version exists but can't auto-install.
+          // Show a "Download" button that opens the release page.
+          setUpdateDownloadUrl(info?.downloadUrl || '');
+          setUpdateState('available-manual');
+        } else {
+          setUpdateDownloadUrl('');
+          setUpdateState('available');
+        }
+      }),
       api.onNotAvailable?.(() => { setUpdateState('updated'); setUpdateVersion(''); setTimeout(() => setUpdateState(s => s === 'updated' ? null : s), 4000); }),
       api.onDownloadProgress?.((p) => { setUpdateState('downloading'); setUpdateProgress(Math.round(p?.percent || 0)); }),
       api.onDownloaded?.((info) => { setUpdateState('ready'); setUpdateVersion(info?.version || ''); }),
@@ -257,6 +267,8 @@ function App() {
   // The retry loop below handles both cases:
   //   - Backend not ready → retry with backoff until it responds
   //   - Backend ready → succeeds immediately on first try
+  const _startupFolderHandled = useRef(false);
+
   useEffect(() => {
     let active = true;
     let retryTimer = null;
@@ -265,16 +277,19 @@ function App() {
     const cleanupFns = [];
 
     // Detect if this window was spawned to open a specific folder (show loading until ready).
-    if (window.electronAPI?.getStartupFolder) {
+    if (window.electronAPI?.getStartupFolder && !_startupFolderHandled.current) {
       window.electronAPI.getStartupFolder().then(startupPath => {
+        if (!active) return;
         if (startupPath) {
+          _startupFolderHandled.current = true;
           const name = startupPath.split(/[\\/]/).filter(Boolean).pop() || startupPath;
           setStartupFolderName(name);
+          handleOpenFolder(startupPath);
         } else {
           // Not a folder-open window — hide loading immediately.
           setWorkspaceLoading(false);
         }
-      }).catch(() => setWorkspaceLoading(false));
+      }).catch(() => { if (active) setWorkspaceLoading(false); });
     }
 
     const loadWorkspace = () => {
@@ -328,7 +343,7 @@ function App() {
       if (retryTimer) clearTimeout(retryTimer);
       cleanupFns.forEach(fn => { try { fn(); } catch (_) {} });
     };
-  }, [loadTree]);
+  }, [loadTree, handleOpenFolder]);
 
   // After login, Super Admin lands on Admin dashboard by default.
   useEffect(() => {
@@ -784,6 +799,8 @@ function App() {
         window.electronAPI?.updates?.checkForUpdates?.();
         setUpdateState('checking');
         setUpdateError('');
+        // Safety: if no IPC event fires within 20s, reset so UI doesn't hang
+        setTimeout(() => setUpdateState(s => s === 'checking' ? null : s), 20000);
         break;
       case 'help.about':
         setShowAbout(true);
@@ -1022,17 +1039,23 @@ function App() {
     const hadWorkspace = !!(prevRoot || prevHandle);
     const openingSomething = !!(folderPath || handle);
 
-    // In Electron: if a workspace is already open, spawn the new folder in a fresh window
-    // and show a loading screen — then close this window. This matches VS Code's behavior.
+    // In Electron: if a workspace is already open, open the new folder in a fresh window.
+    // On macOS/Linux this spawns a new process; on Windows it creates an in-process
+    // BrowserWindow. Either way the main process closes this window once the new one is ready.
     if (hadWorkspace && openingSomething && folderPath && window.electronAPI?.openFolderInNewWindow) {
       setWorkspaceLoading(true);
       try {
-        await window.electronAPI.openFolderInNewWindow(folderPath);
+        const result = await window.electronAPI.openFolderInNewWindow(folderPath);
+        if (result && !result.ok) {
+          // Spawn failed — fall through to open in-place instead
+          setWorkspaceLoading(false);
+        } else {
+          // Main process will close this window. Just keep the loading screen visible.
+          return;
+        }
       } catch (_) {
         setWorkspaceLoading(false);
       }
-      // Window will be closed by the main process after the new one starts.
-      return;
     }
 
     const showBlockingLoad = hadWorkspace && openingSomething;
@@ -1296,6 +1319,21 @@ function App() {
               <VscDeviceMobile size={16} />
             </button>
           </div>
+          {updateState === 'checking' && (
+            <span className="title-bar-updated-label" style={{ opacity: 0.7 }}>
+              Checking for updates…
+            </span>
+          )}
+          {updateState === 'available-manual' && (
+            <button
+              className="title-bar-update-btn ready"
+              onClick={() => window.electronAPI?.openExternal?.(updateDownloadUrl)}
+              title={`Version ${updateVersion} available — click to open download page`}
+            >
+              <VscRefresh size={14} />
+              <span>Update {updateVersion} available — Download</span>
+            </button>
+          )}
           {updateState === 'ready' && (
             <button
               className="title-bar-update-btn ready"
@@ -1303,20 +1341,20 @@ function App() {
               title={`Update ${updateVersion} ready — click to restart and install`}
             >
               <VscRefresh size={14} />
-              <span>Restart to Update</span>
+              <span>Restart to Update {updateVersion && `(${updateVersion})`}</span>
             </button>
           )}
           {updateState === 'updated' && (
-            <span className="title-bar-updated-label">Updated</span>
+            <span className="title-bar-updated-label">Up to date</span>
           )}
           {updateState === 'error' && (
             <button
               className="title-bar-update-btn error"
-              onClick={() => { window.electronAPI?.updates?.checkForUpdates?.(); setUpdateState('checking'); setUpdateError(''); }}
+              onClick={() => { window.electronAPI?.updates?.checkForUpdates?.(); setUpdateState('checking'); setUpdateError(''); setTimeout(() => setUpdateState(s => s === 'checking' ? null : s), 20000); }}
               title={updateError || 'Update check failed — click to retry'}
             >
               <VscRefresh size={14} />
-              <span>Update Error</span>
+              <span>Update Error — Retry</span>
             </button>
           )}
         </div>
@@ -1381,17 +1419,6 @@ function App() {
             )}
             {sidebarPanel === 'settings' && (
               <SettingsPanel onSettingsChange={handleSettingsChange} />
-            )}
-            {sidebarPanel === 'usage' && (
-              <UsagePanel />
-            )}
-            {sidebarPanel === 'chat' && (
-              <ChatPanel
-                visible={true}
-                onClose={() => setSidebarPanel('explorer')}
-                currentFile={activeFile}
-                currentContent={activeFile ? (fileContents[activeFile] || '') : ''}
-              />
             )}
           </div>
           <div className="sidebar-resizer" onMouseDown={handleSidebarResizeStart} title="Drag to resize" />

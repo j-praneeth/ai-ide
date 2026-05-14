@@ -35,21 +35,30 @@ const path          = require('path');
 const fs            = require('fs');
 
 exports.default = async function afterPack(context) {
-  // Only applies to macOS
-  if (context.electronPlatformName !== 'darwin') return;
-
+  const platform = context.electronPlatformName;
   const productName = context.packager.appInfo.productFilename;
-  const appPath     = path.join(context.appOutDir, `${productName}.app`);
 
-  if (!fs.existsSync(appPath)) {
-    console.warn(`[afterPack] .app not found at expected path: ${appPath}`);
-    return;
+  // ── Determine resources directory per-platform ────────────────────
+  let resourcesDir;
+  if (platform === 'darwin') {
+    const appPath = path.join(context.appOutDir, `${productName}.app`);
+    if (!fs.existsSync(appPath)) {
+      console.warn(`[afterPack] .app not found at: ${appPath}`);
+      return;
+    }
+    resourcesDir = path.join(appPath, 'Contents', 'Resources');
+  } else {
+    // Windows / Linux flat layout
+    resourcesDir = path.join(context.appOutDir, 'resources');
+    if (!fs.existsSync(resourcesDir)) {
+      fs.mkdirSync(resourcesDir, { recursive: true });
+    }
   }
 
-  const resourcesDir = path.join(appPath, 'Contents', 'Resources');
-
-  // Embed GH_TOKEN so electron-updater can authenticate with the private repo
-  // at runtime.  The token is stripped from builds that run without GH_TOKEN.
+  // ── Embed GH_TOKEN (ALL platforms) ────────────────────────────────
+  // electron-updater needs a token to authenticate with the private
+  // GitHub repo at runtime.  The token is stripped from builds that
+  // run without GH_TOKEN.
   const ghToken = process.env.GH_TOKEN || process.env.GH_REPO_TOKEN || '';
   if (ghToken) {
     try {
@@ -63,34 +72,19 @@ exports.default = async function afterPack(context) {
     console.log('[afterPack] GH_TOKEN not set — update-config.json not written (public repo only)');
   }
 
-  console.log(`[afterPack] Ad-hoc signing + quarantine removal: ${appPath}`);
-
-  try {
-    // 1. Strip quarantine and provenance xattrs that macOS applies to
-    //    downloaded files.  If these are present at launch time Gatekeeper
-    //    will hard-block the app even when ad-hoc signed.
-    execSync(`xattr -cr "${appPath}"`, { stdio: 'pipe' });
-
-    // 2. Remove any existing (possibly broken) signature first
-    execSync(`codesign --remove-signature "${appPath}" 2>/dev/null || true`, { stdio: 'pipe' });
-
-    // 3. Sign recursively — frameworks, helpers, and the main bundle.
-    //    No --options runtime: that flag requires a real Apple certificate.
-    //    Ad-hoc (-) signing with --deep is enough to lift the "damaged" error.
-    execSync(
-      `codesign --force --deep --sign - "${appPath}"`,
-      { stdio: 'pipe' }
-    );
-
-    // 4. Verify the signature was applied
-    execSync(`codesign --verify --deep --strict "${appPath}"`, { stdio: 'pipe' });
-
-    console.log('[afterPack] Ad-hoc signing complete ✓');
-  } catch (err) {
-    // Log but don't abort the build — the app will still be created,
-    // users just have the xattr workaround available.
-    console.error('[afterPack] Signing/xattr step failed:', err.message);
-    console.error('[afterPack] Build continues; users may see the "damaged" error.');
-    console.error('[afterPack] Workaround: xattr -cr "/Applications/Nebula IDE.app"');
+  // ── Ad-hoc signing (macOS only) ───────────────────────────────────
+  // Without ANY signature, ditto fails with "Couldn't read PKZip Signature"
+  // when extracting from DMG.  Ad-hoc signing (+ the one-time xattr command)
+  // is the minimum needed for Gatekeeper to show "Open Anyway".
+  if (platform === 'darwin') {
+    const appPath = path.join(context.appOutDir, `${productName}.app`);
+    try {
+      execSync(`codesign --remove-signature "${appPath}" 2>/dev/null || true`, { stdio: 'pipe' });
+      execSync(`codesign --force --deep --sign - "${appPath}"`, { stdio: 'pipe' });
+      execSync(`codesign --verify --deep --strict "${appPath}"`, { stdio: 'pipe' });
+      console.log('[afterPack] Ad-hoc signing complete ✓');
+    } catch (err) {
+      console.warn('[afterPack] codesign failed (build continues):', err.message);
+    }
   }
 };

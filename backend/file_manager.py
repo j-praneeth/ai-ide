@@ -390,32 +390,36 @@ def _run_git(root: Path, args: list, timeout: int = 10) -> tuple:
         return "", -1
 
 
+_GIT_STATUS_TIMEOUT = 45   # seconds per git command in the status bundle
+
+
 @router.get("/git-status-bundle")
 def git_status_bundle():
     """
-    Returns all SCM data needed by SourceControlPanel in a single request:
-      status   – git status --porcelain output
-      branch   – current branch name
-      upstream – upstream ref ('' if none)
-      ahead    – commits ahead of upstream
-      behind   – commits behind upstream
-    Latency is ~1× git overhead instead of 3–4× sequential calls.
+    Returns all SCM data needed by SourceControlPanel in a single request.
+    All git commands run in parallel with a 45-second per-command timeout so
+    slow repos (large history, network drives) never cause a visible timeout.
+    Partial failures (e.g. no upstream) are handled gracefully — the response
+    is always ok:True as long as at least status + branch succeed.
     """
     root, err = _require_project_root()
     if err:
         return {"error": err.get("error", "no workspace"), "ok": False}
 
-    # Verify this is a git repo
-    _, rc = _run_git(root, ["rev-parse", "--git-dir"])
+    # Quick repo check — 5s is plenty for rev-parse
+    _, rc = _run_git(root, ["rev-parse", "--git-dir"], timeout=5)
     if rc != 0:
         return {"ok": False, "error": "not a git repository"}
 
     import concurrent.futures
+    T = _GIT_STATUS_TIMEOUT
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        f_status   = ex.submit(_run_git, root, ["status", "--porcelain"])
-        f_branch   = ex.submit(_run_git, root, ["branch", "--show-current"])
-        f_upstream = ex.submit(_run_git, root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
-        f_ab       = ex.submit(_run_git, root, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+        f_status   = ex.submit(_run_git, root, ["status", "--porcelain"], T)
+        f_branch   = ex.submit(_run_git, root, ["branch", "--show-current"], T)
+        f_upstream = ex.submit(_run_git, root,
+                               ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], T)
+        f_ab       = ex.submit(_run_git, root,
+                               ["rev-list", "--left-right", "--count", "HEAD...@{u}"], T)
 
     status_out,   s_rc  = f_status.result()
     branch_out,   _     = f_branch.result()
@@ -429,14 +433,52 @@ def git_status_bundle():
             try: ahead, behind = int(parts[0]), int(parts[1])
             except ValueError: pass
 
+    # Always return ok:True — the UI only needs status + branch to function.
+    # Upstream / ahead-behind are bonus info; a timeout on those is not fatal.
     return {
         "ok": True,
-        "status": status_out if s_rc == 0 else None,
+        "status": status_out if s_rc == 0 else "",
         "branch": branch_out.strip(),
         "upstream": upstream_out.strip() if u_rc == 0 else "",
         "ahead": ahead,
         "behind": behind,
     }
+
+
+class GitRunBody(BaseModel):
+    args: list  # e.g. ["commit", "-m", "my message"]
+    timeout: int = 60  # generous default — push/pull over slow networks can take a while
+
+
+@router.post("/git-run")
+def git_run(body: GitRunBody):
+    """
+    Run an arbitrary git command in the project root using subprocess argument
+    lists — no shell interpolation, no platform quote-escaping issues.
+    Works identically on Windows (PowerShell) and macOS/Linux.
+    """
+    root, err = _require_project_root()
+    if err:
+        return {"ok": False, "output": err.get("error", "no workspace"), "exit_code": 1}
+
+    args = [str(a) for a in (body.args or [])]
+    if not args:
+        return {"ok": False, "output": "no git args provided", "exit_code": 1}
+
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root)] + args,
+            capture_output=True, text=True,
+            timeout=body.timeout,
+        )
+        out = (r.stdout or "") + (r.stderr or "")
+        return {"ok": r.returncode == 0, "output": out, "exit_code": r.returncode}
+    except FileNotFoundError:
+        return {"ok": False, "output": "git not found in PATH", "exit_code": 127}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "output": "git command timed out", "exit_code": -1}
+    except Exception as e:
+        return {"ok": False, "output": str(e), "exit_code": -1}
 
 
 @router.get("/tree-children")

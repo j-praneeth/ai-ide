@@ -14,16 +14,66 @@ import { MdInsertDriveFile } from 'react-icons/md';
 import axios from 'axios';
 import { API_URL as API } from '../config';
 
-// ─── Backend runner ───────────────────────────────────────────────────────────
+// ─── Backend runners ──────────────────────────────────────────────────────────
+
+// Shell-string runner — used for git diff / git log / git show (read-only, no quoting risk).
 async function runCommand(command) {
   const res = await axios.post(`${API}/terminal/run`, { command }, { timeout: 180000 });
   return { output: res.data.output ?? '', exit_code: res.data.exit_code ?? 0 };
 }
 
-// Single-request status fetch — replaces 3 separate runCommand calls
+// Argument-list git runner — bypasses shell quoting entirely.
+// Use this for all write operations (commit, push, pull, stage, unstage, discard)
+// so the commands work identically on Windows (PowerShell) and macOS/Linux.
+async function runGit(args, timeoutMs = 60000) {
+  const res = await axios.post(
+    `${API}/files/git-run`,
+    { args, timeout: Math.floor(timeoutMs / 1000) },
+    { timeout: timeoutMs + 5000 },
+  );
+  return { output: res.data.output ?? '', exit_code: res.data.exit_code ?? 0, ok: !!res.data.ok };
+}
+
+// Retry helper — silently retries on network/timeout errors up to maxTries times.
+async function withRetry(fn, maxTries = 3, delayMs = 1500) {
+  let lastErr;
+  for (let i = 0; i < maxTries; i++) {
+    try { return await fn(); }
+    catch (e) {
+      lastErr = e;
+      const isRetryable = e.code === 'ECONNABORTED' || /timeout|network/i.test(e.message || '');
+      if (!isRetryable || i === maxTries - 1) throw e;
+      await new Promise(r => setTimeout(r, delayMs * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+// Single-request status fetch — replaces 3 separate runCommand calls.
+// Backend timeout is 45s per git command; we allow 60s on the axios side.
 async function fetchStatusBundle() {
-  const res = await axios.get(`${API}/files/git-status-bundle`, { timeout: 30000 });
+  const res = await axios.get(`${API}/files/git-status-bundle`, { timeout: 60000 });
   return res.data;
+}
+
+// ─── Git error translator ─────────────────────────────────────────────────────
+function friendlyGitError(output = '') {
+  const o = output.toLowerCase();
+  if (/nothing to commit|nothing added to commit|no changes added/i.test(output))
+    return 'Nothing to commit. Stage your changes first.';
+  if (/please tell me who you are|user\.email|user\.name/i.test(output))
+    return 'Git identity not configured. Run: git config --global user.email "you@example.com"';
+  if (/authentication failed|could not read username|permission denied/i.test(output))
+    return 'Push failed: authentication required. Check your credentials.';
+  if (/rejected.*non-fast-forward|rejected.*fetch first/i.test(output))
+    return 'Push rejected: remote has new commits. Pull first, then push.';
+  if (/no upstream branch|set-upstream/i.test(output))
+    return 'No upstream branch. Use "Publish Branch" to push for the first time.';
+  if (/not a git repository/i.test(output))
+    return 'Not a git repository.';
+  // Collapse multi-line raw output to a short summary
+  const firstLine = output.trim().split('\n').find(l => l.trim()) || output.trim();
+  return firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine;
 }
 
 // ─── Git porcelain parser ─────────────────────────────────────────────────────
@@ -287,6 +337,7 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   const [error, setError]           = useState(null);
   const [commitMessage, setCommitMessage] = useState('');
   const [committing, setCommitting] = useState(false);
+  const [commitError, setCommitError] = useState(null);
   const [commitDropdown, setCommitDropdown] = useState(false);
   const [graphEntries, setGraphEntries] = useState([]);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -309,30 +360,41 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   // ── Fetch git status via single bundle endpoint ─────────────────────────────
   const fetchStatus = useCallback(async (isBackground = false) => {
     if (!hasWorkspace) { setInitialLoading(false); setStatusOutput(null); setBranch(''); return; }
-    setError(null);
-    if (!isBackground) setInitialLoading(true);
+    if (!isBackground) { setError(null); setInitialLoading(true); }
     else setBgRefreshing(true);
     try {
-      const data = await fetchStatusBundle();
+      // Retry up to 3 times on transient network/timeout errors before giving up
+      const data = await withRetry(() => fetchStatusBundle());
       if (!data.ok) {
-        setStatusOutput(null);
-        setError(data.error || 'Not a git repository');
-        setBranch('');
-        setHasUpstream(false);
-        setAhead(0);
-        setBehind(0);
+        // "not a git repository" is a real error — show it
+        if (!isBackground) {
+          setStatusOutput(null);
+          setError(data.error || 'Not a git repository');
+          setBranch('');
+          setHasUpstream(false);
+          setAhead(0);
+          setBehind(0);
+        }
         return;
       }
-      setStatusOutput(data.status);
+      setStatusOutput(data.status ?? '');
       setBranch(data.branch || '');
       setHasUpstream(!!data.upstream);
       setAhead(data.ahead || 0);
       setBehind(data.behind || 0);
+      // Clear any previous error once we succeed
+      setError(null);
     } catch (e) {
-      setStatusOutput(null);
-      setError(e.message || 'Not a git repository');
-      setBranch('');
-      setHasUpstream(false);
+      // On background polls, never overwrite the current UI with a timeout error —
+      // the data the user sees stays intact and we silently retry on the next tick.
+      if (!isBackground) {
+        setStatusOutput(null);
+        setBranch('');
+        setHasUpstream(false);
+        // Show a friendlier message instead of the raw axios timeout string
+        const msg = e.message || '';
+        setError(/timeout|ECONNABORTED/i.test(msg) ? 'Taking longer than usual — retrying…' : msg || 'Unable to read git status');
+      }
     } finally {
       setInitialLoading(false);
       setBgRefreshing(false);
@@ -343,10 +405,10 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   // Initial load
   useEffect(() => { fetchStatus(false); }, [fetchStatus]);
 
-  // Background polling — no spinner flash
+  // Background polling — no spinner flash, 15s interval to avoid piling up on slow repos
   useEffect(() => {
     if (!hasWorkspace) return;
-    const id = setInterval(() => fetchStatus(true), 8000);
+    const id = setInterval(() => fetchStatus(true), 15000);
     return () => clearInterval(id);
   }, [fetchStatus, hasWorkspace]);
 
@@ -355,8 +417,13 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
     if (!hasWorkspace) return;
     setGraphLoading(true);
     try {
-      const res = await runCommand('git log --format="%H%x00%P%x00%s%x00%an%x00%ar%x00%D" -80');
-      setGraphEntries(buildGraphLayout(parseGitLog(res.output || '')));
+      const res = await withRetry(
+        () => axios.post(`${API}/terminal/run`,
+          { command: 'git log --format="%H%x00%P%x00%s%x00%an%x00%ar%x00%D" -80' },
+          { timeout: 120000 },  // 2 min — large repos with deep history can be slow
+        ),
+      );
+      setGraphEntries(buildGraphLayout(parseGitLog(res.data?.output || '')));
     } catch (_) { setGraphEntries([]); }
     finally { setGraphLoading(false); }
   }, [hasWorkspace]);
@@ -364,7 +431,8 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   const hasRepo = !error && statusOutput !== null;
   const { staged = [], unstaged = [] } = hasRepo ? parsePorcelain(statusOutput) : {};
   const hasStaged = staged.length > 0;
-  const canCommit = hasStaged && commitMessage.trim();
+  const hasChanges = hasStaged || unstaged.length > 0;
+  const canCommit = hasChanges && commitMessage.trim();
 
   useEffect(() => {
     if (hasWorkspace && hasRepo && !collapsed.graph && graphEntries.length === 0 && !graphLoading)
@@ -372,25 +440,42 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   }, [hasWorkspace, hasRepo, collapsed.graph, graphEntries.length, graphLoading, fetchGraph]);
 
   // ── Git operations ──────────────────────────────────────────────────────────
-  const handleStage   = async p => { try { await runCommand(`git add ${JSON.stringify(p)}`); await fetchStatus(true); } catch (e) { setError(e.message); } };
-  const handleUnstage = async p => { try { await runCommand(`git reset HEAD ${JSON.stringify(p)}`); await fetchStatus(true); } catch (e) { setError(e.message); } };
+  const handleStage   = async p => { try { await runGit(['add', p]); await fetchStatus(true); } catch (e) { setError(e.message); } };
+  const handleUnstage = async p => { try { await runGit(['reset', 'HEAD', p]); await fetchStatus(true); } catch (e) { setError(e.message); } };
   const handleDiscard = async p => {
     if (!window.confirm(`Discard changes in ${p}?`)) return;
-    try { await runCommand(`git checkout -- ${JSON.stringify(p)}`); await fetchStatus(true); } catch (e) { setError(e.message); }
+    try { await runGit(['checkout', '--', p]); await fetchStatus(true); } catch (e) { setError(e.message); }
   };
 
-  const doCommit = async () => {
-    if (!canCommit) return false;
+  const doCommit = async (stageAllFirst = false) => {
+    if (!commitMessage.trim()) { setCommitError('Enter a commit message.'); return false; }
+    // If nothing staged but there are unstaged changes, auto-stage all (VS Code behavior)
+    if (staged.length === 0) {
+      if (unstaged.length > 0) {
+        // Silently stage all unstaged files, then commit
+        try {
+          const stageResult = await runGit(['add', '-A']);
+          if (stageResult.exit_code !== 0) {
+            setCommitError('Failed to stage changes: ' + friendlyGitError(stageResult.output));
+            return false;
+          }
+        } catch (e) { setCommitError(friendlyGitError(e.message)); return false; }
+      } else {
+        setCommitError('Nothing to commit — working tree is clean.');
+        return false;
+      }
+    }
     setCommitting(true);
+    setCommitError(null);
     try {
-      const msg = commitMessage.trim().replace(/"/g, '\\"');
-      const r = await runCommand(`git commit -m "${msg}"`);
-      if (r.exit_code !== 0) { setError(r.output); return false; }
+      const r = await runGit(['commit', '-m', commitMessage.trim()]);
+      if (r.exit_code !== 0) { setCommitError(friendlyGitError(r.output)); return false; }
       setCommitMessage('');
+      setCommitError(null);
       await fetchStatus(true);
       setGraphEntries([]);
       return true;
-    } catch (e) { setError(e.message); return false; }
+    } catch (e) { setCommitError(friendlyGitError(e.message)); return false; }
     finally { setCommitting(false); }
   };
 
@@ -401,18 +486,41 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
     const ok = await doCommit();
     if (!ok) return;
     setInitialLoading(true);
+    setCommitError(null);
     try {
-      const pushCmd = !hasUpstream && branch ? `git push --set-upstream origin ${branch}` : 'git push';
-      const r = await runCommand(pushCmd);
-      if (r.exit_code !== 0) setError(r.output);
+      const pushArgs = (!hasUpstream && branch)
+        ? ['push', '--set-upstream', 'origin', branch]
+        : ['push'];
+      const r = await runGit(pushArgs, 120000);
+      if (r.exit_code !== 0) setCommitError(friendlyGitError(r.output));
       else { await fetchStatus(true); await fetchGraph(); }
-    } catch (e) { setError(e.message); }
+    } catch (e) { setCommitError(friendlyGitError(e.message)); }
     finally { setInitialLoading(false); }
   };
 
-  const handlePush  = async () => { setInitialLoading(true); try { const cmd = !hasUpstream && branch ? `git push --set-upstream origin ${branch}` : 'git push'; const r = await runCommand(cmd); if (r.exit_code !== 0) setError(r.output); else await fetchStatus(true); } catch (e) { setError(e.message); } finally { setInitialLoading(false); } };
-  const handlePull  = async () => { setInitialLoading(true); try { const r = await runCommand('git pull'); if (r.exit_code !== 0) setError(r.output); else await fetchStatus(true); } catch (e) { setError(e.message); } finally { setInitialLoading(false); } };
-  const handleFetch = async () => { setInitialLoading(true); try { await runCommand('git fetch'); await fetchStatus(true); } catch (e) { setError(e.message); } finally { setInitialLoading(false); } };
+  const handlePush = async () => {
+    setInitialLoading(true);
+    setCommitError(null);
+    try {
+      const pushArgs = (!hasUpstream && branch) ? ['push', '--set-upstream', 'origin', branch] : ['push'];
+      const r = await runGit(pushArgs, 120000);
+      if (r.exit_code !== 0) setCommitError(friendlyGitError(r.output)); else await fetchStatus(true);
+    } catch (e) { setCommitError(friendlyGitError(e.message)); } finally { setInitialLoading(false); }
+  };
+  const handlePull = async () => {
+    setInitialLoading(true);
+    setCommitError(null);
+    try {
+      const r = await runGit(['pull'], 120000);
+      if (r.exit_code !== 0) setCommitError(friendlyGitError(r.output)); else await fetchStatus(true);
+    } catch (e) { setCommitError(friendlyGitError(e.message)); } finally { setInitialLoading(false); }
+  };
+  const handleFetch = async () => {
+    setInitialLoading(true);
+    setCommitError(null);
+    try { await runGit(['fetch']); await fetchStatus(true); }
+    catch (e) { setCommitError(friendlyGitError(e.message)); } finally { setInitialLoading(false); }
+  };
 
   // ── Commit detail click ─────────────────────────────────────────────────────
   const handleCommitClick = async hash => {
@@ -517,6 +625,12 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
 
             {/* Commit input */}
             <div className="scm-commit-section">
+            {commitError && (
+              <div className="scm-commit-error-banner">
+                <span>{commitError}</span>
+                <button className="scm-commit-error-dismiss" onClick={() => setCommitError(null)}>✕</button>
+              </div>
+            )}
               <div className="scm-commit-input-container">
                 <textarea
                   className="scm-commit-input"
