@@ -20,6 +20,7 @@ _cache_lock = threading.Lock()
 _cached_access_token: Optional[str] = None
 _cached_refresh_token: Optional[str] = None
 _cached_expires_at: float = 0.0  # unix seconds
+_cached_oauth: Optional[dict] = None  # full OAuth object for building responses
 
 
 _DEFAULT_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -87,9 +88,19 @@ def _do_refresh(refresh_token: str) -> dict:
     return resp.json()
 
 
+def _build_oauth_response(oauth: dict, access_token: str, refresh_token: str, expires_at_s: float) -> dict:
+    """Build the full OAuth response including all stored fields (scopes, subscriptionType, etc.)."""
+    return {
+        **oauth,
+        "accessToken": access_token,
+        "refreshToken": refresh_token,
+        "expiresAt": int(expires_at_s * 1000),
+    }
+
 def get_fresh_access_token() -> dict:
     """
-    Returns { accessToken, refreshToken, expiresAt }.
+    Returns the full OAuth object with updated accessToken, refreshToken, expiresAt,
+    plus all stored fields (scopes, subscriptionType, rateLimitTier, etc.).
 
     The refreshToken is included so the Electron app can write it to disk,
     keeping the on-disk refresh token in sync with the DB.  Without this,
@@ -104,18 +115,17 @@ def get_fresh_access_token() -> dict:
       5. Save the new OAuth (new accessToken + possibly rotated refreshToken) back to DB.
       6. Update cache and return.
     """
-    global _cached_access_token, _cached_refresh_token, _cached_expires_at
+    global _cached_access_token, _cached_refresh_token, _cached_expires_at, _cached_oauth, _cached_scope, _cached_subscription_type, _cached_rate_limit_tier
 
     now = time.time()
 
     # 1. In-memory cache hit
     with _cache_lock:
         if _cached_access_token and _cached_refresh_token and _cached_expires_at > now + _CACHE_MARGIN_SECONDS:
-            return {
-                "accessToken": _cached_access_token,
-                "refreshToken": _cached_refresh_token,
-                "expiresAt": int(_cached_expires_at * 1000),
-            }
+            return _build_oauth_response(
+                _cached_oauth or {},
+                _cached_access_token, _cached_refresh_token, _cached_expires_at,
+            )
 
     # 2. Load from DB
     oauth = get_stored_oauth()
@@ -135,10 +145,11 @@ def get_fresh_access_token() -> dict:
     # 3. Access token still valid
     if access_token and expires_at_s > now + _CACHE_MARGIN_SECONDS:
         with _cache_lock:
+            _cached_oauth = oauth
             _cached_access_token = access_token
             _cached_refresh_token = refresh_token
             _cached_expires_at = expires_at_s
-        return {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": int(expires_at_s * 1000)}
+        return _build_oauth_response(oauth, access_token, refresh_token, expires_at_s)
 
     # 4. Refresh
     if not refresh_token:
@@ -158,27 +169,42 @@ def get_fresh_access_token() -> dict:
     if not new_access:
         raise RuntimeError(f"Token refresh call succeeded but returned no access_token. Response: {result}")
 
-    # 5. Persist (handles rotation: new refresh token saved automatically)
-    updated_oauth = {**oauth, "accessToken": new_access, "refreshToken": new_refresh, "expiresAt": int(new_expires_at_s * 1000)}
+    # 5. Persist (handles rotation: new refresh token saved automatically).
+    #    Also capture the "scope" field from the Anthropic response (a space-
+    #    separated string of OAuth scopes) if present.
+    scope = (result.get("scope") or "").strip()
+    updated_oauth = {
+        **oauth,
+        "accessToken": new_access,
+        "refreshToken": new_refresh,
+        "expiresAt": int(new_expires_at_s * 1000),
+        "scope": scope,
+        "subscriptionType": result.get("subscriptionType") or "free",
+        "rateLimitTier": result.get("rateLimitTier") or "default_claude_free_1x",
+    }
+    if scope:
+        updated_oauth["scope"] = scope
     save_oauth(updated_oauth)
 
     # 6. Update cache
     with _cache_lock:
+        _cached_oauth = updated_oauth
         _cached_access_token = new_access
         _cached_refresh_token = new_refresh
         _cached_expires_at = new_expires_at_s
 
     logger.info("Claude access token refreshed successfully. Expires in %ss.", expires_in)
-    return {"accessToken": new_access, "refreshToken": new_refresh, "expiresAt": int(new_expires_at_s * 1000)}
+    return _build_oauth_response(updated_oauth, new_access, new_refresh, new_expires_at_s)
 
 
 def clear_cache() -> None:
     """Invalidate the in-memory token cache (call after externally updating stored credentials)."""
-    global _cached_access_token, _cached_refresh_token, _cached_expires_at
+    global _cached_access_token, _cached_refresh_token, _cached_expires_at, _cached_oauth
     with _cache_lock:
         _cached_access_token = None
         _cached_refresh_token = None
         _cached_expires_at = 0.0
+        _cached_oauth = None
 
 
 _disk_watcher_thread: Optional[threading.Thread] = None

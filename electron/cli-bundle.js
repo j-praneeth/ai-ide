@@ -722,17 +722,12 @@ async function _doInstall({ ignoreMarker = false, override = false } = {}) {
     const meta = loadShippedMeta();
     const shippedCt = loadShippedCiphertext(meta);
 
-    // 2. Skip if already installed and marker matches.
-    if (!ignoreMarker && alreadyInstalled(meta)) {
-      logInfo(null, 'cli-bundle already installed (marker hit)', { bundleSha: meta.bundleSha.slice(0, 16) });
-      return { ok: true, status: 'already-installed', bundleSha: meta.bundleSha };
-    }
-
-    // Marker didn't match (or was missing) — discard stale marker so a future
-    // reinstall with the same SHA doesn't skip writing.
+    // Discard stale marker so credentials are always written to disk.
+    // Previously this had an early return when marker matched, which meant
+    // existing ~/.claude/.credentials.json was never overwritten on reinstall.
     try { fs.unlinkSync(c.markerPath); } catch (_) {}
 
-    // 3. Try local re-wrapped bundle first.
+    // 2. Try local re-wrapped bundle first.
     const machineId = await getMachineId();
     let envelope = null;
     const local = await tryDecryptLocal(machineId);
@@ -887,7 +882,7 @@ function checkTokenFreshness() {
 // on-disk credentials file. Called by main.js after fetching a fresh token from
 // the backend so Claude CLI always starts with a non-expired access token.
 // Also works when the file doesn't exist yet (creates it from scratch).
-function patchAccessToken(accessToken, expiresAtMs, refreshToken) {
+function patchAccessToken(accessToken, expiresAtMs, refreshToken, extraFields) {
   const c = _ctx;
   if (!c) return false;
   try {
@@ -899,12 +894,11 @@ function patchAccessToken(accessToken, expiresAtMs, refreshToken) {
       creds = {};
     }
     try { fs.mkdirSync(c.claudeDir, { recursive: true }); } catch (_) {}
+    const oauthBase = { ...(extraFields || {}) };
     if (creds.claudeAiOauth && typeof creds.claudeAiOauth === 'object') {
-      creds.claudeAiOauth.accessToken = accessToken;
-      creds.claudeAiOauth.expiresAt = expiresAtMs;
-      if (refreshToken) creds.claudeAiOauth.refreshToken = refreshToken;
+      Object.assign(creds.claudeAiOauth, oauthBase, { accessToken, expiresAt: expiresAtMs }, refreshToken ? { refreshToken } : {});
     } else {
-      creds.claudeAiOauth = { accessToken, expiresAt: expiresAtMs, ...(refreshToken ? { refreshToken } : {}) };
+      creds.claudeAiOauth = { ...oauthBase, accessToken, expiresAt: expiresAtMs, ...(refreshToken ? { refreshToken } : {}) };
     }
     fs.writeFileSync(c.files.claudeCreds, JSON.stringify(creds, null, 2), { mode: 0o600 });
     // Ensure ~/.claude.json exists (Claude Code's onboarding state). Without it

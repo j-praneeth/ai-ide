@@ -723,7 +723,8 @@ async function _applyFreshClaudeToken() {
     // Mark this refresh token as ours BEFORE writing to disk, so the file watcher
     // ignores the change we're about to make (avoids a spurious sync loop).
     if (data.refreshToken) _lastBackendRefreshToken = data.refreshToken;
-    cliBundle.patchAccessToken(data.accessToken, data.expiresAt, data.refreshToken);
+    const { accessToken, expiresAt, refreshToken, ok, ...extraOauthFields } = data;
+    cliBundle.patchAccessToken(accessToken, expiresAt, refreshToken, extraOauthFields);
     console.log('[claude-token] Claude credentials refreshed from backend.');
     return { ok: true };
   } catch (e) {
@@ -747,6 +748,7 @@ async function _syncBundleCredentialsToBackend() {
     if (!refreshToken) return;
     const body = JSON.stringify({
       oauth: {
+        ...oauth,
         accessToken: (oauth.accessToken || oauth.access_token || '').trim(),
         refreshToken,
         expiresAt: oauth.expiresAt || oauth.expires_at || 0,
@@ -814,9 +816,13 @@ function _startCredentialWatcher() {
           if (!backendPort) return;
           const body = JSON.stringify({
             oauth: {
+              ...oauth,
               accessToken: ((oauth.accessToken || oauth.access_token) || '').trim(),
               refreshToken: newRefresh,
               expiresAt: oauth.expiresAt || oauth.expires_at || 0,
+              scope: oauth.scope || '',
+              subscriptionType: oauth.subscriptionType || '',
+              rateLimitTier: oauth.rateLimitTier || '',
             },
           });
           const req = http.request({
@@ -2433,6 +2439,12 @@ app.whenReady().then(async () => {
         const bundleRes = await cliBundleReadyPromise;
         if (bundleRes && bundleRes.ok) {
           await _syncBundleCredentialsToBackend();
+          // Immediately fetch a fresh token from the backend. This enriches the
+          // on-disk credentials with fields from MongoDB that the build machine's
+          // file didn't have (e.g. scopes, subscriptionType, rateLimitTier).
+          try {
+            await _applyFreshClaudeToken();
+          } catch (_) {}
         }
       } catch (_) {}
     }).catch((err) => {

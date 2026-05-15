@@ -77,7 +77,7 @@ async def sync_claude_credentials_internal(request: Request):
     Localhost-only (no JWT needed). Called by Electron when Claude CLI rotates the
     refresh token on disk, so the new token is synced back to MongoDB before it expires.
     """
-    from .claude_token import save_oauth, clear_cache
+    from .claude_token import save_oauth, clear_cache, get_stored_oauth, get_fresh_access_token, _build_oauth_response, _cache_lock, _cached_oauth, _cached_scope, _cached_subscription_type, _cached_rate_limit_tier, _cached_access_token, _cached_refresh_token, _cached_expires_at
 
     client_host = (request.client.host if request.client else "") or ""
     if client_host not in ("127.0.0.1", "::1", "localhost", ""):
@@ -92,6 +92,13 @@ async def sync_claude_credentials_internal(request: Request):
     oauth = body.get("oauth") if isinstance(body, dict) else None
     if not isinstance(oauth, dict) or not oauth.get("refreshToken"):
         return JSONResponse({"error": "Body must be { oauth: { refreshToken, ... } }"}, status_code=400)
+
+    # Merge with existing DB entry to preserve enriched fields (scopes,
+    # subscriptionType, rateLimitTier) that the Electron file watcher may
+    # not include in its partial POST body.
+    existing = get_stored_oauth()
+    if existing:
+        oauth = {**existing, **oauth}
 
     save_oauth(oauth)
     clear_cache()
