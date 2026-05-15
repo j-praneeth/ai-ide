@@ -2514,7 +2514,7 @@ function _githubReleaseFallback(send, ghToken) {
 
   return new Promise((resolve) => {
     const req = https.get(
-      { hostname: 'api.github.com', path: '/repos/j-praneeth/ai-ide/releases/latest', headers },
+      { hostname: 'api.github.com', path: `/repos/${process.env.GITHUB_OWNER || 'j-praneeth'}/${process.env.GITHUB_REPO || 'ai-ide'}/releases/latest`, headers },
       (res) => {
         let data = '';
         res.on('data', chunk => { data += chunk; });
@@ -2585,7 +2585,7 @@ function _initAutoUpdater() {
   // Always set feedURL explicitly — avoids falling back to releases.atom which
   // returns 404 for private repos or repos with no releases.
   try {
-    const feedConfig = { provider: 'github', owner: 'j-praneeth', repo: 'ai-ide' };
+    const feedConfig = { provider: 'github', owner: process.env.GITHUB_OWNER || 'j-praneeth', repo: process.env.GITHUB_REPO || 'ai-ide' };
     if (ghToken) { feedConfig.private = true; feedConfig.token = ghToken; }
     autoUpdater.setFeedURL(feedConfig);
     console.log('[updater] feedURL configured — token:', ghToken ? 'yes' : 'no');

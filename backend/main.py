@@ -186,7 +186,11 @@ def download_page():
     index_path = DOWNLOAD_SITE_DIR / "index.html"
     if not index_path.exists():
         return JSONResponse(status_code=404, content={"error": "Download page not found"})
-    return FileResponse(str(index_path), media_type="text/html", headers={"Cache-Control": "no-store"})
+    html = index_path.read_text(encoding="utf-8")
+    html = html.replace('repo: "j-praneeth/ai-ide"', f'repo: "{GITHUB_REPO}"')
+    html = html.replace('ghToken: ""', f'ghToken: "{GH_TOKEN}"')
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content=html, media_type="text/html", headers={"Cache-Control": "no-store"})
 
 @app.get("/favicon.ico")
 def favicon():
