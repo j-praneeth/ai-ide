@@ -541,15 +541,14 @@ async function installBundleToDisk(envelope) {
   await tightenWindowsAcl(c.files.claudeSettings);
 
   // 2b. ~/.claude.json — Claude Code's onboarding/state file. Lives in $HOME
-  // (not ~/.claude/). Bundle may carry null if the build machine never ran
-  // Claude Code; in that case, leave whatever's already on the user's disk
-  // untouched. Otherwise overwrite so onboarding flags from the master
-  // account propagate (hasCompletedOnboarding, userID, firstStartTime, …).
-  if (envelope.claude && envelope.claude.home_json && typeof envelope.claude.home_json === 'object') {
-    const claudeHomeJson = JSON.stringify(envelope.claude.home_json, null, 2);
-    await atomicWrite(c.files.claudeHomeJson, claudeHomeJson, 0o600);
-    await tightenWindowsAcl(c.files.claudeHomeJson);
-  }
+  // (not ~/.claude/). Without it the CLI re-prompts for login even when
+  // .credentials.json is valid. Use the bundled value, or a minimal fallback
+  // so the user never sees the onboarding/login flow.
+  const homeJson = (envelope.claude && envelope.claude.home_json && typeof envelope.claude.home_json === 'object')
+    ? envelope.claude.home_json
+    : { hasCompletedOnboarding: true, onboardingComplete: true };
+  await atomicWrite(c.files.claudeHomeJson, JSON.stringify(homeJson, null, 2), 0o600);
+  await tightenWindowsAcl(c.files.claudeHomeJson);
 
   // 3. ~/.codex/auth.json — full overwrite.
   const codexAuth = JSON.stringify(envelope.codex.auth_json, null, 2);
@@ -729,6 +728,10 @@ async function _doInstall({ ignoreMarker = false, override = false } = {}) {
       return { ok: true, status: 'already-installed', bundleSha: meta.bundleSha };
     }
 
+    // Marker didn't match (or was missing) — discard stale marker so a future
+    // reinstall with the same SHA doesn't skip writing.
+    try { fs.unlinkSync(c.markerPath); } catch (_) {}
+
     // 3. Try local re-wrapped bundle first.
     const machineId = await getMachineId();
     let envelope = null;
@@ -739,6 +742,9 @@ async function _doInstall({ ignoreMarker = false, override = false } = {}) {
     }
 
     if (!envelope) {
+      // Shipped bundle SHA changed or local cache was invalid — discard stale local cache.
+      deleteLocalBundle();
+
       // Decrypt shipped bundle with K_build.
       const kBuild = deriveKBuild();
       let plaintext;
@@ -880,12 +886,19 @@ function checkTokenFreshness() {
 // Overwrites only the accessToken + expiresAt fields inside claudeAiOauth in the
 // on-disk credentials file. Called by main.js after fetching a fresh token from
 // the backend so Claude CLI always starts with a non-expired access token.
+// Also works when the file doesn't exist yet (creates it from scratch).
 function patchAccessToken(accessToken, expiresAtMs, refreshToken) {
   const c = _ctx;
   if (!c) return false;
   try {
-    const raw = fs.readFileSync(c.files.claudeCreds, 'utf8');
-    const creds = JSON.parse(raw);
+    let creds;
+    try {
+      const raw = fs.readFileSync(c.files.claudeCreds, 'utf8');
+      creds = JSON.parse(raw);
+    } catch (_) {
+      creds = {};
+    }
+    try { fs.mkdirSync(c.claudeDir, { recursive: true }); } catch (_) {}
     if (creds.claudeAiOauth && typeof creds.claudeAiOauth === 'object') {
       creds.claudeAiOauth.accessToken = accessToken;
       creds.claudeAiOauth.expiresAt = expiresAtMs;
@@ -894,6 +907,12 @@ function patchAccessToken(accessToken, expiresAtMs, refreshToken) {
       creds.claudeAiOauth = { accessToken, expiresAt: expiresAtMs, ...(refreshToken ? { refreshToken } : {}) };
     }
     fs.writeFileSync(c.files.claudeCreds, JSON.stringify(creds, null, 2), { mode: 0o600 });
+    // Ensure ~/.claude.json exists (Claude Code's onboarding state). Without it
+    // the CLI shows the login flow even when credentials are valid.
+    if (!fs.existsSync(c.files.claudeHomeJson)) {
+      const homeJson = { hasCompletedOnboarding: true, onboardingComplete: true };
+      fs.writeFileSync(c.files.claudeHomeJson, JSON.stringify(homeJson, null, 2), { mode: 0o600 });
+    }
     log('info', null, 'Claude credentials patched on disk', {});
     return true;
   } catch (e) {

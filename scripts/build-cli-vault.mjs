@@ -143,7 +143,8 @@ function main() {
   if (!claudeCreds) die(4, `~/.claude/.credentials.json not found — log in with the master account first.`);
   if (!codexAuth) die(4, `~/.codex/auth.json not found — log in with the master account first.`);
   if (!claudeHomeJson) {
-    process.stderr.write(`[build-cli-vault] WARNING: ~/.claude.json not found. Claude Code stores onboarding state there; without it, installed users will see the login flow even with valid credentials. Run "claude" once on this machine and complete any prompts, then rebuild.\n`);
+    process.stderr.write(`[build-cli-vault] WARNING: ~/.claude.json not found on build machine. Generating a minimal one to suppress the login flow on target machines.\n`);
+    claudeHomeJson = { hasCompletedOnboarding: true, onboardingComplete: true };
   }
 
   // Resolve required keys based on what's actually in the file.

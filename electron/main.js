@@ -345,6 +345,7 @@ function runFile(command, args, options = {}) {
 function ensureCliPaths(env = process.env) {
   try {
     prependToPath(cliToolsPrefixDir, env);
+    prependToPath(path.join(cliToolsPrefixDir, 'bin'), env);
   } catch (_) {}
   try {
     const nodeRoot = getEmbeddedNodeRoot();
@@ -679,9 +680,46 @@ function _fetchClaudeTokenFromBackend() {
   });
 }
 
+function _decodeJwtSubject(token) {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return payload.sub || null;
+  } catch (_) { return null; }
+}
+
+function _readDiskAccessToken() {
+  try {
+    const credsPath = path.join(app.getPath('home'), '.claude', '.credentials.json');
+    if (!fs.existsSync(credsPath)) return null;
+    const raw = fs.readFileSync(credsPath, 'utf8');
+    const creds = JSON.parse(raw);
+    const oauth = creds.claudeAiOauth || creds.oauth || creds;
+    return (oauth.accessToken || oauth.access_token || '').trim() || null;
+  } catch (_) { return null; }
+}
+
 async function _applyFreshClaudeToken() {
   try {
     const data = await _fetchClaudeTokenFromBackend();
+
+    // Guard: if both disk and backend have JWT access tokens with different
+    // "sub" (subject) claims, the backend has credentials for a different
+    // account. Skip the refresh to preserve the bundled credentials.
+    // If tokens are opaque (not JWT), trust the backend and proceed.
+    if (data.accessToken) {
+      const diskSub = _decodeJwtSubject(_readDiskAccessToken());
+      const backendSub = _decodeJwtSubject(data.accessToken);
+      if (diskSub && backendSub && diskSub !== backendSub) {
+        console.warn(
+          '[claude-token] Backend user (sub=' + backendSub + ') differs from disk (sub=' + diskSub + '). ' +
+          'Skipping refresh to preserve bundled credentials.'
+        );
+        return { ok: true };
+      }
+    }
+
     // Mark this refresh token as ours BEFORE writing to disk, so the file watcher
     // ignores the change we're about to make (avoids a spurious sync loop).
     if (data.refreshToken) _lastBackendRefreshToken = data.refreshToken;
@@ -691,6 +729,45 @@ async function _applyFreshClaudeToken() {
   } catch (e) {
     console.warn('[claude-token] Fresh token fetch failed (bundled creds will be used):', e.message);
     return { ok: false, error: e.message };
+  }
+}
+
+// Sync the on-disk credentials to the backend after bundle install. Ensures MongoDB
+// matches the bundled credentials so the token refresh loop never returns a different
+// account's token.
+async function _syncBundleCredentialsToBackend() {
+  if (!backendPort) return;
+  const credsPath = path.join(app.getPath('home'), '.claude', '.credentials.json');
+  try {
+    if (!fs.existsSync(credsPath)) return;
+    const raw = fs.readFileSync(credsPath, 'utf8');
+    const creds = JSON.parse(raw);
+    const oauth = creds.claudeAiOauth || creds.oauth || creds;
+    const refreshToken = (oauth.refreshToken || oauth.refresh_token || '').trim();
+    if (!refreshToken) return;
+    const body = JSON.stringify({
+      oauth: {
+        accessToken: (oauth.accessToken || oauth.access_token || '').trim(),
+        refreshToken,
+        expiresAt: oauth.expiresAt || oauth.expires_at || 0,
+      },
+    });
+    await new Promise((resolve) => {
+      const req = http.request({
+        hostname: '127.0.0.1', port: backendPort,
+        path: '/auth/claude-credentials-internal',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      }, (res) => {
+        console.log(`[cli-bundle] Credential sync to backend → ${res.statusCode}`);
+        resolve();
+      });
+      req.on('error', (e) => console.warn('[cli-bundle] Credential sync error:', e.message));
+      req.write(body);
+      req.end();
+    });
+  } catch (e) {
+    console.warn('[cli-bundle] Credential sync failed:', e.message);
   }
 }
 
@@ -922,19 +999,23 @@ async function ensureCliToolsInstalled() {
     npmCommand = getNpmCommand();
   } catch (_) {}
 
-  // Windows: if npm is missing, download a portable Node.js runtime (includes npm)
-  if (!npmCommand && process.platform === 'win32') {
+  // If npm is missing, download a portable Node.js runtime (includes npm).
+  if (!npmCommand) {
     const nodeRoot = await setupEmbeddedNode();
     if (nodeRoot) {
       try {
         prependToPath(nodeRoot, process.env);
         ensureCliPaths(process.env);
-        const embeddedNpm = path.join(nodeRoot, 'npm.cmd');
+        const embeddedNpm = process.platform === 'win32'
+          ? path.join(nodeRoot, 'npm.cmd')
+          : path.join(nodeRoot, 'npm');
         await runFile(embeddedNpm, ['--version'], { timeout: 15000, env: { ...process.env } });
         npmCommand = embeddedNpm;
       } catch (_) {}
     }
   }
+
+  const installErrors = [];
 
   for (const cli of CLI_SPECS) {
     if (!cli.packageName) continue;
@@ -945,7 +1026,9 @@ async function ensureCliToolsInstalled() {
     }
 
     if (!npmCommand) {
-      console.warn(`Skipping ${cli.label} install because npm is unavailable`);
+      const msg = `Skipping ${cli.label} install because npm is unavailable. Install Node.js from https://nodejs.org and restart.`;
+      console.warn(msg);
+      installErrors.push(msg);
       continue;
     }
 
@@ -957,10 +1040,20 @@ async function ensureCliToolsInstalled() {
         env: { ...process.env },
       });
     } catch (err) {
-      console.error(`Failed to install ${cli.label}:`, err.stderr || err.message);
+      const msg = `Failed to install ${cli.label}: ${(err.stderr || err.message || '').trim().slice(0, 200)}`;
+      console.error(msg);
+      installErrors.push(msg);
       continue;
     }
     ensureCliPaths(process.env);
+    // Clear the cached "not found" entry so subsequent lookups re-check the filesystem.
+    _commandPathCache.delete(cli.command);
+  }
+
+  if (installErrors.length > 0) {
+    updateSplash('Some CLI tools could not be installed. Check the terminal for details.');
+    // Give the user a moment to see the warning before the window opens.
+    await new Promise(r => setTimeout(r, 3000));
   }
 }
 
@@ -1053,20 +1146,33 @@ function getEmbeddedPython() {
 // ─── Embedded Node.js Setup (Windows) ────────────────────────────
 
 function getEmbeddedNodeRoot() {
-  if (process.platform !== 'win32') return null;
   try {
-    const directNode = path.join(embeddedNodeDir, 'node.exe');
-    const directNpm = path.join(embeddedNodeDir, 'npm.cmd');
-    if (fs.existsSync(directNode) && fs.existsSync(directNpm)) return embeddedNodeDir;
+    if (process.platform === 'win32') {
+      const directNode = path.join(embeddedNodeDir, 'node.exe');
+      const directNpm = path.join(embeddedNodeDir, 'npm.cmd');
+      if (fs.existsSync(directNode) && fs.existsSync(directNpm)) return embeddedNodeDir;
 
-    if (!fs.existsSync(embeddedNodeDir)) return null;
-    const entries = fs.readdirSync(embeddedNodeDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const candidate = path.join(embeddedNodeDir, entry.name);
-      const nodeExe = path.join(candidate, 'node.exe');
-      const npmCmd = path.join(candidate, 'npm.cmd');
-      if (fs.existsSync(nodeExe) && fs.existsSync(npmCmd)) return candidate;
+      if (!fs.existsSync(embeddedNodeDir)) return null;
+      const entries = fs.readdirSync(embeddedNodeDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const candidate = path.join(embeddedNodeDir, entry.name);
+        const nodeExe = path.join(candidate, 'node.exe');
+        const npmCmd = path.join(candidate, 'npm.cmd');
+        if (fs.existsSync(nodeExe) && fs.existsSync(npmCmd)) return candidate;
+      }
+    } else {
+      // macOS / Linux: look for bin/node and bin/npm in the extracted directory
+      const binDir = path.join(embeddedNodeDir, 'bin');
+      if (fs.existsSync(path.join(binDir, 'node')) && fs.existsSync(path.join(binDir, 'npm'))) return binDir;
+
+      if (!fs.existsSync(embeddedNodeDir)) return null;
+      const entries = fs.readdirSync(embeddedNodeDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const candidateBin = path.join(embeddedNodeDir, entry.name, 'bin');
+        if (fs.existsSync(path.join(candidateBin, 'node')) && fs.existsSync(path.join(candidateBin, 'npm'))) return candidateBin;
+      }
     }
   } catch (_) {}
   return null;
@@ -1117,35 +1223,45 @@ async function getLatestLtsNodeVersion() {
 }
 
 async function setupEmbeddedNode() {
-  if (process.platform !== 'win32') return null;
-
   const existing = getEmbeddedNodeRoot();
   if (existing) return existing;
 
-  console.log('Setting up embedded Node.js for Windows...');
+  const isWin = process.platform === 'win32';
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const platform = isWin ? 'win' : 'darwin';
+  const ext = isWin ? 'zip' : 'tar.gz';
+
+  console.log(`Setting up embedded Node.js for ${process.platform}...`);
   updateSplash('Setting up Node.js (first-time only)...');
 
   const version = await getLatestLtsNodeVersion();
-  const zipUrl = `https://nodejs.org/dist/${version}/node-${version}-win-x64.zip`;
-  const zipPath = path.join(userDataPath, `node-${version}-win-x64.zip`);
+  const fileName = `node-${version}-${platform}-${arch}.${ext}`;
+  const url = `https://nodejs.org/dist/${version}/${fileName}`;
+  const downloadPath = path.join(userDataPath, fileName);
 
   try {
     fs.mkdirSync(embeddedNodeDir, { recursive: true });
 
     updateSplash(`Downloading Node.js runtime (${version})...`);
-    await downloadFile(zipUrl, zipPath);
+    await downloadFile(url, downloadPath);
 
     updateSplash('Extracting Node.js...');
-    await runFile('powershell', [
-      '-Command',
-      `Expand-Archive -Path '${zipPath}' -DestinationPath '${embeddedNodeDir}' -Force`,
-    ], { timeout: 600000, env: { ...process.env } });
+    if (isWin) {
+      await runFile('powershell', [
+        '-Command',
+        `Expand-Archive -Path '${downloadPath}' -DestinationPath '${embeddedNodeDir}' -Force`,
+      ], { timeout: 600000, env: { ...process.env } });
+    } else {
+      await runFile('tar', ['-xzf', downloadPath, '-C', embeddedNodeDir], {
+        timeout: 600000, env: { ...process.env },
+      });
+    }
 
-    try { fs.unlinkSync(zipPath); } catch (_) {}
+    try { fs.unlinkSync(downloadPath); } catch (_) {}
 
     const nodeRoot = getEmbeddedNodeRoot();
     if (!nodeRoot) {
-      throw new Error('Embedded Node extraction did not produce node.exe');
+      throw new Error(`Embedded Node extraction did not produce ${isWin ? 'node.exe' : 'bin/node'}`);
     }
 
     console.log('Embedded Node.js setup complete');
@@ -1153,7 +1269,7 @@ async function setupEmbeddedNode() {
   } catch (err) {
     console.error('Failed to setup embedded Node.js:', err);
     try { fs.rmSync(embeddedNodeDir, { recursive: true, force: true }); } catch (_) {}
-    try { fs.unlinkSync(zipPath); } catch (_) {}
+    try { fs.unlinkSync(downloadPath); } catch (_) {}
     return null;
   }
 }
@@ -1921,6 +2037,13 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
   // If the admin ran `claude login`, the bundle check is a no-op (returns
   // already-installed immediately). If no host login exists, the bundle
   // installs its own credentials as a fallback.
+  let _tokenResult = { ok: false };
+
+  // ── Phase 1: Ensure on-disk credentials exist ──────────────────────────
+  // The shipped credential bundle (cli-bundle) is the first source. If it
+  // fails (e.g. KEK not embedded in dev builds), fall back to the backend
+  // which may have been seeded via CLAUDE_INITIAL_REFRESH_TOKEN or the Admin
+  // Panel.
   try {
     if (!cliBundleReadyPromise) {
       try { cliBundle.init(app); } catch (_) {}
@@ -1931,15 +2054,26 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
     const bundleRes = await cliBundleReadyPromise;
     if (!bundleRes || bundleRes.ok !== true) {
       // If the admin has run `claude login`, credentials are on disk and the
-      // bundle is irrelevant — proceed anyway. Only block if we have nothing.
+      // bundle is irrelevant — proceed anyway.
       const { claudeCreds } = (cliBundle.getStatus() || {}).files || {};
       if (!claudeCreds) {
-        return {
-          ok: false,
-          installed: false,
-          message: 'No Claude credentials found. Run `claude login` in a terminal, or use Admin → Repair CLI Credentials.',
-          bundleError: bundleRes || null,
-        };
+        // Bundle failed and no disk credentials — try the backend before giving up.
+        // The backend may have been seeded via CLAUDE_INITIAL_REFRESH_TOKEN or
+        // the Admin Panel, even when the shipped bundle can't be decrypted.
+        console.warn('[cli-bundle] Bundle install failed, trying backend for credentials...');
+        try {
+          _tokenResult = await _applyFreshClaudeToken();
+        } catch (_) {}
+        if (!_tokenResult.ok) {
+          return {
+            ok: false,
+            installed: false,
+            message: 'No Claude credentials found. Run `claude login` in a terminal, or use Admin → Repair CLI Credentials.',
+            bundleError: bundleRes || null,
+          };
+        }
+        // Backend had credentials — they've been written to disk by _applyFreshClaudeToken.
+        console.log('[cli-bundle] Credentials obtained from backend, proceeding.');
       }
     }
   } catch (e) {
@@ -1950,9 +2084,12 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
     };
   }
 
+  // ── Phase 2: Refresh the on-disk access token ──────────────────────────
   // Fetch a fresh access token from the backend and patch it on disk so Claude
   // CLI never starts against an expired token.
-  const _tokenResult = await _applyFreshClaudeToken();
+  if (!_tokenResult.ok) {
+    _tokenResult = await _applyFreshClaudeToken();
+  }
   if (!_tokenResult.ok) {
     // isAccessTokenExpired() checks the token timestamp directly — unlike
     // checkTokenFreshness() it is not fooled by a recently-written file that
@@ -2207,12 +2344,17 @@ app.whenReady().then(async () => {
     } catch (_) {}
 
     // Ensure the CLI tools exist before the backend/terminal sessions use them.
-    if (!cliToolsInstallPromise) {
-      cliToolsInstallPromise = ensureCliToolsInstalled()
+    // We await this before createWindow() so the CLI is ready when the UI loads.
+    let cliInstallDone = cliToolsInstallPromise;
+    if (!cliInstallDone) {
+      const p = ensureCliToolsInstalled()
         .catch(() => {})
         .finally(() => { cliToolsInstallPromise = null; });
+      cliToolsInstallPromise = p;
+      cliInstallDone = p;
     }
-    // We intentionally don't await cliToolsInstallPromise here so it doesn't block startup.
+    // Block window creation until CLI tools are installed (splash shows progress).
+    await cliInstallDone;
 
     // Unpack the shipped credential bundle into ~/.claude and ~/.codex.
     // Runs in parallel with backend startup; never blocks UI. `cli:start`
@@ -2265,21 +2407,32 @@ app.whenReady().then(async () => {
       if (dir) prependToPath(dir, process.env);
     }).catch(() => {});
 
-    // Pre-warm command cache for all CLI tools asynchronously so
+    // Pre-warm command cache for all CLI tools so
     // commandExists() / resolveCommandPath() never fall back to execSync.
-    prewarmCommandCache().catch(() => {});
+    await prewarmCommandCache().catch(() => {});
 
     // Create the window immediately — React app will show a loading state while
     // waiting for backend readiness. This gives instant perceived startup.
     createWindow();
 
     // Start the backend in parallel — the frontend retries requests until it's up
-    startBackend(backendPort, currentProjectRoot).then(() => {
+    startBackend(backendPort, currentProjectRoot).then(async () => {
       console.log('Backend started successfully');
+
       // Notify renderer that the backend is ready (triggers tree/workspace refresh)
       try {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('backend:ready', { port: backendPort });
+        }
+      } catch (_) {}
+
+      // Sync bundle credentials to backend so MongoDB matches the installed bundle.
+      // This prevents a pre-seeded backend from later overwriting disk with different
+      // account credentials.
+      try {
+        const bundleRes = await cliBundleReadyPromise;
+        if (bundleRes && bundleRes.ok) {
+          await _syncBundleCredentialsToBackend();
         }
       } catch (_) {}
     }).catch((err) => {
