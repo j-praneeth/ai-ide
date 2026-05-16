@@ -400,7 +400,10 @@ async function resolveCommandPathAsync(command) {
         timeout: 5000, env: { ...process.env },
       });
       const lines = (stdout || '').trim().split(/\r?\n/).filter(Boolean);
-      const exe = lines.find(l => {
+      const prefixDir = cliToolsPrefixDir.toLowerCase();
+      const preferred = lines.find(l => l.toLowerCase().startsWith(prefixDir));
+      const candidates = preferred ? [preferred] : lines;
+      const exe = candidates.find(l => {
         const lower = l.toLowerCase();
         return lower.endsWith('.cmd') || lower.endsWith('.bat') ||
                lower.endsWith('.exe') || lower.endsWith('.ps1');
