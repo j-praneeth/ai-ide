@@ -429,17 +429,26 @@ function commandExists(command) {
   if (cached !== undefined) return cached !== null;
   // Cache miss: not yet warmed. Fall back to a quick sync check.
   try {
-    let output;
+    let resolved;
     if (process.platform === 'win32') {
-      output = execSync(`where ${command}`, {
+      const output = execSync(`where ${command}`, {
         stdio: 'pipe', timeout: 5000, windowsHide: true, encoding: 'utf-8',
       }).trim();
+      const lines = output.split(/\r?\n/).filter(Boolean);
+      const prefixDir = cliToolsPrefixDir.toLowerCase();
+      const preferred = lines.find(l => l.toLowerCase().startsWith(prefixDir));
+      const candidates = preferred ? [preferred] : lines;
+      const exe = candidates.find(l => {
+        const lower = l.toLowerCase();
+        return lower.endsWith('.cmd') || lower.endsWith('.bat') ||
+               lower.endsWith('.exe') || lower.endsWith('.ps1');
+      });
+      resolved = exe || lines[0] || null;
     } else {
-      output = execSync(`command -v ${command} 2>/dev/null`, {
+      resolved = execSync(`command -v ${command} 2>/dev/null`, {
         stdio: 'pipe', timeout: 5000, encoding: 'utf-8', shell: '/bin/sh',
-      }).trim();
+      }).trim() || null;
     }
-    const resolved = output || null;
     _commandPathCache.set(command, resolved);
     return resolved !== null;
   } catch (_) {
@@ -459,7 +468,10 @@ function resolveCommandPath(command) {
         stdio: 'pipe', timeout: 5000, windowsHide: true, encoding: 'utf-8',
       }).trim();
       const lines = output.split(/\r?\n/).filter(Boolean);
-      const exe = lines.find(l => {
+      const prefixDir = cliToolsPrefixDir.toLowerCase();
+      const preferred = lines.find(l => l.toLowerCase().startsWith(prefixDir));
+      const candidates = preferred ? [preferred] : lines;
+      const exe = candidates.find(l => {
         const lower = l.toLowerCase();
         return lower.endsWith('.cmd') || lower.endsWith('.bat') ||
                lower.endsWith('.exe') || lower.endsWith('.ps1');
