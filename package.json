@@ -167,7 +167,7 @@
     "concurrently": "^9.0.0",
     "electron": "33.0.0",
     "electron-builder": "^25.0.0",
-    "wait-on": "^8.0.0"
+    "wait-on": "^8.0.5"
   },
   "dependencies": {
     "adm-zip": "^0.5.17",

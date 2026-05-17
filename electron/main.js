@@ -21,6 +21,10 @@ const cliSessions = new Map();
 const integratedTermSessions = new Map();
 let currentProjectRoot = null;
 let cliToolsInstallPromise = null;
+let cliToolsInstallFailedCount = 0;
+const CLI_TOOLS_INSTALL_MAX_RETRIES = 3;
+let cliToolsInstallInProgress = false;
+let cliToolsInstallLastResult = null; // 'success' | 'failed' | null
 // Resolves once the bundled CLI credentials have been written (or definitively
 // failed). `cli:start` awaits this before spawning so the CLI never launches
 // against a missing ~/.claude/.credentials.json or ~/.codex/auth.json.
@@ -409,11 +413,26 @@ async function resolveCommandPathAsync(command) {
                lower.endsWith('.exe') || lower.endsWith('.ps1');
       });
       result = exe || lines[0] || null;
+      // Verify the path actually exists on disk
+      if (result && !_exeExists(result)) {
+        console.warn(`[path-resolve] ${command} resolved to ${result} but file does not exist, re-checking...`);
+        // Try with .exe extension
+        const withExe = result.endsWith('.exe') ? result : result + '.exe';
+        if (_exeExists(withExe)) {
+          result = withExe;
+        } else {
+          result = null;
+        }
+      }
     } else {
       const { stdout } = await runFile('/bin/sh', ['-c', `command -v ${command}`], {
         timeout: 5000, env: { ...process.env },
       });
       result = (stdout || '').trim() || null;
+      if (result && !_exeExists(result)) {
+        console.warn(`[path-resolve] ${command} resolved to ${result} but file does not exist on disk`);
+        result = null;
+      }
     }
     _commandPathCache.set(command, result);
     return result;
@@ -444,10 +463,15 @@ function commandExists(command) {
                lower.endsWith('.exe') || lower.endsWith('.ps1');
       });
       resolved = exe || lines[0] || null;
+      if (resolved && !_exeExists(resolved)) {
+        const withExe = resolved.endsWith('.exe') ? resolved : resolved + '.exe';
+        resolved = _exeExists(withExe) ? withExe : null;
+      }
     } else {
       resolved = execSync(`command -v ${command} 2>/dev/null`, {
         stdio: 'pipe', timeout: 5000, encoding: 'utf-8', shell: '/bin/sh',
       }).trim() || null;
+      if (resolved && !_exeExists(resolved)) resolved = null;
     }
     _commandPathCache.set(command, resolved);
     return resolved !== null;
@@ -462,9 +486,9 @@ function resolveCommandPath(command) {
   if (cached !== undefined) return cached;
   // Cache miss fallback — same sync logic as commandExists.
   try {
-    let output;
+    let result;
     if (process.platform === 'win32') {
-      output = execSync(`where ${command}`, {
+      const output = execSync(`where ${command}`, {
         stdio: 'pipe', timeout: 5000, windowsHide: true, encoding: 'utf-8',
       }).trim();
       const lines = output.split(/\r?\n/).filter(Boolean);
@@ -476,14 +500,18 @@ function resolveCommandPath(command) {
         return lower.endsWith('.cmd') || lower.endsWith('.bat') ||
                lower.endsWith('.exe') || lower.endsWith('.ps1');
       });
-      const result = exe || lines[0] || null;
-      _commandPathCache.set(command, result);
-      return result;
+      result = exe || lines[0] || null;
+      if (result && !_exeExists(result)) {
+        const withExe = result.endsWith('.exe') ? result : result + '.exe';
+        result = _exeExists(withExe) ? withExe : null;
+      }
+    } else {
+      const output = execSync(`command -v ${command} 2>/dev/null`, {
+        stdio: 'pipe', timeout: 5000, encoding: 'utf-8', shell: '/bin/sh',
+      }).trim();
+      result = output || null;
+      if (result && !_exeExists(result)) result = null;
     }
-    output = execSync(`command -v ${command} 2>/dev/null`, {
-      stdio: 'pipe', timeout: 5000, encoding: 'utf-8', shell: '/bin/sh',
-    }).trim();
-    const result = output || null;
     _commandPathCache.set(command, result);
     return result;
   } catch (_) {
@@ -510,41 +538,89 @@ function findGitBash() {
   return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
 
+function _exeExists(p) {
+  try {
+    if (!p || typeof p !== 'string') return false;
+    if (fs.existsSync(p)) return true;
+    // On Windows, also check with PATHEXT extensions
+    if (process.platform === 'win32') {
+      const pathext = (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC').toLowerCase().split(';');
+      for (const ext of pathext) {
+        if (fs.existsSync(p + ext)) return true;
+      }
+    }
+    return false;
+  } catch (_) { return false; }
+}
+
+function _logCliConfig(tool, cfg) {
+  const diag = {
+    tool,
+    installed: cfg.installed,
+    file: cfg.file,
+    args: Array.isArray(cfg.args) ? cfg.args.join('|') : cfg.args,
+    shellLabel: cfg.shellLabel,
+    fileExists: cfg.file ? _exeExists(cfg.file) : null,
+    platform: process.platform,
+  };
+  if (process.platform === 'win32' && cfg.file) {
+    try {
+      const lower = cfg.file.toLowerCase();
+      if (!lower.endsWith('.exe') && !lower.endsWith('.cmd') && !lower.endsWith('.bat')) {
+        diag.warning = 'file_missing_extension';
+      }
+    } catch (_) {}
+  }
+  console.log('[cli-launch]', JSON.stringify(diag));
+}
+
 function getCliLaunchConfig(tool) {
   const spec = CLI_SPECS.find((item) => item.command === tool) || CLI_SPECS[0];
   ensureCliPaths(process.env);
 
   // If it's a direct shell request (powershell/cmd)
   if (tool === 'powershell' || tool === 'cmd') {
-    return {
+    const cfg = {
       installed: true,
       label: spec.label,
       shellLabel: tool,
       file: spec.file,
       args: spec.args || [],
     };
-  }
-
-  const npmBin = _npmGlobalBinDirCache !== undefined ? _npmGlobalBinDirCache : null;
-  if (npmBin) {
-    prependToPath(npmBin, process.env);
+    _logCliConfig(tool, cfg);
+    return cfg;
   }
 
   const commandPath = resolveCommandPath(spec.command);
+
+  // Diagnostics: log what resolveCommandPath returned
+  console.log(`[cli-launch] ${spec.command} resolved to: ${commandPath || '(not found)'}`);
+  if (commandPath) {
+    console.log(`[cli-launch]   exists=${_exeExists(commandPath)} cwd=${process.cwd()}`);
+  }
+
   if (!commandPath && !commandExists(spec.command)) {
-    return {
+    const cfg = {
       installed: false,
       label: spec.label,
       packageName: spec.packageName,
       shellLabel: process.platform === 'win32' ? 'powershell' : 'shell',
     };
+    _logCliConfig(tool, cfg);
+    return cfg;
+  }
+
+  // Verify the resolved path actually exists on disk
+  const resolvedExists = commandPath && _exeExists(commandPath);
+  if (commandPath && !resolvedExists) {
+    console.warn(`[cli-launch] WARNING: resolved path ${commandPath} does not exist on disk`);
   }
 
   // Codex on Windows is often registered as an App Execution Alias under WindowsApps.
   // The resolved path from `where codex` may be non-executable for this process, so
   // we start an interactive PowerShell PTY and then run `codex` inside it.
   if (process.platform === 'win32' && tool === 'codex') {
-    return {
+    const cfg = {
       installed: true,
       label: spec.label,
       shellLabel: 'powershell',
@@ -552,54 +628,99 @@ function getCliLaunchConfig(tool) {
       args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit'],
       bootstrapInput: 'codex\r',
     };
+    _logCliConfig(tool, cfg);
+    return cfg;
   }
 
-  if (process.platform === 'win32' && tool === 'claude' && !commandPath) {
+  if (process.platform === 'win32' && tool === 'claude' && (!commandPath || !resolvedExists)) {
     const gitBash = findGitBash();
     if (gitBash) {
-      return {
+      const cfg = {
         installed: true,
         label: spec.label,
         shellLabel: 'git-bash',
         file: gitBash,
         args: ['-lc', 'claude'],
       };
+      _logCliConfig(tool, cfg);
+      return cfg;
     }
   }
 
   // On Windows, many npm-installed CLIs are shimmed via `.cmd` / `.bat` / `.ps1`.
   // Spawn them via `cmd.exe` / `powershell.exe` for reliability with node-pty.
-  if (process.platform === 'win32' && commandPath) {
+  if (process.platform === 'win32' && commandPath && resolvedExists) {
     const lower = commandPath.toLowerCase();
     if (lower.endsWith('.cmd') || lower.endsWith('.bat')) {
-      // Pass args as a single verbatim string so node-pty's argsToCommandLine
-      // doesn't backslash-escape the wrapping quotes (cmd.exe can't parse `\"...\"`).
-      return {
+      // Verify the target exists (cmd.exe's "not recognized" error is misleading).
+      if (!_exeExists(commandPath)) {
+        console.warn(`[cli-launch] WARNING: cmd.exe /c target "${commandPath}" does not exist! Marking as not installed.`);
+        const cfg = {
+          installed: false,
+          label: spec.label,
+          packageName: spec.packageName,
+          shellLabel: 'cmd',
+        };
+        _logCliConfig(tool, cfg);
+        return cfg;
+      }
+      const cfg = {
         installed: true,
         label: spec.label,
         shellLabel: 'cmd',
         file: 'cmd.exe',
-        args: `/d /s /c "${commandPath}"`,
+        args: ['/d', '/s', '/c', commandPath],
       };
+      _logCliConfig(tool, cfg);
+      return cfg;
     }
     if (lower.endsWith('.ps1')) {
-      return {
+      const cfg = {
         installed: true,
         label: spec.label,
         shellLabel: 'powershell',
         file: 'powershell.exe',
         args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', commandPath],
       };
+      _logCliConfig(tool, cfg);
+      return cfg;
     }
   }
 
-  return {
+  // macOS/Linux: verify binary is executable
+  let isExecutable = true;
+  if (process.platform !== 'win32' && commandPath) {
+    try {
+      fs.accessSync(commandPath, fs.constants.X_OK);
+    } catch (_) {
+      console.warn(`[cli-launch] WARNING: ${commandPath} is not executable`);
+      isExecutable = false;
+    }
+  }
+
+  // If the resolved path doesn't actually exist on disk (or isn't executable
+  // on macOS/Linux), mark as not installed. This covers stale `where` / `command -v`
+  // cache entries and non-executable binaries.
+  if (commandPath && (!_exeExists(commandPath) || !isExecutable)) {
+    const cfg = {
+      installed: false,
+      label: spec.label,
+      packageName: spec.packageName,
+      shellLabel: process.platform === 'win32' ? 'powershell' : 'shell',
+    };
+    _logCliConfig(tool, cfg);
+    return cfg;
+  }
+
+  const cfg = {
     installed: true,
     label: spec.label,
     shellLabel: process.platform === 'win32' ? 'powershell' : 'shell',
     file: commandPath || spec.command,
     args: [],
   };
+  _logCliConfig(tool, cfg);
+  return cfg;
 }
 
 function getIntegratedTerminalLaunch(shell) {
@@ -642,6 +763,11 @@ function _scheduleCredentialFreshnessCheck() {
 
   function runCheck() {
     try {
+      // Check if credentials file exists before attempting to read it
+      const credsPath = path.join(app.getPath('home'), '.claude', '.credentials.json');
+      if (!fs.existsSync(credsPath)) {
+        return; // No credentials yet — bundle may still be installing
+      }
       const result = cliBundle.checkTokenFreshness();
       if (!result.ok && result.reason === 'stale') {
         console.warn('[auth] Claude credentials stale:', result.message);
@@ -654,7 +780,8 @@ function _scheduleCredentialFreshnessCheck() {
     } catch (_) {}
   }
 
-  runCheck();
+  // Wait a few seconds before the first check to ensure bundle install has completed
+  setTimeout(runCheck, 5000);
   setInterval(runCheck, CHECK_INTERVAL_MS);
 }
 
@@ -685,12 +812,25 @@ function _fetchClaudeTokenFromBackend() {
           try {
             const data = JSON.parse(body);
             if (data.ok && data.accessToken) resolve(data);
-            else reject(new Error(data.error || 'Backend returned no access token'));
+            else {
+              const err = new Error(data.error || 'Backend returned no access token');
+              err.authFailure = data.authFailure === true;
+              err.statusCode = res.statusCode;
+              reject(err);
+            }
           } catch (e) { reject(new Error(`Bad JSON from token endpoint: ${e.message}`)); }
         });
       });
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('Token fetch timed out')); });
+      req.on('error', (e) => {
+        e.authFailure = false;
+        reject(e);
+      });
+      req.on('timeout', () => { 
+        const err = new Error('Token fetch timed out');
+        err.authFailure = false;
+        req.destroy(); 
+        reject(err); 
+      });
     } catch (e) { reject(e); }
   });
 }
@@ -715,7 +855,18 @@ function _readDiskAccessToken() {
   } catch (_) { return null; }
 }
 
+let _refreshInProgress = false;
+let _lastRefreshResult = null;
+
 async function _applyFreshClaudeToken() {
+  // Prevent concurrent refreshes — if a refresh is already in progress,
+  // return the last result (or null if never refreshed).
+  if (_refreshInProgress) {
+    console.log('[claude-token] Skipping concurrent refresh.');
+    return { ok: false, error: 'concurrent_refresh_skipped' };
+  }
+
+  _refreshInProgress = true;
   try {
     const data = await _fetchClaudeTokenFromBackend();
 
@@ -731,20 +882,32 @@ async function _applyFreshClaudeToken() {
           '[claude-token] Backend user (sub=' + backendSub + ') differs from disk (sub=' + diskSub + '). ' +
           'Skipping refresh to preserve bundled credentials.'
         );
-        return { ok: true };
+        _lastRefreshResult = { ok: true };
+        return _lastRefreshResult;
       }
+
+      console.log(`[claude-token] Token refreshed. Access token ${data.accessToken.slice(0, 8)}..., expiresAt=${data.expiresAt}, hasRefresh=${!!data.refreshToken}`);
     }
 
     // Mark this refresh token as ours BEFORE writing to disk, so the file watcher
     // ignores the change we're about to make (avoids a spurious sync loop).
     if (data.refreshToken) _lastBackendRefreshToken = data.refreshToken;
+
     const { accessToken, expiresAt, refreshToken, ok, ...extraOauthFields } = data;
-    cliBundle.patchAccessToken(accessToken, expiresAt, refreshToken, extraOauthFields);
-    console.log('[claude-token] Claude credentials refreshed from backend.');
-    return { ok: true };
+    const patched = cliBundle.patchAccessToken(accessToken, expiresAt, refreshToken, extraOauthFields);
+    console.log(`[claude-token] Claude credentials ${patched ? 'patched' : 'patch FAILED'} on disk.`);
+
+    _lastRefreshResult = { ok: true };
+    return _lastRefreshResult;
   } catch (e) {
-    console.warn('[claude-token] Fresh token fetch failed (bundled creds will be used):', e.message);
-    return { ok: false, error: e.message };
+    const msg = e.message || String(e);
+    // Preserve authFailure flag from the underlying error (set by _fetchClaudeTokenFromBackend)
+    const isAuth = e.authFailure === true || msg.includes('TOKEN_REFRESH_AUTH_FAILED');
+    console.warn('[claude-token] Fresh token fetch failed:', msg, '(authFailure=' + isAuth + ')');
+    _lastRefreshResult = { ok: false, error: msg, authFailure: isAuth };
+    return _lastRefreshResult;
+  } finally {
+    _refreshInProgress = false;
   }
 }
 
@@ -808,13 +971,24 @@ function _startCredentialWatcher() {
   if (_credWatcher) {
     try { _credWatcher.close(); } catch (_) {}
   }
-
-  let _debounce = null;
+  let _debounceTimer = null;
+  let _syncInProgress = false;
   try {
     _credWatcher = fs.watch(credsPath, { persistent: false }, () => {
-      if (_debounce) return;
-      _debounce = setTimeout(async () => {
-        _debounce = null;
+      if (_debounceTimer) {
+        clearTimeout(_debounceTimer);
+      }
+      _debounceTimer = setTimeout(async () => {
+        _debounceTimer = null;
+        if (_syncInProgress) {
+          console.log('[claude-token] Sync already in progress, deferring.');
+          _debounceTimer = setTimeout(() => {
+            _debounceTimer = null;
+            // Re-read on next tick
+          }, 1000);
+          return;
+        }
+        _syncInProgress = true;
         try {
           const raw = fs.readFileSync(credsPath, 'utf8');
           const creds = JSON.parse(raw);
@@ -848,12 +1022,17 @@ function _startCredentialWatcher() {
             headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
           }, (res) => {
             console.log(`[claude-token] Credential sync → ${res.statusCode}`);
+            _syncInProgress = false;
           });
-          req.on('error', (e) => console.warn('[claude-token] Credential sync error:', e.message));
+          req.on('error', (e) => {
+            console.warn('[claude-token] Credential sync error:', e.message);
+            _syncInProgress = false;
+          });
           req.write(body);
           req.end();
         } catch (e) {
           console.warn('[claude-token] Credential watcher read error:', e.message);
+          _syncInProgress = false;
         }
       }, 500);
     });
@@ -864,9 +1043,26 @@ function _startCredentialWatcher() {
 }
 
 // Refresh token every 45 minutes so the on-disk access token never expires mid-session.
+// Uses a clock-aware interval to avoid rapid catch-up after system sleep/hibernate.
 function _startClaudeTokenRefreshLoop() {
   const INTERVAL_MS = 45 * 60 * 1000;
-  setInterval(() => { _applyFreshClaudeToken(); }, INTERVAL_MS);
+  let _lastRefreshTs = Date.now();
+
+  async function _timedRefresh() {
+    const now = Date.now();
+    const elapsed = now - _lastRefreshTs;
+    _lastRefreshTs = now;
+
+    // If more than 90 minutes have elapsed (double the interval), the system
+    // likely came out of sleep. Perform a single refresh instead of catching up.
+    if (elapsed > INTERVAL_MS * 2) {
+      console.log('[claude-token] Detected possible sleep/wake cycle (elapsed=' + elapsed + 'ms). Performing one catch-up refresh.');
+    }
+
+    await _applyFreshClaudeToken();
+  }
+
+  setInterval(_timedRefresh, INTERVAL_MS);
 }
 
 // Detects OAuth re-auth URLs that Claude CLI prints when the refresh token expires.
@@ -875,7 +1071,7 @@ const CLAUDE_AUTH_URL_RE = /https:\/\/(?:claude\.ai|auth\.anthropic\.com|account
 
 // Registers onData / onExit on a PTY process for a given session.
 // Called at spawn time and again after each auto-respawn.
-function attachPtyHandlers(sessionId, ptyProc, tool, env) {
+function attachPtyHandlers(sessionId, ptyProc, tool, env, cachedLaunch) {
   ptyProc.onData((data) => {
     const sess = cliSessions.get(sessionId);
     if (sess) {
@@ -972,7 +1168,26 @@ function attachPtyHandlers(sessionId, ptyProc, tool, env) {
       const sessNow = cliSessions.get(sessionId);
       if (!sessNow || sessNow.explicitlyTerminated) return;
 
-      const launch = getCliLaunchConfig(tool);
+      // Use cached launch config from initial spawn for consistency.
+      // This prevents a different path resolution on respawn.
+      const launch = sessNow.cachedLaunch || getCliLaunchConfig(tool);
+      console.log(`[cli-respawn] Using launch config for respawn ${sessNow.respawnCount}:`, JSON.stringify({
+        file: launch.file, args: Array.isArray(launch.args) ? launch.args.join('|') : launch.args, fileExists: launch.file ? _exeExists(launch.file) : null
+      }));
+
+      // Verify the executable exists before attempting spawn
+      if (launch.file && !_exeExists(launch.file)) {
+        const errMsg = `\r\n\x1b[31m  [Respawn failed: executable not found: ${launch.file}]\x1b[0m\r\n`;
+        console.error(`[cli-respawn] Executable not found: ${launch.file}`);
+        sessNow.scrollback.push(errMsg);
+        if (sessNow.sender && !sessNow.sender.isDestroyed()) {
+          sessNow.sender.send('cli:data', { sessionId, data: errMsg });
+          sessNow.sender.send('cli:exit', { sessionId, ...exitEvent });
+        }
+        cliSessions.delete(sessionId);
+        return;
+      }
+
       try {
         const newPty = pty.spawn(launch.file, launch.args, {
           name: 'xterm-color',
@@ -982,7 +1197,7 @@ function attachPtyHandlers(sessionId, ptyProc, tool, env) {
           env,
         });
         sessNow.ptyProcess = newPty;
-        attachPtyHandlers(sessionId, newPty, tool, env);
+        attachPtyHandlers(sessionId, newPty, tool, env, launch);
 
         if (launch.bootstrapInput) {
           setTimeout(() => { try { newPty.write(launch.bootstrapInput); } catch (_) {} }, 250);
@@ -997,6 +1212,7 @@ function attachPtyHandlers(sessionId, ptyProc, tool, env) {
         const sessErr = cliSessions.get(sessionId);
         if (sessErr) {
           const errMsg = `\r\n\x1b[31m  [Respawn failed: ${e.message}]\x1b[0m\r\n`;
+          console.error(`[cli-respawn] Spawn exception: ${e.message}`);
           sessErr.scrollback.push(errMsg);
           if (sessErr.sender && !sessErr.sender.isDestroyed()) {
             sessErr.sender.send('cli:data', { sessionId, data: errMsg });
@@ -1009,7 +1225,45 @@ function attachPtyHandlers(sessionId, ptyProc, tool, env) {
   });
 }
 
+const CLI_INSTALL_STATE_PATH = path.join(userDataPath, 'cli-install-state.json');
+
+function _readCliInstallState() {
+  try {
+    if (!fs.existsSync(CLI_INSTALL_STATE_PATH)) return {};
+    const raw = fs.readFileSync(CLI_INSTALL_STATE_PATH, 'utf-8');
+    const parsed = JSON.parse(raw || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) { return {}; }
+}
+
+function _writeCliInstallState(patch = {}) {
+  try {
+    const prev = _readCliInstallState();
+    const next = { ...prev, ...patch };
+    fs.mkdirSync(path.dirname(CLI_INSTALL_STATE_PATH), { recursive: true });
+    fs.writeFileSync(CLI_INSTALL_STATE_PATH, JSON.stringify(next, null, 2), 'utf-8');
+  } catch (_) {}
+}
+
 async function ensureCliToolsInstalled() {
+  if (cliToolsInstallInProgress) {
+    console.log('[cli-install] Installation already in progress, skipping duplicate call.');
+    return;
+  }
+  cliToolsInstallInProgress = true;
+
+  // Check persistent install state to avoid infinite reinstall loops
+  const state = _readCliInstallState();
+  const lastAttempt = state.lastAttempt || 0;
+  const attempts = state.attempts || 0;
+  const cooldownMs = 30 * 1000; // 30 seconds between retry attempts
+
+  if (attempts >= CLI_TOOLS_INSTALL_MAX_RETRIES && lastAttempt > 0 && (Date.now() - lastAttempt) < 60000) {
+    console.warn(`[cli-install] Max retries (${CLI_TOOLS_INSTALL_MAX_RETRIES}) reached within 60s, skipping.`);
+    cliToolsInstallInProgress = false;
+    return;
+  }
+
   updateSplash('Checking Claude and Codex CLI tools...');
   ensureCliPaths(process.env);
   try { fs.mkdirSync(cliToolsPrefixDir, { recursive: true }); } catch (_) {}
@@ -1018,7 +1272,10 @@ async function ensureCliToolsInstalled() {
   try {
     await runFile(getNpmCommand(), ['--version'], { timeout: 10000, env: { ...process.env } });
     npmCommand = getNpmCommand();
-  } catch (_) {}
+    console.log(`[cli-install] npm command resolved: ${npmCommand}`);
+  } catch (_) {
+    console.log('[cli-install] npm not found on PATH, trying embedded node...');
+  }
 
   // If npm is missing, download a portable Node.js runtime (includes npm).
   if (!npmCommand) {
@@ -1030,45 +1287,56 @@ async function ensureCliToolsInstalled() {
         const embeddedNpm = process.platform === 'win32'
           ? path.join(nodeRoot, 'npm.cmd')
           : path.join(nodeRoot, 'npm');
+        console.log(`[cli-install] Trying embedded npm: ${embeddedNpm} exists=${_exeExists(embeddedNpm)}`);
         await runFile(embeddedNpm, ['--version'], { timeout: 15000, env: { ...process.env } });
         npmCommand = embeddedNpm;
-      } catch (_) {}
+        console.log('[cli-install] Embedded npm works.');
+      } catch (e) {
+        console.warn('[cli-install] Embedded npm failed:', e.message);
+      }
     }
   }
 
   const installErrors = [];
+  let anyInstalled = false;
 
   for (const cli of CLI_SPECS) {
     if (!cli.packageName) continue;
     const cliPath = await resolveCommandPathAsync(cli.command);
-    if (cliPath) {
-      console.log(`${cli.label} already installed`);
+    if (cliPath && _exeExists(cliPath)) {
+      console.log(`[cli-install] ${cli.label} already installed at: ${cliPath}`);
+      anyInstalled = true;
       continue;
     }
 
     if (!npmCommand) {
       const msg = `Skipping ${cli.label} install because npm is unavailable. Install Node.js from https://nodejs.org and restart.`;
-      console.warn(msg);
+      console.warn(`[cli-install] ${msg}`);
       installErrors.push(msg);
       continue;
     }
 
     updateSplash(`Installing ${cli.label}...`);
-    console.log(`Installing ${cli.label} using ${cli.packageName}`);
+    console.log(`[cli-install] Installing ${cli.label} using npm install -g ${cli.packageName} --prefix ${cliToolsPrefixDir}`);
     try {
       await runFile(npmCommand, ['install', '-g', cli.packageName, '--prefix', cliToolsPrefixDir, '--no-audit', '--no-fund'], {
         timeout: 300000,
         env: { ...process.env },
       });
+      console.log(`[cli-install] ${cli.label} installed successfully.`);
+      anyInstalled = true;
     } catch (err) {
       const msg = `Failed to install ${cli.label}: ${(err.stderr || err.message || '').trim().slice(0, 200)}`;
-      console.error(msg);
+      console.error(`[cli-install] ${msg}`);
       installErrors.push(msg);
       continue;
     }
     ensureCliPaths(process.env);
     // Clear the cached "not found" entry so subsequent lookups re-check the filesystem.
     _commandPathCache.delete(cli.command);
+    // Verify the install worked
+    const verifyPath = await resolveCommandPathAsync(cli.command);
+    console.log(`[cli-install] ${cli.label} post-install verification: path=${verifyPath} exists=${verifyPath ? _exeExists(verifyPath) : 'N/A'}`);
   }
 
   if (installErrors.length > 0) {
@@ -1076,6 +1344,21 @@ async function ensureCliToolsInstalled() {
     // Give the user a moment to see the warning before the window opens.
     await new Promise(r => setTimeout(r, 3000));
   }
+
+  // Update persistent install state
+  _writeCliInstallState({
+    lastAttempt: Date.now(),
+    attempts: installErrors.length > 0 ? attempts + 1 : 0,
+    lastResult: installErrors.length > 0 ? 'failed' : 'success',
+    anyInstalled,
+    lastErrors: installErrors.slice(0, 3),
+  });
+
+  cliToolsInstallFailedCount = installErrors.length > 0 ? cliToolsInstallFailedCount + 1 : 0;
+  cliToolsInstallLastResult = installErrors.length > 0 ? 'failed' : 'success';
+  cliToolsInstallInProgress = false;
+
+  console.log(`[cli-install] Complete. installed=${anyInstalled} errors=${installErrors.length} failedCount=${cliToolsInstallFailedCount}`);
 }
 
 // ─── Splash Screen (shows during setup) ─────────────────────────
@@ -2112,14 +2395,19 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
     _tokenResult = await _applyFreshClaudeToken();
   }
   if (!_tokenResult.ok) {
-    // isAccessTokenExpired() checks the token timestamp directly — unlike
-    // checkTokenFreshness() it is not fooled by a recently-written file that
-    // still contains a stale token (e.g. right after a fresh bundle install).
-    if (cliBundle.isAccessTokenExpired()) {
+    // Check if the refresh token itself is dead (auth failure vs network error)
+    const isAuthFailure = _tokenResult.authFailure === true ||
+      (_tokenResult.error && _tokenResult.error.includes('TOKEN_REFRESH_AUTH_FAILED'));
+
+    if (cliBundle.isAccessTokenExpired() || isAuthFailure) {
+      const msg = isAuthFailure
+        ? `Claude credentials have expired and cannot be refreshed (the refresh token was rejected). Please run \`claude login\` in a terminal to re-authenticate, or ask your Nebula admin to reseed the master credentials.`
+        : `Claude credentials are expired and could not be refreshed from the server (${_tokenResult.error || 'server unreachable'}). Open the Admin panel → Repair CLI auth, or ask your Nebula administrator to reseed the master credentials.`;
       return {
         ok: false,
         installed: true,
-        message: `Claude credentials are expired and could not be refreshed from the server (${_tokenResult.error || 'server unreachable'}). Open the Admin panel → Repair CLI auth, or ask your Nebula administrator to reseed the master credentials.`,
+        authFailure: isAuthFailure,
+        message: msg,
       };
     }
     // Access token is not yet expired — let Claude CLI proceed; it can use the
@@ -2132,13 +2420,25 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
   if (!launch.installed) {
     // Try to install in the background (first launch may not have npm on PATH).
     if (launch.packageName) {
-      try {
-        if (!cliToolsInstallPromise) {
+      // Prevent infinite reinstall loop: if we've already tried and failed
+      // too many times, tell the user and stop.
+      if (cliToolsInstallFailedCount >= CLI_TOOLS_INSTALL_MAX_RETRIES) {
+        return {
+          ok: false,
+          installed: false,
+          message: `${launch.label} installation failed after ${CLI_TOOLS_INSTALL_MAX_RETRIES} attempts. Open a terminal and run: npm install -g ${launch.packageName}`,
+          shell: launch.shellLabel,
+        };
+      }
+
+      // Only kick off install if not already running or if last result was not a failure
+      if (!cliToolsInstallPromise) {
+        if (cliToolsInstallLastResult !== 'failed') {
           cliToolsInstallPromise = ensureCliToolsInstalled()
             .catch(() => {})
             .finally(() => { cliToolsInstallPromise = null; });
         }
-      } catch (_) {}
+      }
       return {
         ok: false,
         installed: false,
@@ -2230,6 +2530,9 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
     }, 250);
   }
 
+  // Store the launch config for respawn (avoids path re-resolution inconsistency)
+  const cachedLaunch = Object.freeze({ ...launch, args: [...(launch.args || [])] });
+
   cliSessions.set(sessionId, {
     ptyProcess: ptyProcessRef,
     sender: event.sender,
@@ -2244,9 +2547,10 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
     lastDetached: 0,
     respawnCount: 0,
     explicitlyTerminated: false,
+    cachedLaunch,
   });
 
-  attachPtyHandlers(sessionId, ptyProcessRef, tool, env);
+  attachPtyHandlers(sessionId, ptyProcessRef, tool, env, cachedLaunch);
 
   return {
     ok: true,
@@ -2368,11 +2672,19 @@ app.whenReady().then(async () => {
     // We await this before createWindow() so the CLI is ready when the UI loads.
     let cliInstallDone = cliToolsInstallPromise;
     if (!cliInstallDone) {
-      const p = ensureCliToolsInstalled()
-        .catch(() => {})
-        .finally(() => { cliToolsInstallPromise = null; });
-      cliToolsInstallPromise = p;
-      cliInstallDone = p;
+      const state = _readCliInstallState();
+      // If persistent state says install succeeded, don't re-install at startup
+      if (state.lastResult === 'success') {
+        console.log('[cli-install] Skipping startup install — last result was success.');
+        // Still warm the cache
+        cliInstallDone = prewarmCommandCache().catch(() => {});
+      } else {
+        const p = ensureCliToolsInstalled()
+          .catch(() => {})
+          .finally(() => { cliToolsInstallPromise = null; });
+        cliToolsInstallPromise = p;
+        cliInstallDone = p;
+      }
     }
     // Block window creation until CLI tools are installed (splash shows progress).
     await cliInstallDone;

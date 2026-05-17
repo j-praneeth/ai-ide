@@ -884,33 +884,45 @@ function checkTokenFreshness() {
 // Also works when the file doesn't exist yet (creates it from scratch).
 function patchAccessToken(accessToken, expiresAtMs, refreshToken, extraFields) {
   const c = _ctx;
-  if (!c) return false;
+  if (!c) {
+    console.warn('[cli-bundle:patchAccessToken] Not initialized');
+    return false;
+  }
   try {
     let creds;
     try {
       const raw = fs.readFileSync(c.files.claudeCreds, 'utf8');
       creds = JSON.parse(raw);
+      console.log(`[cli-bundle:patchAccessToken] Read existing creds, has claudeAiOauth=${!!creds.claudeAiOauth}`);
     } catch (_) {
       creds = {};
+      console.log('[cli-bundle:patchAccessToken] No existing creds, creating new.');
     }
     try { fs.mkdirSync(c.claudeDir, { recursive: true }); } catch (_) {}
     const oauthBase = { ...(extraFields || {}) };
+    const tokenPreview = accessToken ? accessToken.slice(0, 8) + '...' : 'null';
     if (creds.claudeAiOauth && typeof creds.claudeAiOauth === 'object') {
+      const hadRefresh = !!creds.claudeAiOauth.refreshToken;
       Object.assign(creds.claudeAiOauth, oauthBase, { accessToken, expiresAt: expiresAtMs }, refreshToken ? { refreshToken } : {});
+      console.log(`[cli-bundle:patchAccessToken] Updated existing claudeAiOauth: token=${tokenPreview}, expiresAt=${expiresAtMs}, refreshToken=${hadRefresh}->${!!refreshToken}`);
     } else {
       creds.claudeAiOauth = { ...oauthBase, accessToken, expiresAt: expiresAtMs, ...(refreshToken ? { refreshToken } : {}) };
+      console.log(`[cli-bundle:patchAccessToken] Created new claudeAiOauth: token=${tokenPreview}, expiresAt=${expiresAtMs}, hasRefresh=${!!refreshToken}`);
     }
     fs.writeFileSync(c.files.claudeCreds, JSON.stringify(creds, null, 2), { mode: 0o600 });
+    console.log(`[cli-bundle:patchAccessToken] Written to ${c.files.claudeCreds}`);
     // Ensure ~/.claude.json exists (Claude Code's onboarding state). Without it
     // the CLI shows the login flow even when credentials are valid.
     if (!fs.existsSync(c.files.claudeHomeJson)) {
       const homeJson = { hasCompletedOnboarding: true, onboardingComplete: true };
       fs.writeFileSync(c.files.claudeHomeJson, JSON.stringify(homeJson, null, 2), { mode: 0o600 });
+      console.log(`[cli-bundle:patchAccessToken] Created missing ${c.files.claudeHomeJson}`);
     }
-    log('info', null, 'Claude credentials patched on disk', {});
+    log('info', null, 'Claude credentials patched on disk', { tokenPreview });
     return true;
   } catch (e) {
     log('warn', null, 'patchAccessToken failed', { error: e.message });
+    console.warn('[cli-bundle:patchAccessToken] Failed:', e.message);
     return false;
   }
 }

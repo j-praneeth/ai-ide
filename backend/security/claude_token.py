@@ -16,11 +16,12 @@ logger = logging.getLogger("security.claude_token")
 _CREDS_DOC_ID = "claude_master_creds"
 _CACHE_MARGIN_SECONDS = 5 * 60  # Refresh 5 min before expiry
 
-_cache_lock = threading.Lock()
+_cache_lock = threading.RLock()  # Reentrant lock for read-modify-write patterns
 _cached_access_token: Optional[str] = None
 _cached_refresh_token: Optional[str] = None
 _cached_expires_at: float = 0.0  # unix seconds
 _cached_oauth: Optional[dict] = None  # full OAuth object for building responses
+_cache_valid: bool = False  # Explicit validity flag — invalidated by clear_cache()
 
 
 _DEFAULT_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
@@ -81,10 +82,39 @@ def _do_refresh(refresh_token: str) -> dict:
         "client_id": _client_id(),
     }
     logger.info("Calling Claude token endpoint: %s", url)
-    resp = requests.post(url, json=payload, timeout=15)
+    try:
+        resp = requests.post(url, json=payload, timeout=15)
+    except requests.exceptions.ConnectTimeout:
+        raise RuntimeError("TOKEN_REFRESH_NETWORK_ERROR: Connection timed out connecting to Claude auth server.")
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError(f"TOKEN_REFRESH_NETWORK_ERROR: Could not connect to Claude auth server: {e}")
+    except requests.exceptions.Timeout:
+        raise RuntimeError("TOKEN_REFRESH_NETWORK_ERROR: Request timed out during Claude token refresh.")
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"TOKEN_REFRESH_NETWORK_ERROR: {e}")
+
+    if resp.status_code == 401:
+        # Refresh token is invalid or expired — this is an AUTH error, not network
+        error_detail = ""
+        try:
+            body = resp.json()
+            error_detail = body.get("error_description") or body.get("error") or ""
+        except Exception:
+            error_detail = resp.text[:200]
+        logger.error(
+            "Token refresh FAILED with 401 — refresh token is expired or revoked. "
+            "Detail: %s. User must re-authenticate.",
+            error_detail,
+        )
+        raise RuntimeError(
+            f"TOKEN_REFRESH_AUTH_FAILED: Claude refresh token is expired. "
+            f"User must re-authenticate. ({error_detail})"
+        )
+
     if not resp.ok:
         logger.error("Token refresh failed %s: %s", resp.status_code, resp.text)
-    resp.raise_for_status()
+        raise RuntimeError(f"TOKEN_REFRESH_HTTP_ERROR: HTTP {resp.status_code}: {resp.text[:200]}")
+
     return resp.json()
 
 
@@ -97,6 +127,25 @@ def _build_oauth_response(oauth: dict, access_token: str, refresh_token: str, ex
         "expiresAt": int(expires_at_s * 1000),
     }
 
+def _ms_or_s_to_seconds(value: object) -> float:
+    """
+    Convert a stored expiresAt value to seconds since epoch.
+    Heuristic:
+      - value > 1e11 → milliseconds (since 1e11 ms ≈ 1970+3 years, which is unlikely for a valid timestamp)
+      - value <= 1e11 → seconds
+    Returns 0.0 on any failure.
+    """
+    try:
+        v = float(value or 0)
+        if v <= 0:
+            return 0.0
+        if v > 1e11:
+            return v / 1000.0
+        return v
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def get_fresh_access_token() -> dict:
     """
     Returns the full OAuth object with updated accessToken, refreshToken, expiresAt,
@@ -108,20 +157,20 @@ def get_fresh_access_token() -> dict:
     token (from the stale bundle) would get a 401 after the access token expires.
 
     Flow:
-      1. Hit in-memory cache (avoids DB round-trip within 50-min window).
+      1. Hit in-memory cache (avoids DB round-trip within ~55-min window).
       2. Read full OAuth object from MongoDB.
       3. If access token is still fresh enough, cache and return it.
       4. Otherwise call Anthropic with the stored refresh token.
       5. Save the new OAuth (new accessToken + possibly rotated refreshToken) back to DB.
       6. Update cache and return.
     """
-    global _cached_access_token, _cached_refresh_token, _cached_expires_at, _cached_oauth, _cached_scope, _cached_subscription_type, _cached_rate_limit_tier
+    global _cached_access_token, _cached_refresh_token, _cached_expires_at, _cached_oauth, _cache_valid
 
     now = time.time()
 
-    # 1. In-memory cache hit
+    # 1. In-memory cache hit (with validity check — cache may have been cleared)
     with _cache_lock:
-        if _cached_access_token and _cached_refresh_token and _cached_expires_at > now + _CACHE_MARGIN_SECONDS:
+        if _cache_valid and _cached_access_token and _cached_refresh_token and _cached_expires_at > now + _CACHE_MARGIN_SECONDS:
             return _build_oauth_response(
                 _cached_oauth or {},
                 _cached_access_token, _cached_refresh_token, _cached_expires_at,
@@ -139,8 +188,8 @@ def get_fresh_access_token() -> dict:
     expires_at_ms = oauth.get("expiresAt") or 0
     refresh_token = (oauth.get("refreshToken") or "").strip()
 
-    # expiresAt may be stored as ms or s
-    expires_at_s = (expires_at_ms / 1000) if expires_at_ms > 1e9 else float(expires_at_ms)
+    # expiresAt may be stored as ms or s — use the robust helper
+    expires_at_s = _ms_or_s_to_seconds(expires_at_ms)
 
     # 3. Access token still valid
     if access_token and expires_at_s > now + _CACHE_MARGIN_SECONDS:
@@ -149,6 +198,7 @@ def get_fresh_access_token() -> dict:
             _cached_access_token = access_token
             _cached_refresh_token = refresh_token
             _cached_expires_at = expires_at_s
+            _cache_valid = True
         return _build_oauth_response(oauth, access_token, refresh_token, expires_at_s)
 
     # 4. Refresh
@@ -186,12 +236,13 @@ def get_fresh_access_token() -> dict:
         updated_oauth["scope"] = scope
     save_oauth(updated_oauth)
 
-    # 6. Update cache
+    # 6. Update cache (atomically within the lock)
     with _cache_lock:
         _cached_oauth = updated_oauth
         _cached_access_token = new_access
         _cached_refresh_token = new_refresh
         _cached_expires_at = new_expires_at_s
+        _cache_valid = True
 
     logger.info("Claude access token refreshed successfully. Expires in %ss.", expires_in)
     return _build_oauth_response(updated_oauth, new_access, new_refresh, new_expires_at_s)
@@ -199,12 +250,14 @@ def get_fresh_access_token() -> dict:
 
 def clear_cache() -> None:
     """Invalidate the in-memory token cache (call after externally updating stored credentials)."""
-    global _cached_access_token, _cached_refresh_token, _cached_expires_at, _cached_oauth
+    global _cached_access_token, _cached_refresh_token, _cached_expires_at, _cached_oauth, _cache_valid
     with _cache_lock:
         _cached_access_token = None
         _cached_refresh_token = None
         _cached_expires_at = 0.0
         _cached_oauth = None
+        _cache_valid = False
+    logger.debug("Claude token cache cleared.")
 
 
 _disk_watcher_thread: Optional[threading.Thread] = None
@@ -247,9 +300,12 @@ def _disk_watcher_loop(interval_seconds: int) -> None:
             if not disk_refresh:
                 continue
 
+            # Use a local snapshot to minimize lock hold time
             with _disk_watcher_lock:
-                if disk_refresh == _disk_watcher_last_refresh:
-                    continue  # nothing changed since last tick
+                last_refresh = _disk_watcher_last_refresh
+
+            if disk_refresh == last_refresh:
+                continue  # nothing changed since last tick
 
             # Something changed on disk — compare with MongoDB
             stored = get_stored_oauth()
@@ -261,12 +317,16 @@ def _disk_watcher_loop(interval_seconds: int) -> None:
                 continue  # disk and MongoDB already agree
 
             logger.info(
-                "Backend credential watcher: refresh token rotated on disk, syncing to MongoDB."
+                "Backend credential watcher: refresh token rotated on disk (disk=%s..., stored=%s...), syncing to MongoDB.",
+                disk_refresh[:8] if disk_refresh else 'none',
+                stored_refresh[:8] if stored_refresh else 'none',
             )
+            # Use a single atomic save + cache clear
+            expires_at_s = _ms_or_s_to_seconds(disk_expires)
             save_oauth({
                 "accessToken": disk_access,
                 "refreshToken": disk_refresh,
-                "expiresAt": disk_expires,
+                "expiresAt": int(expires_at_s * 1000) if expires_at_s > 0 else 0,
             })
             clear_cache()
 
@@ -346,16 +406,9 @@ def reconcile_disk_credentials() -> None:
             logger.info("Startup reconcile: disk and MongoDB tokens match — no action needed.")
             return
 
-        # Tokens differ — compare freshness via expiresAt
-        def _to_seconds(v: object) -> float:
-            try:
-                v = float(v or 0)
-                return v / 1000.0 if v > 1e10 else v
-            except Exception:
-                return 0.0
-
-        disk_exp_s = _to_seconds(disk_expires_raw)
-        stored_exp_s = _to_seconds(stored_expires_raw)
+        # Tokens differ — compare freshness via expiresAt using the robust helper
+        disk_exp_s = _ms_or_s_to_seconds(disk_expires_raw)
+        stored_exp_s = _ms_or_s_to_seconds(stored_expires_raw)
 
         if disk_exp_s >= stored_exp_s:
             logger.info(
@@ -366,7 +419,7 @@ def reconcile_disk_credentials() -> None:
             save_oauth({
                 "accessToken": disk_access,
                 "refreshToken": disk_refresh,
-                "expiresAt": int(disk_expires_raw),
+                "expiresAt": int(disk_exp_s * 1000) if disk_exp_s > 0 else 0,
             })
             clear_cache()
         else:

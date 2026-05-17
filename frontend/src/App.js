@@ -302,10 +302,18 @@ function App() {
       }).catch(() => {});
     };
 
-    const tryLoad = () => {
-      if (!active) return;
+    const elAPI = window.electronAPI;
+
+    // Wait for backend:ready event (emitted by Electron main process when
+    // backend finishes startup) before making initial requests. This avoids
+    // ERR_CONNECTION_REFUSED errors when the renderer loads before the backend.
+    // Fall back to a retry loop if the event never fires (e.g. in browser dev).
+    let backendSignalled = false;
+
+    const startLoading = () => {
+      if (backendSignalled) return;
+      backendSignalled = true;
       loadTree().then(() => {
-        // Success — also load workspace info
         axios.get(`${API}/files/workspace`).then(res => {
           if (!active) return;
           if (res.data.name) setProjectName(res.data.name);
@@ -313,30 +321,35 @@ function App() {
           setWorkspaceLoading(false);
         }).catch(() => { setWorkspaceLoading(false); });
       }).catch(() => {
-        // Failed — retry with exponential backoff (200ms, 400ms, 800ms, ... up to ~3s)
         if (!active) return;
         attempts++;
         if (attempts >= MAX_ATTEMPTS) {
-          console.warn('[App] Backend not reachable after 30 retries. Check that the backend is running.');
+          console.warn('[App] Backend not reachable after 30 retries.');
           return;
         }
         const delay = Math.min(200 * Math.pow(1.5, attempts), 3000);
-        retryTimer = setTimeout(tryLoad, delay);
+        retryTimer = setTimeout(startLoading, delay);
       });
     };
 
-    tryLoad();
-
-    // Also register for backend:ready event as an optimization (faster recovery).
-    const elAPI = window.electronAPI;
     if (elAPI?.onBackendReady) {
+      // In Electron: wait for backend:ready, then load once.
       const cleanup = elAPI.onBackendReady(() => {
-        if (!active) return;
-        attempts = 0;
+        if (!active || backendSignalled) return;
+        backendSignalled = true;
         if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        attempts = 0;
         loadWorkspace();
       });
       cleanupFns.push(cleanup);
+      // Fallback: if backend:ready never fires (e.g. backend startup failure),
+      // start the retry loop after 8s.
+      retryTimer = setTimeout(() => {
+        if (!backendSignalled) startLoading();
+      }, 8000);
+    } else {
+      // Browser dev: no backend:ready event available — start retry loop immediately.
+      startLoading();
     }
 
     return () => {

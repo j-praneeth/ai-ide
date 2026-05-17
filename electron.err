@@ -1,0 +1,3 @@
+[cli-bundle] install failed: BUNDLE_AUTH_FAIL — AES-GCM auth tag failed
+[23340:0517/173248.957:ERROR:CONSOLE(1)] "Request Autofill.enable failed. {"code":-32601,"message":"'Autofill.enable' wasn't found"}", source: devtools://devtools/bundled/core/protocol_client/protocol_client.js (1)
+[23340:0517/173248.961:ERROR:CONSOLE(1)] "Request Autofill.setAddresses failed. {"code":-32601,"message":"'Autofill.setAddresses' wasn't found"}", source: devtools://devtools/bundled/core/protocol_client/protocol_client.js (1)

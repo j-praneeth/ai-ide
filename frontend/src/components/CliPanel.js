@@ -321,12 +321,31 @@ export default function CliPanel({ visible }) {
 
     const startPromise = window.electronAPI.startCliSession(cli, { authToken });
     const timeoutPromise = new Promise((resolve) => {
-      setTimeout(() => resolve({ ok: false, message: 'CLI start timed out. Try re-selecting the tool or restarting the app.' }), 8000);
+      setTimeout(() => resolve({ ok: false, message: 'CLI start timed out. Try re-selecting the tool or restarting the app.' }), 30000);
     });
     const result = await Promise.race([startPromise, timeoutPromise]);
 
     if (!result?.ok) {
-      term.writeln(`\x1b[31m  ${result?.message || 'Failed to start CLI session.'}\x1b[0m`);
+      const msg = result?.message || 'Failed to start CLI session.';
+      term.writeln(`\x1b[31m  ${msg}\x1b[0m`);
+
+      // If auth failure, show a helpful re-authentication hint
+      if (result?.authFailure) {
+        term.writeln('');
+        term.writeln('\x1b[33m  To fix this, open a terminal and run:\x1b[0m');
+        term.writeln('\x1b[33m    claude login\x1b[0m');
+        term.writeln('');
+        setAuthWarning({ message: 'Claude authentication expired. Run `claude login` in a terminal to re-authenticate.' });
+      }
+
+      // If it's an "installing" message, add a retry hint
+      if (msg.includes('installing in the background') || msg.includes('not installed')) {
+        term.writeln('');
+        term.writeln('\x1b[33m  The installer may still be running. Try again in 30 seconds.\x1b[0m');
+        term.writeln('\x1b[33m  If this persists, run manually:\x1b[0m');
+        term.writeln(`\x1b[33m    npm install -g @anthropic-ai/claude-code\x1b[0m`);
+        term.writeln('');
+      }
       return;
     }
 
@@ -360,7 +379,10 @@ export default function CliPanel({ visible }) {
 
     if (!unsubscribeDataRef.current && window.electronAPI?.onCliData) {
       unsubscribeDataRef.current = window.electronAPI.onCliData(({ sessionId, data }) => {
-        if (sessionId !== sessionIdRef.current || !termRef.current) return;
+        if (!termRef.current) return;
+        // Accept data from the active session or before sessionId is set
+        // (initial PTY data can arrive before the IPC response returns).
+        if (sessionId !== sessionIdRef.current && sessionIdRef.current) return;
         termRef.current.write(data.replace(/\r?\n/g, '\r\n'));
       });
     }

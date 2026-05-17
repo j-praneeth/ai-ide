@@ -40,8 +40,15 @@ def get_claude_token():
         data = get_fresh_access_token()
         return {"ok": True, **data}
     except Exception as e:
-        logger.warning("Claude token refresh failed: %s", e)
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+        err_str = str(e)
+        logger.warning("Claude token refresh failed: %s", err_str)
+        # Return specific HTTP status based on error type
+        if "TOKEN_REFRESH_AUTH_FAILED" in err_str:
+            # Refresh token is dead — user must re-auth
+            return JSONResponse({"ok": False, "error": err_str, "authFailure": True}, status_code=401)
+        if "TOKEN_REFRESH_NETWORK_ERROR" in err_str:
+            return JSONResponse({"ok": False, "error": err_str, "authFailure": False}, status_code=502)
+        return JSONResponse({"ok": False, "error": err_str}, status_code=503)
 
 
 @router.post("/claude-credentials")
@@ -77,7 +84,7 @@ async def sync_claude_credentials_internal(request: Request):
     Localhost-only (no JWT needed). Called by Electron when Claude CLI rotates the
     refresh token on disk, so the new token is synced back to MongoDB before it expires.
     """
-    from .claude_token import save_oauth, clear_cache, get_stored_oauth, get_fresh_access_token, _build_oauth_response, _cache_lock, _cached_oauth, _cached_scope, _cached_subscription_type, _cached_rate_limit_tier, _cached_access_token, _cached_refresh_token, _cached_expires_at
+    from .claude_token import save_oauth, clear_cache, get_stored_oauth
 
     client_host = (request.client.host if request.client else "") or ""
     if client_host not in ("127.0.0.1", "::1", "localhost", ""):

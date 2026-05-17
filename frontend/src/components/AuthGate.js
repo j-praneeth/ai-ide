@@ -147,7 +147,8 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
       }
     }, 5000);
 
-    const run = async () => {
+    const doAuthCheck = async () => {
+      if (cancelled) return;
       try {
         try {
           if (window.electronAPI?.readPersistedAuth) {
@@ -161,6 +162,7 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
 
         const res = await fetch(`${AUTH}/auth/status`);
         clearTimeout(timeout);
+        if (cancelled) return;
         const data = await res.json().catch(() => ({}));
         if (cancelled) return;
 
@@ -203,6 +205,7 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
           }
         }
       } catch (_) {
+        if (cancelled) return;
         clearTimeout(timeout);
         setDbConnected(false);
         setError('Cannot reach backend. Please ensure the server is running.');
@@ -210,10 +213,57 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
       setLoading(false);
     };
 
-    run();
+    // Delay initial auth check to avoid ERR_CONNECTION_REFUSED from racing
+    // the backend startup. In Electron, wait for backend:ready if available.
+    let runTimer = null;
+    let retryTimer = null;
+    let retries = 0;
+    const MAX_CONNECT_RETRIES = 20;
+
+    let unsubBackendReady = null;
+    if (window.electronAPI?.onBackendReady) {
+      unsubBackendReady = window.electronAPI.onBackendReady(() => {
+        if (!cancelled) doAuthCheck();
+      });
+      // Fallback: start auth check after 6s regardless
+      runTimer = setTimeout(() => { if (!cancelled) doAuthCheck(); }, 6000);
+    } else {
+      // Browser dev: short delay then check
+      runTimer = setTimeout(() => { if (!cancelled) doAuthCheck(); }, 1500);
+    }
+
+    // Auto-retry when backend is unreachable: check every 3s up to 20 times.
+    const poll = () => {
+      if (cancelled) return;
+      retries++;
+      if (retries > MAX_CONNECT_RETRIES) return;
+      fetch(`${AUTH}/auth/status`).then(async (res) => {
+        if (cancelled) return;
+        const data = await res.json().catch(() => ({}));
+        if (data.db_connected !== false) {
+          setDbConnected(true);
+          setError('');
+          if (data.has_users && getAuthToken()) {
+            const me = await authFetch(`${AUTH}/auth/me`).catch(() => ({}));
+            const meData = me?.json ? await me.json().catch(() => ({})) : {};
+            if (meData?.user) {
+              setAuthUser(meData.user);
+              setAuthenticated(true);
+            }
+          }
+        }
+      }).catch(() => {
+        retryTimer = setTimeout(poll, 3000);
+      });
+    };
+    retryTimer = setTimeout(poll, 4000);
+
     return () => {
       cancelled = true;
       clearTimeout(timeout);
+      if (runTimer) clearTimeout(runTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+      if (unsubBackendReady) { try { unsubBackendReady(); } catch (_) {} }
     };
   }, [forceRequireAuth, retryCount]);
 
@@ -318,3 +368,4 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
     </div>
   );
 }
+// 
