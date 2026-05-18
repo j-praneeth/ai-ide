@@ -21,10 +21,30 @@ const USER_KEY = 'nebula_auth_user';
 let _interceptorId = null;
 function _ensureInterceptor() {
   if (_interceptorId !== null) return;
+  // Endpoints that legitimately return 401 for reasons unrelated to the
+  // user's own session (e.g. /auth/claude-token returns 401 to mean
+  // "Anthropic rejected our master refresh token"). For these, we must NOT
+  // wipe the user's session — that would log them out for an unrelated
+  // upstream failure.
+  const SESSION_NEUTRAL_401_PATHS = ['/auth/claude-token'];
+  const isSessionNeutral401 = (url) => {
+    if (!url) return false;
+    try {
+      const path = new URL(url, window.location.origin).pathname;
+      return SESSION_NEUTRAL_401_PATHS.some((p) => path.endsWith(p));
+    } catch (_) {
+      return SESSION_NEUTRAL_401_PATHS.some((p) => url.includes(p));
+    }
+  };
+
   _interceptorId = axios.interceptors.response.use(
     res => res,
     err => {
       if (err?.response?.status === 401) {
+        // Don't conflate upstream OAuth failures with session expiry.
+        if (isSessionNeutral401(err?.config?.url)) {
+          return Promise.reject(err);
+        }
         try {
           const token = localStorage.getItem(TOKEN_KEY) || '';
           if (token) {

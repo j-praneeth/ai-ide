@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, shell, Menu } = require('electron');
 const path = require('path');
+const os = require('os');
 const { spawn, execSync, execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -269,7 +270,14 @@ loadDotEnvFile(path.join(__dirname, '..', 'backend', '.env'));
 loadDotEnvFile(path.join(__dirname, '..', 'backend-src', '.env'));
 _loadPackagedDotEnv();
 const CLI_SPECS = [
-  { label: 'Claude CLI', command: 'claude', packageName: '@anthropic-ai/claude-code' },
+  {
+    label: 'Claude CLI',
+    command: 'claude',
+    packageName: '@anthropic-ai/claude-code',
+    // macOS/Linux: official installer (handles node/npm internally)
+    // Windows: falls back to npm install via packageName
+    installScript: 'curl -fsSL https://claude.ai/install.sh | bash',
+  },
   { label: 'Codex CLI', command: 'codex', packageName: '@openai/codex' },
 ];
 
@@ -355,6 +363,59 @@ function ensureCliPaths(env = process.env) {
     const nodeRoot = getEmbeddedNodeRoot();
     if (nodeRoot) prependToPath(nodeRoot, env);
   } catch (_) {}
+
+  // On macOS/Linux, enrich PATH with common locations that are set up by shell
+  // init files (Homebrew, nvm, volta, fnm, etc.) but are absent in Electron's
+  // minimal process.env.PATH. This lets command-v resolution find CLIs even
+  // when the app was launched from Finder rather than a terminal.
+  if (process.platform !== 'win32') {
+    const home = os.homedir();
+    const extraPaths = [
+      // Homebrew (Apple Silicon)
+      '/opt/homebrew/bin',
+      '/opt/homebrew/sbin',
+      // Homebrew (Intel)
+      '/usr/local/bin',
+      '/usr/local/sbin',
+      // nvm default (current active version symlink doesn't exist, add common nodes)
+      path.join(home, '.nvm', 'versions', 'node'),
+      // volta
+      path.join(home, '.volta', 'bin'),
+      // fnm
+      path.join(home, '.fnm'),
+      // asdf node
+      path.join(home, '.asdf', 'shims'),
+      // npm global bin (user-level)
+      path.join(home, '.npm-global', 'bin'),
+      path.join(home, 'npm', 'bin'),
+      // pnpm global
+      path.join(home, '.local', 'share', 'pnpm'),
+      // claude.ai installer default location (curl -fsSL https://claude.ai/install.sh | bash)
+      path.join(home, '.local', 'bin'),
+    ];
+
+    // nvm: find the current default node version and add its bin dir
+    try {
+      const nvmAliasDir = path.join(home, '.nvm', 'alias');
+      const nvmDefault = path.join(nvmAliasDir, 'default');
+      if (fs.existsSync(nvmDefault)) {
+        let ver = fs.readFileSync(nvmDefault, 'utf8').trim();
+        // resolve indirect aliases like "lts/*" → "lts/hydrogen" → actual version file
+        for (let depth = 0; depth < 5 && ver && !ver.startsWith('v') && !ver.match(/^\d/); depth++) {
+          const aliasFile = path.join(nvmAliasDir, ver);
+          if (!fs.existsSync(aliasFile)) break;
+          ver = fs.readFileSync(aliasFile, 'utf8').trim();
+        }
+        ver = ver.replace(/^v/, '');
+        const nvmBin = path.join(home, '.nvm', 'versions', 'node', `v${ver}`, 'bin');
+        if (fs.existsSync(nvmBin)) extraPaths.unshift(nvmBin);
+      }
+    } catch (_) {}
+
+    for (const p of extraPaths) {
+      if (p && fs.existsSync(p)) prependToPath(p, env);
+    }
+  }
 }
 
 function getNpmGlobalBinDir() {
@@ -424,6 +485,19 @@ async function resolveCommandPathAsync(command) {
           result = null;
         }
       }
+      // On Windows, normalize extensionless paths to a proper executable extension.
+      // node-pty fails with ERROR_BAD_EXE_FORMAT (193) when given a POSIX shell script.
+      if (result) {
+        const lower = result.toLowerCase();
+        const hasExec = lower.endsWith('.exe') || lower.endsWith('.cmd') ||
+                        lower.endsWith('.bat') || lower.endsWith('.ps1');
+        if (!hasExec) {
+          if (fs.existsSync(result + '.cmd')) result = result + '.cmd';
+          else if (fs.existsSync(result + '.bat')) result = result + '.bat';
+          else if (fs.existsSync(result + '.exe')) result = result + '.exe';
+          else if (fs.existsSync(result + '.ps1')) result = result + '.ps1';
+        }
+      }
     } else {
       const { stdout } = await runFile('/bin/sh', ['-c', `command -v ${command}`], {
         timeout: 5000, env: { ...process.env },
@@ -467,6 +541,17 @@ function commandExists(command) {
         const withExe = resolved.endsWith('.exe') ? resolved : resolved + '.exe';
         resolved = _exeExists(withExe) ? withExe : null;
       }
+      if (resolved) {
+        const lower = resolved.toLowerCase();
+        const hasExec = lower.endsWith('.exe') || lower.endsWith('.cmd') ||
+                        lower.endsWith('.bat') || lower.endsWith('.ps1');
+        if (!hasExec) {
+          if (fs.existsSync(resolved + '.cmd')) resolved = resolved + '.cmd';
+          else if (fs.existsSync(resolved + '.bat')) resolved = resolved + '.bat';
+          else if (fs.existsSync(resolved + '.exe')) resolved = resolved + '.exe';
+          else if (fs.existsSync(resolved + '.ps1')) resolved = resolved + '.ps1';
+        }
+      }
     } else {
       resolved = execSync(`command -v ${command} 2>/dev/null`, {
         stdio: 'pipe', timeout: 5000, encoding: 'utf-8', shell: '/bin/sh',
@@ -504,6 +589,17 @@ function resolveCommandPath(command) {
       if (result && !_exeExists(result)) {
         const withExe = result.endsWith('.exe') ? result : result + '.exe';
         result = _exeExists(withExe) ? withExe : null;
+      }
+      if (result) {
+        const lower = result.toLowerCase();
+        const hasExec = lower.endsWith('.exe') || lower.endsWith('.cmd') ||
+                        lower.endsWith('.bat') || lower.endsWith('.ps1');
+        if (!hasExec) {
+          if (fs.existsSync(result + '.cmd')) result = result + '.cmd';
+          else if (fs.existsSync(result + '.bat')) result = result + '.bat';
+          else if (fs.existsSync(result + '.exe')) result = result + '.exe';
+          else if (fs.existsSync(result + '.ps1')) result = result + '.ps1';
+        }
       }
     } else {
       const output = execSync(`command -v ${command} 2>/dev/null`, {
@@ -687,6 +783,63 @@ function getCliLaunchConfig(tool) {
     }
   }
 
+  // Safety net: on Windows, an extensionless file (POSIX shell script) cannot be
+  // directly spawned — node-pty throws ERROR_BAD_EXE_FORMAT (error code 193).
+  // If we reach here with such a path, try .cmd/.bat variants or git-bash.
+  if (process.platform === 'win32' && commandPath && resolvedExists) {
+    const lower = commandPath.toLowerCase();
+    if (!lower.endsWith('.exe') && !lower.endsWith('.cmd') &&
+        !lower.endsWith('.bat') && !lower.endsWith('.ps1')) {
+      console.warn(`[cli-launch] WARNING: commandPath "${commandPath}" has no Windows executable extension — checking for .cmd/.bat variants`);
+      const cmdPath = commandPath + '.cmd';
+      const batPath = commandPath + '.bat';
+      if (fs.existsSync(cmdPath)) {
+        const cfg = {
+          installed: true,
+          label: spec.label,
+          shellLabel: 'cmd',
+          file: 'cmd.exe',
+          args: ['/d', '/s', '/c', cmdPath],
+        };
+        _logCliConfig(tool, cfg);
+        return cfg;
+      }
+      if (fs.existsSync(batPath)) {
+        const cfg = {
+          installed: true,
+          label: spec.label,
+          shellLabel: 'cmd',
+          file: 'cmd.exe',
+          args: ['/d', '/s', '/c', batPath],
+        };
+        _logCliConfig(tool, cfg);
+        return cfg;
+      }
+      // No Windows-executable variant found — try git-bash as a fallback
+      const gitBash = findGitBash();
+      if (gitBash) {
+        const cfg = {
+          installed: true,
+          label: spec.label,
+          shellLabel: 'git-bash',
+          file: gitBash,
+          args: ['-lc', spec.command],
+        };
+        _logCliConfig(tool, cfg);
+        return cfg;
+      }
+      // Cannot safely execute this file on Windows — mark not installed
+      const cfg = {
+        installed: false,
+        label: spec.label,
+        packageName: spec.packageName,
+        shellLabel: 'powershell',
+      };
+      _logCliConfig(tool, cfg);
+      return cfg;
+    }
+  }
+
   // macOS/Linux: verify binary is executable
   let isExecutable = true;
   if (process.platform !== 'win32' && commandPath) {
@@ -712,12 +865,34 @@ function getCliLaunchConfig(tool) {
     return cfg;
   }
 
+  // Windows: spawn the resolved path directly (cmd.exe/ps1 routing already handled above).
+  if (process.platform === 'win32') {
+    const cfg = {
+      installed: true,
+      label: spec.label,
+      shellLabel: 'powershell',
+      file: commandPath || spec.command,
+      args: [],
+    };
+    _logCliConfig(tool, cfg);
+    return cfg;
+  }
+
+  // macOS / Linux: always launch via the user's login+interactive shell.
+  // Direct posix_spawnp of an npm-installed CLI fails when its shebang interpreter
+  // (node) is not in Electron's minimal PATH — e.g. when node is managed by nvm
+  // or lives under /opt/homebrew and shell init files haven't been sourced.
+  // Using -l (login) + -i (interactive) ensures .zprofile/.zshrc/.bash_profile
+  // are loaded, giving the full PATH that matches a normal terminal session.
+  const userShell = process.env.SHELL || (fs.existsSync('/bin/zsh') ? '/bin/zsh' : '/bin/bash');
+  const shellFile = fs.existsSync(userShell) ? userShell : (fs.existsSync('/bin/zsh') ? '/bin/zsh' : '/bin/bash');
+  const launchCmd = commandPath || spec.command;
   const cfg = {
     installed: true,
     label: spec.label,
-    shellLabel: process.platform === 'win32' ? 'powershell' : 'shell',
-    file: commandPath || spec.command,
-    args: [],
+    shellLabel: 'shell',
+    file: shellFile,
+    args: ['-lc', launchCmd],
   };
   _logCliConfig(tool, cfg);
   return cfg;
@@ -1301,7 +1476,7 @@ async function ensureCliToolsInstalled() {
   let anyInstalled = false;
 
   for (const cli of CLI_SPECS) {
-    if (!cli.packageName) continue;
+    if (!cli.packageName && !cli.installScript) continue;
     const cliPath = await resolveCommandPathAsync(cli.command);
     if (cliPath && _exeExists(cliPath)) {
       console.log(`[cli-install] ${cli.label} already installed at: ${cliPath}`);
@@ -1309,6 +1484,34 @@ async function ensureCliToolsInstalled() {
       continue;
     }
 
+    updateSplash(`Installing ${cli.label}...`);
+
+    // On macOS/Linux, use the official install script when available.
+    // This handles node/npm setup internally and installs to the system PATH.
+    if (process.platform !== 'win32' && cli.installScript) {
+      console.log(`[cli-install] Installing ${cli.label} via install script: ${cli.installScript}`);
+      try {
+        const shell = fs.existsSync('/bin/bash') ? '/bin/bash' : '/bin/sh';
+        await runFile(shell, ['-c', cli.installScript], {
+          timeout: 300000,
+          env: { ...process.env, HOME: os.homedir() },
+        });
+        console.log(`[cli-install] ${cli.label} installed successfully via install script.`);
+        anyInstalled = true;
+      } catch (err) {
+        const msg = `Failed to install ${cli.label}: ${(err.stderr || err.message || '').trim().slice(0, 200)}`;
+        console.error(`[cli-install] ${msg}`);
+        installErrors.push(msg);
+        continue;
+      }
+      ensureCliPaths(process.env);
+      _commandPathCache.delete(cli.command);
+      const verifyPath = await resolveCommandPathAsync(cli.command);
+      console.log(`[cli-install] ${cli.label} post-install verification: path=${verifyPath} exists=${verifyPath ? _exeExists(verifyPath) : 'N/A'}`);
+      continue;
+    }
+
+    // Windows (or fallback): install via npm.
     if (!npmCommand) {
       const msg = `Skipping ${cli.label} install because npm is unavailable. Install Node.js from https://nodejs.org and restart.`;
       console.warn(`[cli-install] ${msg}`);
@@ -1316,7 +1519,6 @@ async function ensureCliToolsInstalled() {
       continue;
     }
 
-    updateSplash(`Installing ${cli.label}...`);
     console.log(`[cli-install] Installing ${cli.label} using npm install -g ${cli.packageName} --prefix ${cliToolsPrefixDir}`);
     try {
       await runFile(npmCommand, ['install', '-g', cli.packageName, '--prefix', cliToolsPrefixDir, '--no-audit', '--no-fund'], {
@@ -1332,9 +1534,7 @@ async function ensureCliToolsInstalled() {
       continue;
     }
     ensureCliPaths(process.env);
-    // Clear the cached "not found" entry so subsequent lookups re-check the filesystem.
     _commandPathCache.delete(cli.command);
-    // Verify the install worked
     const verifyPath = await resolveCommandPathAsync(cli.command);
     console.log(`[cli-install] ${cli.label} post-install verification: path=${verifyPath} exists=${verifyPath ? _exeExists(verifyPath) : 'N/A'}`);
   }
@@ -2418,15 +2618,22 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
   let launch = getCliLaunchConfig(tool);
 
   if (!launch.installed) {
+    const _installSpec = CLI_SPECS.find(s => s.command === tool) || {};
+    const _canInstall = !!(launch.packageName || _installSpec.installScript);
     // Try to install in the background (first launch may not have npm on PATH).
-    if (launch.packageName) {
+    if (_canInstall) {
       // Prevent infinite reinstall loop: if we've already tried and failed
       // too many times, tell the user and stop.
       if (cliToolsInstallFailedCount >= CLI_TOOLS_INSTALL_MAX_RETRIES) {
+        const spec = CLI_SPECS.find(s => s.command === tool) || {};
+        const manualCmd = (process.platform !== 'win32' && spec.installScript)
+          ? spec.installScript
+          : `npm install -g ${launch.packageName}`;
         return {
           ok: false,
           installed: false,
-          message: `${launch.label} installation failed after ${CLI_TOOLS_INSTALL_MAX_RETRIES} attempts. Open a terminal and run: npm install -g ${launch.packageName}`,
+          message: `${launch.label} installation failed after ${CLI_TOOLS_INSTALL_MAX_RETRIES} attempts. Open a terminal and run: ${manualCmd}`,
+          installCommand: manualCmd,
           shell: launch.shellLabel,
         };
       }
@@ -2439,10 +2646,15 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
             .finally(() => { cliToolsInstallPromise = null; });
         }
       }
+      const spec2 = CLI_SPECS.find(s => s.command === tool) || {};
+      const manualCmd2 = (process.platform !== 'win32' && spec2.installScript)
+        ? spec2.installScript
+        : (launch.packageName ? `npm install -g ${launch.packageName}` : null);
       return {
         ok: false,
         installed: false,
         message: `${launch.label} is not installed yet. Nebula is installing CLI tools in the background — please wait a moment and re-select the tool.`,
+        installCommand: manualCmd2,
         shell: launch.shellLabel,
       };
     }
@@ -2456,7 +2668,12 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
   }
 
   const sessionId = `cli-${++cliSessionCounter}`;
+  // Build the spawn environment. Start from the already-enriched process.env
+  // (ensureCliPaths has been called by getCliLaunchConfig), then apply the
+  // same extra PATH enrichment so the node shebang interpreter is always
+  // findable even when not in Electron's minimal PATH.
   const env = { ...process.env, TERM: 'xterm-256color' };
+  ensureCliPaths(env);
 
   // Auth priority (highest → lowest):
   //

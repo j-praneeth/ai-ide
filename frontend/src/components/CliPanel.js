@@ -340,10 +340,11 @@ export default function CliPanel({ visible }) {
 
       // If it's an "installing" message, add a retry hint
       if (msg.includes('installing in the background') || msg.includes('not installed')) {
+        const installCmd = result?.installCommand || 'curl -fsSL https://claude.ai/install.sh | bash';
         term.writeln('');
         term.writeln('\x1b[33m  The installer may still be running. Try again in 30 seconds.\x1b[0m');
         term.writeln('\x1b[33m  If this persists, run manually:\x1b[0m');
-        term.writeln(`\x1b[33m    npm install -g @anthropic-ai/claude-code\x1b[0m`);
+        term.writeln(`\x1b[33m    ${installCmd}\x1b[0m`);
         term.writeln('');
       }
       return;

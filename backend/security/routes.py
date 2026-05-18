@@ -44,8 +44,12 @@ def get_claude_token():
         logger.warning("Claude token refresh failed: %s", err_str)
         # Return specific HTTP status based on error type
         if "TOKEN_REFRESH_AUTH_FAILED" in err_str:
-            # Refresh token is dead — user must re-auth
-            return JSONResponse({"ok": False, "error": err_str, "authFailure": True}, status_code=401)
+            # Anthropic rejected our refresh token. Use 502 (upstream gateway
+            # rejected the request), not 401 — 401 would be misinterpreted by
+            # the frontend's global axios interceptor as the user's own JWT
+            # being expired, logging them out. The authFailure flag in the
+            # body still tells the admin UI to surface "re-paste credentials".
+            return JSONResponse({"ok": False, "error": err_str, "authFailure": True}, status_code=502)
         if "TOKEN_REFRESH_NETWORK_ERROR" in err_str:
             return JSONResponse({"ok": False, "error": err_str, "authFailure": False}, status_code=502)
         return JSONResponse({"ok": False, "error": err_str}, status_code=503)
@@ -59,7 +63,7 @@ async def seed_claude_credentials(request: Request):
 
     Body: { "oauth": { "refreshToken": "...", "accessToken": "...", "expiresAt": 123... } }
     """
-    from .claude_token import save_oauth
+    from .claude_token import save_oauth, clear_cache, get_fresh_access_token
     from .middleware import get_request_user
 
     user = get_request_user(request)
@@ -76,7 +80,38 @@ async def seed_claude_credentials(request: Request):
         return JSONResponse({"error": "Body must be { oauth: { refreshToken, ... } }"}, status_code=400)
 
     save_oauth(oauth)
-    return {"ok": True, "message": "Claude master credentials updated."}
+    clear_cache()
+
+    # Validate by performing an immediate refresh — gives the admin one-click feedback
+    # instead of "save succeeded → check creds → 401". A side effect is that Anthropic
+    # may rotate the refresh token now; get_fresh_access_token() already persists the
+    # rotated token to MongoDB, so the DB always ends up holding the live token.
+    try:
+        fresh = get_fresh_access_token()
+        return {
+            "ok": True,
+            "message": "Claude master credentials updated and validated.",
+            "expiresAt": fresh.get("expiresAt"),
+        }
+    except Exception as exc:
+        err = str(exc)
+        if "TOKEN_REFRESH_AUTH_FAILED" in err:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": err,
+                    "authFailure": True,
+                    "hint": (
+                        "Anthropic rejected this refresh token. Re-run `claude` on a "
+                        "logged-in machine, then immediately copy ~/.claude/.credentials.json "
+                        "(refresh tokens rotate on every use)."
+                    ),
+                },
+                status_code=400,
+            )
+        if "TOKEN_REFRESH_NETWORK_ERROR" in err:
+            return JSONResponse({"ok": False, "error": err}, status_code=502)
+        return JSONResponse({"ok": False, "error": err}, status_code=500)
 
 @router.post("/claude-credentials-internal")
 async def sync_claude_credentials_internal(request: Request):

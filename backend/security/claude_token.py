@@ -24,9 +24,7 @@ _cached_oauth: Optional[dict] = None  # full OAuth object for building responses
 _cache_valid: bool = False  # Explicit validity flag — invalidated by clear_cache()
 
 
-_DEFAULT_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
-# Public client — no secret. client_id is the metadata URL per OAuth 2.0 Dynamic Registration.
-_DEFAULT_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
+_DEFAULT_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
 
 
 def _token_url() -> str:
@@ -34,7 +32,13 @@ def _token_url() -> str:
 
 
 def _client_id() -> str:
-    return (os.environ.get("CLAUDE_OAUTH_CLIENT_ID") or _DEFAULT_CLIENT_ID).strip()
+    client_id = os.environ.get("CLAUDE_OAUTH_CLIENT_ID", "").strip()
+    if not client_id:
+        raise RuntimeError(
+            "CLAUDE_OAUTH_CLIENT_ID environment variable is required. "
+            "Add it to backend/.env."
+        )
+    return client_id
 
 
 def get_stored_oauth() -> Optional[dict]:
@@ -81,7 +85,10 @@ def _do_refresh(refresh_token: str) -> dict:
         "refresh_token": refresh_token,
         "client_id": _client_id(),
     }
-    logger.info("Calling Claude token endpoint: %s", url)
+    logger.info(
+        "Calling Claude token endpoint: %s (client_id=%s, refresh_token=%s...)",
+        url, _client_id(), refresh_token[:10],
+    )
     try:
         resp = requests.post(url, json=payload, timeout=15)
     except requests.exceptions.ConnectTimeout:
@@ -93,29 +100,39 @@ def _do_refresh(refresh_token: str) -> dict:
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"TOKEN_REFRESH_NETWORK_ERROR: {e}")
 
-    if resp.status_code == 401:
-        # Refresh token is invalid or expired — this is an AUTH error, not network
-        error_detail = ""
-        try:
-            body = resp.json()
-            error_detail = body.get("error_description") or body.get("error") or ""
-        except Exception:
-            error_detail = resp.text[:200]
+    # Parse the response body once so we can inspect OAuth error codes.
+    body: dict = {}
+    try:
+        body = resp.json() if resp.content else {}
+    except Exception:
+        body = {}
+    error_code = (body.get("error") or "").strip().lower() if isinstance(body, dict) else ""
+    error_detail = (
+        (body.get("error_description") if isinstance(body, dict) else None)
+        or (body.get("error") if isinstance(body, dict) else None)
+        or resp.text[:200]
+    )
+
+    # 401, or 400 with invalid_grant/invalid_client, means the refresh token is dead.
+    # Per RFC 6749 §5.2, the OAuth server returns HTTP 400 with error="invalid_grant"
+    # when the refresh token is expired, revoked, or doesn't belong to this client.
+    auth_failure_codes = {"invalid_grant", "invalid_client", "unauthorized_client"}
+    if resp.status_code == 401 or (resp.status_code == 400 and error_code in auth_failure_codes):
         logger.error(
-            "Token refresh FAILED with 401 — refresh token is expired or revoked. "
+            "Token refresh FAILED (%s, oauth_error=%s) — refresh token is expired or revoked. "
             "Detail: %s. User must re-authenticate.",
-            error_detail,
+            resp.status_code, error_code or "n/a", error_detail,
         )
         raise RuntimeError(
-            f"TOKEN_REFRESH_AUTH_FAILED: Claude refresh token is expired. "
-            f"User must re-authenticate. ({error_detail})"
+            f"TOKEN_REFRESH_AUTH_FAILED: Claude refresh token is invalid or expired. "
+            f"Re-paste ~/.claude/.credentials.json in the admin panel. ({error_detail})"
         )
 
     if not resp.ok:
         logger.error("Token refresh failed %s: %s", resp.status_code, resp.text)
         raise RuntimeError(f"TOKEN_REFRESH_HTTP_ERROR: HTTP {resp.status_code}: {resp.text[:200]}")
 
-    return resp.json()
+    return body if body else resp.json()
 
 
 def _build_oauth_response(oauth: dict, access_token: str, refresh_token: str, expires_at_s: float) -> dict:

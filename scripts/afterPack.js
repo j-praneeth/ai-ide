@@ -72,6 +72,31 @@ exports.default = async function afterPack(context) {
     console.log('[afterPack] GH_TOKEN not set — update-config.json not written (public repo only)');
   }
 
+  // ── Fix spawn-helper permissions (macOS only) ─────────────────────
+  // node-pty's prebuilt spawn-helper binary ships with -rw-r--r-- (not
+  // executable). macOS requires it to be executable or posix_spawnp fails
+  // at runtime with "posix_spawnp failed". Fix both the build/ and prebuilds/
+  // copies before signing so the signature covers the correct permissions.
+  if (platform === 'darwin') {
+    const asar = path.join(resourcesDir, 'app.asar.unpacked');
+    const spawnHelperPaths = [
+      path.join(asar, 'node_modules', 'node-pty', 'build', 'Release', 'spawn-helper'),
+      path.join(asar, 'node_modules', 'node-pty', 'prebuilds', 'darwin-arm64', 'spawn-helper'),
+      path.join(asar, 'node_modules', 'node-pty', 'prebuilds', 'darwin-x64', 'spawn-helper'),
+    ];
+    for (const helperPath of spawnHelperPaths) {
+      if (fs.existsSync(helperPath)) {
+        try {
+          fs.chmodSync(helperPath, 0o755);
+          execSync(`codesign --force --sign - "${helperPath}"`, { stdio: 'pipe' });
+          console.log(`[afterPack] spawn-helper fixed + signed: ${helperPath} ✓`);
+        } catch (e) {
+          console.warn(`[afterPack] spawn-helper fix failed for ${helperPath}:`, e.message);
+        }
+      }
+    }
+  }
+
   // ── Ad-hoc signing (macOS only) ───────────────────────────────────
   // Without ANY signature, ditto fails with "Couldn't read PKZip Signature"
   // when extracting from DMG.  Ad-hoc signing (+ the one-time xattr command)

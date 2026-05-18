@@ -155,8 +155,14 @@ export default function AdminPanel() {
         setCredsStatusMsg(`Server returned: ${res.data?.error || 'no access token'}`);
       }
     } catch (e) {
-      setCredsStatus('missing');
-      setCredsStatusMsg(e?.response?.data?.error || e.message || 'Failed to reach server');
+      const data = e?.response?.data || {};
+      setCredsStatus(data.authFailure ? 'expired' : 'missing');
+      const baseMsg = data.error || e.message || 'Failed to reach server';
+      setCredsStatusMsg(
+        data.authFailure
+          ? `${baseMsg} — Re-paste the contents of ~/.claude/.credentials.json below to seed a fresh refresh token.`
+          : baseMsg,
+      );
     }
   }, []);
 
@@ -188,7 +194,9 @@ export default function AdminPanel() {
         setCredsError(res.data?.error || 'Update failed');
       }
     } catch (e) {
-      setCredsError(e?.response?.data?.error || e.message || 'Update failed');
+      const data = e?.response?.data || {};
+      const baseMsg = data.error || e.message || 'Update failed';
+      setCredsError(data.hint ? `${baseMsg}\n\n${data.hint}` : baseMsg);
     } finally {
       setCredsSaving(false);
     }
