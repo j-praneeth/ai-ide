@@ -50,12 +50,18 @@ def get_stored_oauth() -> Optional[dict]:
         return None
 
 
-def save_oauth(oauth: dict) -> None:
+def save_oauth(oauth: dict, reason: str = "manual") -> None:
     try:
         app_config_collection().update_one(
             {"_id": _CREDS_DOC_ID},
             {"$set": {"oauth": oauth, "updated_at": utcnow()}},
             upsert=True,
+        )
+        logger.info("Claude OAuth saved to DB [reason=%s] refreshToken=%s..., accessToken=%s..., expiresAt=%s",
+            reason,
+            (oauth or {}).get("refreshToken", "")[:8] or "none",
+            (oauth or {}).get("accessToken", "")[:8] or "none",
+            (oauth or {}).get("expiresAt", 0),
         )
     except Exception as e:
         logger.error("Failed to save claude creds to DB: %s", e)
@@ -74,7 +80,7 @@ def seed_from_env() -> None:
         logger.info("Claude master creds already in DB, skipping env seed.")
         return
     logger.info("Seeding Claude master credentials from CLAUDE_INITIAL_REFRESH_TOKEN env var.")
-    save_oauth({"refreshToken": refresh_token})
+    save_oauth({"refreshToken": refresh_token}, reason="seed_from_env")
 
 
 def _do_refresh(refresh_token: str) -> dict:
@@ -251,7 +257,7 @@ def get_fresh_access_token() -> dict:
     }
     if scope:
         updated_oauth["scope"] = scope
-    save_oauth(updated_oauth)
+    save_oauth(updated_oauth, reason="oauth_refresh")
 
     # 6. Update cache (atomically within the lock)
     with _cache_lock:
@@ -344,7 +350,7 @@ def _disk_watcher_loop(interval_seconds: int) -> None:
                 "accessToken": disk_access,
                 "refreshToken": disk_refresh,
                 "expiresAt": int(expires_at_s * 1000) if expires_at_s > 0 else 0,
-            })
+            }, reason="disk_watcher")
             clear_cache()
 
             with _disk_watcher_lock:
@@ -437,7 +443,7 @@ def reconcile_disk_credentials() -> None:
                 "accessToken": disk_access,
                 "refreshToken": disk_refresh,
                 "expiresAt": int(disk_exp_s * 1000) if disk_exp_s > 0 else 0,
-            })
+            }, reason="startup_reconcile")
             clear_cache()
         else:
             logger.info(

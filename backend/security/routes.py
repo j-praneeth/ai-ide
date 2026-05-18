@@ -79,7 +79,7 @@ async def seed_claude_credentials(request: Request):
     if not isinstance(oauth, dict) or not oauth.get("refreshToken"):
         return JSONResponse({"error": "Body must be { oauth: { refreshToken, ... } }"}, status_code=400)
 
-    save_oauth(oauth)
+    save_oauth(oauth, reason="admin_paste")
     clear_cache()
 
     # Validate by performing an immediate refresh — gives the admin one-click feedback
@@ -142,7 +142,7 @@ async def sync_claude_credentials_internal(request: Request):
     if existing:
         oauth = {**existing, **oauth}
 
-    save_oauth(oauth)
+    save_oauth(oauth, reason="admin_paste")
     clear_cache()
     logger.info("Claude credentials synced via internal endpoint (refresh token rotation).")
     return {"ok": True}
