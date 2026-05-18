@@ -122,8 +122,27 @@ function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [showNewFilePrompt, setShowNewFilePrompt] = useState(false);
   const [showOpenFolder, setShowOpenFolder] = useState(false);
-  const [projectName, setProjectName] = useState('Nebula');
-  const [projectRoot, setProjectRoot] = useState('');
+  // Seed projectName / projectRoot from a localStorage snapshot of the last
+  // hydrated workspace so the title bar / SCM panel render the right value on
+  // the very first frame. The Electron main process then overrides this via
+  // 'app:get-workspace' inside useLayoutEffect — but having a seed avoids the
+  // visible flash to "Nebula" while the IPC round-trip completes.
+  const [projectName, setProjectName] = useState(() => {
+    try {
+      const raw = localStorage.getItem('nebula_last_workspace');
+      const o = raw ? JSON.parse(raw) : null;
+      if (o && typeof o.name === 'string' && o.name) return o.name;
+    } catch (_) {}
+    return 'Nebula';
+  });
+  const [projectRoot, setProjectRoot] = useState(() => {
+    try {
+      const raw = localStorage.getItem('nebula_last_workspace');
+      const o = raw ? JSON.parse(raw) : null;
+      if (o && typeof o.path === 'string' && o.path) return o.path;
+    } catch (_) {}
+    return '';
+  });
   const [webFolderHandle, setWebFolderHandle] = useState(null);
   /** Bump when switching workspaces so terminal / local UI fully remounts. */
   const [workspaceKey, setWorkspaceKey] = useState(0);
@@ -169,6 +188,61 @@ function App() {
 
   // Force explorer panel as default on every mount
   useEffect(() => { setSidebarPanel('explorer'); }, []);
+
+  // ── Workspace hydration (deterministic, runs before any HTTP) ──
+  //
+  // The Electron main process restores `currentProjectRoot` from
+  // nebula-session.json before it ever opens the BrowserWindow. We pull that
+  // value via IPC the moment the renderer mounts so the title bar, file
+  // explorer context, and Source Control panel all see the restored workspace
+  // immediately — without waiting on the backend's /files/workspace HTTP.
+  //
+  // We also subscribe to live 'project:root-changed' events so subsequent
+  // workspace switches (Open Folder, new-window spawn, etc.) update the same
+  // React state via one path.
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api) return undefined;
+    let cancelled = false;
+
+    const applyWorkspace = (ws) => {
+      if (cancelled || !ws) return;
+      const path = (ws.path || '').trim();
+      const name = (ws.name || '').trim();
+      console.log(`[App] workspace hydrated from main: path="${path}" name="${name}"`);
+      if (path) setProjectRoot(path);
+      if (name) setProjectName(name);
+      else if (path) setProjectName(path.split(/[\\/]/).filter(Boolean).pop() || 'Nebula');
+      try {
+        if (path) {
+          localStorage.setItem(
+            'nebula_last_workspace',
+            JSON.stringify({ path, name: name || (path.split(/[\\/]/).filter(Boolean).pop() || '') }),
+          );
+        }
+      } catch (_) {}
+    };
+
+    if (api.getCurrentWorkspace) {
+      api.getCurrentWorkspace().then(applyWorkspace).catch((e) => {
+        console.warn('[App] getCurrentWorkspace failed:', e && e.message);
+      });
+    }
+
+    let unsubscribe = null;
+    if (api.onProjectRootChanged) {
+      unsubscribe = api.onProjectRootChanged((payload) => {
+        applyWorkspace({
+          path: payload && payload.projectRoot,
+          name: payload && payload.projectName,
+        });
+      });
+    }
+    return () => {
+      cancelled = true;
+      if (typeof unsubscribe === 'function') { try { unsubscribe(); } catch (_) {} }
+    };
+  }, []);
 
   // ── Sync sidebar extension apps from registry ────────────────
   useEffect(() => {
@@ -1089,6 +1163,16 @@ function App() {
       setModifiedFiles(new Set());
       setProjectName(folderName || 'Nebula');
       if (folderPath) setProjectRoot(folderPath);
+      try {
+        if (folderPath) {
+          localStorage.setItem(
+            'nebula_last_workspace',
+            JSON.stringify({ path: folderPath, name: folderName || '' }),
+          );
+        } else {
+          localStorage.removeItem('nebula_last_workspace');
+        }
+      } catch (_) {}
       setWebFolderHandle(handle || null);
       if (handle && treeData) {
         setTree(treeData);

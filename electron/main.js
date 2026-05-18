@@ -217,12 +217,30 @@ function spawnNewAppInstance(folderPath, prevWindow) {
   }
 }
 
+function _projectNameFromRoot(p) {
+  try {
+    if (!p || typeof p !== 'string') return '';
+    return path.basename(p) || p;
+  } catch (_) { return ''; }
+}
+
+function _applyWindowTitle(win, projectRoot) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    const name = _projectNameFromRoot(projectRoot);
+    win.setTitle(name ? `${name} — Nebula IDE` : 'Nebula IDE');
+  } catch (_) {}
+}
+
 function setCurrentProjectRoot(folderPath) {
   try {
     const p = typeof folderPath === 'string' ? folderPath.trim() : '';
     if (!p) return false;
     const resolved = path.resolve(p);
-    if (!fs.existsSync(resolved)) return false;
+    if (!fs.existsSync(resolved)) {
+      console.warn(`[workspace] setCurrentProjectRoot: path does not exist: ${resolved}`);
+      return false;
+    }
     const st = fs.statSync(resolved);
     if (!st.isDirectory()) return false;
     const prev = currentProjectRoot;
@@ -232,9 +250,23 @@ function setCurrentProjectRoot(folderPath) {
     currentProjectRoot = resolved;
     process.env.NEBULA_PROJECT_ROOT = resolved;
     writeSessionState({ lastProjectRoot: resolved });
+    console.log(`[workspace] active project root → ${resolved} (name="${_projectNameFromRoot(resolved)}")`);
+
+    // Broadcast to every BrowserWindow (mainWindow may not exist yet on the
+    // very first restore call, which happens before createWindow()). Each
+    // renderer also pulls the current value via 'app:get-workspace' on mount,
+    // so even windows that miss this push event still hydrate correctly.
     try {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('project:root-changed', { projectRoot: resolved });
+      for (const win of BrowserWindow.getAllWindows()) {
+        try {
+          if (!win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+            win.webContents.send('project:root-changed', {
+              projectRoot: resolved,
+              projectName: _projectNameFromRoot(resolved),
+            });
+            _applyWindowTitle(win, resolved);
+          }
+        } catch (_) {}
       }
     } catch (_) {}
     return true;
@@ -2292,6 +2324,12 @@ function createWindow() {
   const win = _makeBrowserWindow();
   mainWindow = win;
 
+  // Apply the restored project name to the window title before the renderer
+  // even loads. Without this, the title flashes "Nebula IDE" until React
+  // hydrates, even though the active project is already known.
+  _applyWindowTitle(win, currentProjectRoot);
+  console.log(`[workspace] createWindow: title applied (projectRoot=${currentProjectRoot || 'none'})`);
+
   if (isDev) {
     win.loadURL('http://localhost:3000');
     win.webContents.openDevTools({ mode: 'detach' });
@@ -2536,6 +2574,21 @@ ipcMain.handle('app:get-startup-folder', (event) => {
   }
   // Out-of-process new windows (macOS/Linux): folder arrives via CLI flag.
   return NEBULA_OPEN_FOLDER || null;
+});
+
+// Authoritative workspace info, served straight from the main-process state.
+// The renderer calls this on mount before any backend HTTP round-trip — so the
+// title bar / SCM / explorer all see the restored project synchronously and
+// never have to fall back to the default "Nebula" label.
+ipcMain.handle('app:get-workspace', () => {
+  const root = currentProjectRoot && fs.existsSync(currentProjectRoot)
+    ? currentProjectRoot
+    : '';
+  return {
+    path: root || '',
+    name: root ? _projectNameFromRoot(root) : '',
+    open: !!root,
+  };
 });
 
 /** Open a folder in a brand-new window and close this one after the new one launches. */
@@ -3033,16 +3086,29 @@ app.whenReady().then(async () => {
     createSplashWindow('Starting IDE...');
 
     // Restore last opened folder for normal launches only (not extra windows).
+    // This MUST run before createWindow() so that 'app:get-workspace' returns
+    // the restored path the moment the renderer hits IPC.
     try {
+      console.log('[workspace] session restore: start');
       if (NEBULA_OPEN_FOLDER) {
-        // New window was spawned to open a specific project — use that path.
+        console.log(`[workspace] session restore: --nebula-open-folder=${NEBULA_OPEN_FOLDER}`);
         setCurrentProjectRoot(NEBULA_OPEN_FOLDER);
       } else if (!NEBULA_FRESH_WINDOW) {
         const s = readSessionState();
         const last = s && typeof s.lastProjectRoot === 'string' ? s.lastProjectRoot.trim() : '';
-        if (last) setCurrentProjectRoot(last);
+        if (last) {
+          console.log(`[workspace] session restore: lastProjectRoot=${last}`);
+          setCurrentProjectRoot(last);
+        } else {
+          console.log('[workspace] session restore: no lastProjectRoot persisted');
+        }
+      } else {
+        console.log('[workspace] session restore: --nebula-fresh-window — skipping restore');
       }
-    } catch (_) {}
+      console.log(`[workspace] session restore: end (currentProjectRoot=${currentProjectRoot || 'none'})`);
+    } catch (e) {
+      console.warn('[workspace] session restore: failed:', e && e.message);
+    }
 
     // Ensure the CLI tools exist before the backend/terminal sessions use them.
     // We await this before createWindow() so the CLI is ready when the UI loads.

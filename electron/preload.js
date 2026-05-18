@@ -85,6 +85,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** The folder path this window was spawned to open (passed via --nebula-open-folder). */
   getStartupFolder: () => ipcRenderer.invoke('app:get-startup-folder'),
 
+  /** Authoritative active workspace from the Electron main process. Used by the
+   *  renderer to hydrate project name / root before any backend HTTP request,
+   *  so session-restored workspaces never flash the default "Nebula" label. */
+  getCurrentWorkspace: () => ipcRenderer.invoke('app:get-workspace'),
+
   readPersistedAuth: () => ipcRenderer.invoke('auth:read-disk'),
   writePersistedAuth: (payload) => ipcRenderer.invoke('auth:write-disk', payload || {}),
   clearPersistedAuth: () => ipcRenderer.invoke('auth:clear-disk'),
