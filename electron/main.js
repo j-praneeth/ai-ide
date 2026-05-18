@@ -644,6 +644,20 @@ function _exeExists(p) {
       for (const ext of pathext) {
         if (fs.existsSync(p + ext)) return true;
       }
+      // Bare basenames like 'cmd.exe' / 'powershell.exe' / 'pwsh.exe' are resolved
+      // by node-pty / CreateProcess via PATH — they have no parent directory in the
+      // string, so fs.existsSync against CWD will (correctly) return false. Treat
+      // these as "exists" so respawn doesn't refuse to retry a known-good shell.
+      const base = path.basename(p);
+      if (base === p) {
+        const sysRoot = process.env.SystemRoot || 'C:\\Windows';
+        const sys32 = path.join(sysRoot, 'System32');
+        const candidates = [
+          path.join(sys32, base),
+          path.join(sys32, 'WindowsPowerShell', 'v1.0', base),
+        ];
+        if (candidates.some((c) => fs.existsSync(c))) return true;
+      }
     }
     return false;
   } catch (_) { return false; }
@@ -668,6 +682,111 @@ function _logCliConfig(tool, cfg) {
     } catch (_) {}
   }
   console.log('[cli-launch]', JSON.stringify(diag));
+}
+
+// On Windows, parse the body of an npm-generated `.cmd` shim and verify the
+// path it ultimately invokes. If that target file doesn't exist on disk (a
+// corrupted or stale shim — common when a native install was replaced by an
+// npm install), look up the package's actual JS entry point and return a
+// launch config that bypasses the broken shim entirely.
+//
+// Returns a launch config { installed, label, shellLabel, file, args, ... } on
+// successful bypass, or null if the shim looks fine / we have no fallback.
+function _windowsShimBypass(spec, shimPath) {
+  try {
+    if (process.platform !== 'win32') return null;
+    if (!spec || !spec.packageName) return null;
+    if (!shimPath || typeof shimPath !== 'string') return null;
+    if (!fs.existsSync(shimPath)) return null;
+
+    let body = '';
+    try { body = fs.readFileSync(shimPath, 'utf-8'); } catch (_) { return null; }
+    if (!body) return null;
+
+    // Extract every quoted path inside the shim body that doesn't reference a
+    // variable substitution like `%dp0%`. We resolve relative-to-shim paths
+    // that contain `node_modules\` so we can verify them on disk.
+    const shimDir = path.dirname(shimPath);
+    const referencedTargets = [];
+    const quoted = body.match(/"[^"\r\n]+"/g) || [];
+    for (const raw of quoted) {
+      const inner = raw.slice(1, -1);
+      // node-cmd-shim emits literal `%dp0%` references — normalize them by
+      // resolving against shimDir (which is what `%dp0%` would expand to at
+      // runtime). Collapse any doubled separators that come from a buggy shim.
+      const expanded = inner
+        .replace(/%dp0%[\\/]?/gi, '')
+        .replace(/[\\/]{2,}/g, path.sep);
+      if (!expanded.includes('node_modules')) continue;
+      const abs = path.isAbsolute(expanded) ? expanded : path.join(shimDir, expanded);
+      referencedTargets.push(abs);
+    }
+    if (referencedTargets.length === 0) return null;
+
+    // If at least one referenced target exists, the shim is fine — leave the
+    // normal cmd.exe routing in place.
+    if (referencedTargets.some((t) => fs.existsSync(t))) return null;
+
+    // Shim is broken. Locate the package's real JS entry point and run it
+    // through `node` instead. We look both inside the npm prefix (where this
+    // shim lives) and inside the per-user cliTools prefix.
+    const candidateRoots = [
+      path.dirname(shimPath),
+      cliToolsPrefixDir,
+      path.join(cliToolsPrefixDir, 'node_modules'),
+    ];
+    let pkgRoot = null;
+    for (const root of candidateRoots) {
+      const guess = path.join(root, 'node_modules', spec.packageName);
+      if (fs.existsSync(path.join(guess, 'package.json'))) { pkgRoot = guess; break; }
+    }
+    if (!pkgRoot) return null;
+
+    let entry = null;
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf-8'));
+      const binField = pkg.bin;
+      if (typeof binField === 'string') {
+        entry = path.join(pkgRoot, binField);
+      } else if (binField && typeof binField === 'object') {
+        const rel = binField[spec.command] || binField[pkg.name] || Object.values(binField)[0];
+        if (rel) entry = path.join(pkgRoot, rel);
+      }
+      if (!entry || !fs.existsSync(entry)) {
+        // Fall back to common entry-point filenames.
+        for (const guess of ['cli.js', 'index.js', 'dist/cli.js']) {
+          const candidate = path.join(pkgRoot, guess);
+          if (fs.existsSync(candidate)) { entry = candidate; break; }
+        }
+      }
+    } catch (_) { /* fall through */ }
+    if (!entry || !fs.existsSync(entry)) return null;
+
+    // Resolve `node.exe` from the same prefix the shim lives in, falling back
+    // to the embedded node runtime that we ship with Nebula.
+    const nodeCandidates = [
+      path.join(path.dirname(shimPath), 'node.exe'),
+      path.join(cliToolsPrefixDir, 'node.exe'),
+    ];
+    try {
+      const embeddedNodeRoot = getEmbeddedNodeRoot();
+      if (embeddedNodeRoot) nodeCandidates.push(path.join(embeddedNodeRoot, 'node.exe'));
+    } catch (_) {}
+    const nodeExe = nodeCandidates.find((c) => fs.existsSync(c)) || 'node.exe';
+
+    console.warn(`[cli-launch] Shim "${shimPath}" references missing target(s) — bypassing via "${nodeExe} ${entry}"`);
+    return {
+      installed: true,
+      label: spec.label,
+      shellLabel: 'node',
+      file: nodeExe,
+      args: [entry],
+      bypassedShim: shimPath,
+    };
+  } catch (e) {
+    console.warn('[cli-launch] _windowsShimBypass failed:', e && e.message);
+    return null;
+  }
 }
 
 function getCliLaunchConfig(tool) {
@@ -759,6 +878,15 @@ function getCliLaunchConfig(tool) {
         };
         _logCliConfig(tool, cfg);
         return cfg;
+      }
+      // Some npm versions produce a `.cmd` shim whose body references a path that
+      // no longer exists (e.g. `%dp0%\\node_modules\@anthropic-ai\claude-code\bin\claude.exe`
+      // when only the POSIX `claude` script exists). Detect that and bypass the
+      // shim by spawning `node` directly against the package's JS entry point.
+      const bypass = _windowsShimBypass(spec, commandPath);
+      if (bypass) {
+        _logCliConfig(tool, bypass);
+        return bypass;
       }
       const cfg = {
         installed: true,
@@ -1244,10 +1372,23 @@ function _startClaudeTokenRefreshLoop() {
 // Matches Claude AI and Anthropic auth domains.
 const CLAUDE_AUTH_URL_RE = /https:\/\/(?:claude\.ai|auth\.anthropic\.com|accounts\.anthropic\.com)\/[^\s\r\n"'<>]+/i;
 
+// Claude CLI prints a noisy self-check warning on shutdown when its global
+// config has `installMethod: "native"` but the running binary is the npm
+// install Nebula provides. The warning is harmless but alarming — strip the
+// line (and any ANSI styling around it) from the stream before we relay it.
+const CLAUDE_INSTALL_METHOD_NOISE_RE =
+  /(?:\x1b\[[0-9;]*m)*[^\r\n]*installMethod is native, but [^\r\n]*\r?\n?/g;
+
+function _filterCliNoise(tool, data) {
+  if (tool !== 'claude' || !data) return data;
+  return data.replace(CLAUDE_INSTALL_METHOD_NOISE_RE, '');
+}
+
 // Registers onData / onExit on a PTY process for a given session.
 // Called at spawn time and again after each auto-respawn.
 function attachPtyHandlers(sessionId, ptyProc, tool, env, cachedLaunch) {
-  ptyProc.onData((data) => {
+  ptyProc.onData((rawData) => {
+    const data = _filterCliNoise(tool, rawData);
     const sess = cliSessions.get(sessionId);
     if (sess) {
       sess.scrollback.push(data);
@@ -1257,7 +1398,7 @@ function attachPtyHandlers(sessionId, ptyProc, tool, env, cachedLaunch) {
         const oldest = sess.scrollback.shift();
         sess.scrollbackBytes -= Buffer.byteLength(oldest, 'utf8');
       }
-      if (sess.sender && !sess.sender.isDestroyed()) {
+      if (sess.sender && !sess.sender.isDestroyed() && data) {
         sess.sender.send('cli:data', { sessionId, data });
       }
 
@@ -1345,22 +1486,34 @@ function attachPtyHandlers(sessionId, ptyProc, tool, env, cachedLaunch) {
 
       // Use cached launch config from initial spawn for consistency.
       // This prevents a different path resolution on respawn.
-      const launch = sessNow.cachedLaunch || getCliLaunchConfig(tool);
+      let launch = sessNow.cachedLaunch || getCliLaunchConfig(tool);
       console.log(`[cli-respawn] Using launch config for respawn ${sessNow.respawnCount}:`, JSON.stringify({
         file: launch.file, args: Array.isArray(launch.args) ? launch.args.join('|') : launch.args, fileExists: launch.file ? _exeExists(launch.file) : null
       }));
 
-      // Verify the executable exists before attempting spawn
+      // Verify the executable exists before attempting spawn. If the cached
+      // path has since gone bad (e.g. a corrupted .cmd shim that pointed at a
+      // missing target), invalidate the cache and re-resolve once before
+      // bailing out — that recovery path picks up the shim-bypass logic in
+      // getCliLaunchConfig.
       if (launch.file && !_exeExists(launch.file)) {
-        const errMsg = `\r\n\x1b[31m  [Respawn failed: executable not found: ${launch.file}]\x1b[0m\r\n`;
-        console.error(`[cli-respawn] Executable not found: ${launch.file}`);
-        sessNow.scrollback.push(errMsg);
-        if (sessNow.sender && !sessNow.sender.isDestroyed()) {
-          sessNow.sender.send('cli:data', { sessionId, data: errMsg });
-          sessNow.sender.send('cli:exit', { sessionId, ...exitEvent });
+        console.warn(`[cli-respawn] Cached launch.file "${launch.file}" not on disk — clearing cache and re-resolving.`);
+        try { _commandPathCache.delete(tool); } catch (_) {}
+        const fresh = getCliLaunchConfig(tool);
+        if (fresh && fresh.installed && fresh.file && _exeExists(fresh.file)) {
+          launch = fresh;
+          sessNow.cachedLaunch = Object.freeze({ ...fresh, args: [...(fresh.args || [])] });
+        } else {
+          const errMsg = `\r\n\x1b[31m  [Respawn failed: executable not found: ${launch.file}]\x1b[0m\r\n`;
+          console.error(`[cli-respawn] Executable not found after re-resolve: ${launch.file}`);
+          sessNow.scrollback.push(errMsg);
+          if (sessNow.sender && !sessNow.sender.isDestroyed()) {
+            sessNow.sender.send('cli:data', { sessionId, data: errMsg });
+            sessNow.sender.send('cli:exit', { sessionId, ...exitEvent });
+          }
+          cliSessions.delete(sessionId);
+          return;
         }
-        cliSessions.delete(sessionId);
-        return;
       }
 
       try {
@@ -2614,6 +2767,12 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
     // token as-is or refresh with its own refresh token.
     console.warn('[claude-token] Backend refresh failed but access token is still valid, proceeding.');
   }
+
+  // Each new CLI session starts with a freshly-resolved command path. Without
+  // this, a `where` cache entry seeded by an earlier session (e.g. Codex) can
+  // shadow the path Claude actually needs — leaving the user with a launch
+  // config that points at a now-stale binary.
+  try { _commandPathCache.delete(tool); } catch (_) {}
 
   let launch = getCliLaunchConfig(tool);
 
