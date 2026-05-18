@@ -58,7 +58,6 @@ async function fetchStatusBundle() {
 
 // ─── Git error translator ─────────────────────────────────────────────────────
 function friendlyGitError(output = '') {
-  const o = output.toLowerCase();
   if (/nothing to commit|nothing added to commit|no changes added/i.test(output))
     return 'Nothing to commit. Stage your changes first.';
   if (/please tell me who you are|user\.email|user\.name/i.test(output))
