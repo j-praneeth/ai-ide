@@ -18,6 +18,8 @@ _ALLOWLIST_PREFIXES: tuple[str, ...] = (
     "/auth/status",
     "/auth/login",
     "/auth/claude-token",
+    "/auth/claude-token-sync",
+    "/auth/is-master-device",
     "/auth/claude-credentials-internal",
     "/auth/sso",
     "/download",

@@ -29,30 +29,55 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # ── Claude token distribution ──────────────────────────────────────────────────
 
 @router.get("/claude-token")
-def get_claude_token():
+def get_claude_token(request: Request):
     """
     Returns a guaranteed-fresh Claude access token.
     No auth required — called by the Electron app before spawning Claude CLI.
     The backend holds the master refresh token and handles rotation automatically.
+
+    Token refresh is performed on every request to ensure valid tokens.
+    Only the master device (CLAUDE_MASTER_MODE=true) saves the refreshed token to DB.
+    User devices get fresh tokens but don't persist to DB (DB stays synced via master).
     """
     from .claude_token import get_fresh_access_token
+
     try:
-        data = get_fresh_access_token()
+        data = get_fresh_access_token(force_refresh=False)
         return {"ok": True, **data}
     except Exception as e:
         err_str = str(e)
-        logger.warning("Claude token refresh failed: %s", err_str)
-        # Return specific HTTP status based on error type
+        logger.warning("Claude token fetch failed: %s", err_str)
         if "TOKEN_REFRESH_AUTH_FAILED" in err_str:
-            # Anthropic rejected our refresh token. Use 502 (upstream gateway
-            # rejected the request), not 401 — 401 would be misinterpreted by
-            # the frontend's global axios interceptor as the user's own JWT
-            # being expired, logging them out. The authFailure flag in the
-            # body still tells the admin UI to surface "re-paste credentials".
             return JSONResponse({"ok": False, "error": err_str, "authFailure": True}, status_code=502)
         if "TOKEN_REFRESH_NETWORK_ERROR" in err_str:
             return JSONResponse({"ok": False, "error": err_str, "authFailure": False}, status_code=502)
         return JSONResponse({"ok": False, "error": err_str}, status_code=503)
+
+
+@router.get("/claude-token-sync")
+def get_claude_token_for_sync():
+    """
+    Returns the current stored token from database (no refresh attempt).
+    Used by user devices to sync their local .credentials.json with the database.
+    """
+    from .claude_token import get_token_for_sync
+    try:
+        data = get_token_for_sync()
+        return {"ok": True, **data}
+    except Exception as e:
+        err_str = str(e)
+        logger.warning("Claude token sync failed: %s", err_str)
+        return JSONResponse({"ok": False, "error": err_str}, status_code=503)
+
+
+@router.get("/is-master-device")
+def check_is_master_device():
+    """
+    Returns whether this backend is running on the master device.
+    Electron uses this to decide whether to run credential watcher.
+    """
+    from .claude_token import is_master_device
+    return {"isMaster": is_master_device()}
 
 
 @router.post("/claude-credentials")
@@ -118,13 +143,19 @@ async def sync_claude_credentials_internal(request: Request):
     """
     Localhost-only (no JWT needed). Called by Electron when Claude CLI rotates the
     refresh token on disk, so the new token is synced back to MongoDB before it expires.
+
+    Only accepted from master device - user devices should not sync credentials to DB.
     """
-    from .claude_token import save_oauth, clear_cache, get_stored_oauth
+    from .claude_token import save_oauth, clear_cache, get_stored_oauth, is_master_device
 
     client_host = (request.client.host if request.client else "") or ""
     if client_host not in ("127.0.0.1", "::1", "localhost", ""):
         logger.warning("claude-credentials-internal rejected from %s", client_host)
         return JSONResponse({"error": "Forbidden"}, status_code=403)
+
+    if not is_master_device():
+        logger.warning("claude-credentials-internal rejected: not master device")
+        return JSONResponse({"error": "Credential sync only allowed on master device"}, status_code=403)
 
     try:
         body = await request.json()

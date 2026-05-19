@@ -34,6 +34,8 @@ let cliBundleReadyPromise = null;
 // credential watcher can distinguish our own writes from CLI-rotation events.
 let _lastBackendRefreshToken = null;
 let _credWatcher = null;
+// Flag to track if this device is the master (only master runs credential watcher)
+let _isMasterDevice = false;
 
 const SCROLLBACK_MAX_BYTES = 512 * 1024; // 512 KB per session
 
@@ -1131,6 +1133,45 @@ function _getNebulaBackendUrl() {
     return (process.env.NEBULA_AUTH_URL || 'https://nebula-ide-server.up.railway.app').replace(/\/$/, '');
   }
   return `http://127.0.0.1:${backendPort}`;
+}
+
+// Check with backend whether this device is the master (only master runs credential watcher)
+async function _checkIfMasterDevice() {
+  try {
+    const base = _getNebulaBackendUrl();
+    const urlStr = `${base}/auth/is-master-device`;
+    const isHttps = urlStr.startsWith('https://');
+    const mod = isHttps ? https : http;
+
+    return new Promise((resolve) => {
+      const req = mod.get(urlStr, { timeout: 10000 }, (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            _isMasterDevice = data.isMaster === true;
+            console.log(`[claude-token] Master device check: ${_isMasterDevice ? 'MASTER' : 'USER'}`);
+            resolve(_isMasterDevice);
+          } catch (e) {
+            console.warn('[claude-token] Failed to parse master device check response');
+            resolve(false);
+          }
+        });
+      });
+      req.on('error', (e) => {
+        console.warn('[claude-token] Master device check failed:', e.message);
+        resolve(false);
+      });
+      req.setTimeout(10000, () => {
+        req.destroy();
+        resolve(false);
+      });
+    });
+  } catch (e) {
+    console.warn('[claude-token] Master device check error:', e.message);
+    return false;
+  }
 }
 
 function _fetchClaudeTokenFromBackend() {
@@ -3161,7 +3202,13 @@ app.whenReady().then(async () => {
         // Watch the on-disk credentials file so that if the developer runs
         // Claude CLI in a separate terminal and Anthropic rotates the refresh
         // token, we automatically sync the new token to MongoDB.
-        _startCredentialWatcher();
+        // ONLY runs on MASTER device - user devices don't need this.
+        if (_isMasterDevice) {
+          console.log('[claude-token] Master device detected, starting credential watcher...');
+          _startCredentialWatcher();
+        } else {
+          console.log('[claude-token] User device detected, skipping credential watcher (not needed).');
+        }
 
         return res;
       }).catch((err) => {
@@ -3193,6 +3240,9 @@ app.whenReady().then(async () => {
     // Start the backend in parallel — the frontend retries requests until it's up
     startBackend(backendPort, currentProjectRoot).then(async () => {
       console.log('Backend started successfully');
+
+      // Check if this is the master device (only master runs credential watcher)
+      await _checkIfMasterDevice();
 
       // Notify renderer that the backend is ready (triggers tree/workspace refresh)
       try {

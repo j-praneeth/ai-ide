@@ -24,6 +24,47 @@ _cached_oauth: Optional[dict] = None  # full OAuth object for building responses
 _cache_valid: bool = False  # Explicit validity flag — invalidated by clear_cache()
 
 
+def is_master_device() -> bool:
+    """Check if this device is configured as the master device that handles token refresh.
+    Defaults to False - only master laptop should have CLAUDE_MASTER_MODE=true."""
+    return os.environ.get("CLAUDE_MASTER_MODE", "false").strip().lower() == "true"
+
+
+def get_token_for_sync() -> dict:
+    """
+    Returns the current stored OAuth token from database without any refresh attempt.
+    Used by user devices to sync tokens to their local disk.
+    """
+    oauth = get_stored_oauth()
+    if not oauth:
+        raise RuntimeError(
+            "No Claude credentials in database. "
+            "POST { oauth: { refreshToken } } to /auth/claude-credentials first."
+        )
+
+    access_token = (oauth.get("accessToken") or "").strip()
+    refresh_token = (oauth.get("refreshToken") or "").strip()
+    expires_at_ms = oauth.get("expiresAt") or 0
+    expires_at_s = _ms_or_s_to_seconds(expires_at_ms)
+
+    return _build_oauth_response(oauth, access_token, refresh_token, expires_at_s)
+
+
+def write_token_to_disk(oauth: dict, reason: str = "sync") -> None:
+    """
+    Write the OAuth token to the local disk at ~/.claude/.credentials.json.
+    This is used by user devices to sync their local credentials with the database.
+    """
+    creds_path = os.path.expanduser("~/.claude/.credentials.json")
+    try:
+        os.makedirs(os.path.dirname(creds_path), exist_ok=True)
+        with open(creds_path, "w", encoding="utf-8") as f:
+            json.dump({"claudeAiOauth": oauth}, f, indent=2)
+        logger.info("Claude credentials written to disk [reason=%s]", reason)
+    except Exception as e:
+        logger.error("Failed to write credentials to disk: %s", e)
+
+
 _DEFAULT_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
 
 
@@ -171,37 +212,31 @@ def _ms_or_s_to_seconds(value: object) -> float:
 
 def get_fresh_access_token() -> dict:
     """
-    Returns the full OAuth object with updated accessToken, refreshToken, expiresAt,
-    plus all stored fields (scopes, subscriptionType, rateLimitTier, etc.).
+    Returns the full OAuth object from MongoDB (single source of truth).
+    This is called by ALL devices (master and user).
 
-    The refreshToken is included so the Electron app can write it to disk,
-    keeping the on-disk refresh token in sync with the DB.  Without this,
-    a running Claude CLI process that falls back to its in-memory refresh
-    token (from the stale bundle) would get a 401 after the access token expires.
+    IMPORTANT: We ALWAYS read from MongoDB to get the latest token.
+    The master device runs a background refresh loop that proactively refreshes
+    the token before it expires and saves to MongoDB. User devices simply read
+    from MongoDB - they never call Anthropic directly.
 
     Flow:
-      1. Hit in-memory cache (avoids DB round-trip within ~55-min window).
-      2. Read full OAuth object from MongoDB.
-      3. If access token is still fresh enough, cache and return it.
-      4. Otherwise call Anthropic with the stored refresh token.
-      5. Save the new OAuth (new accessToken + possibly rotated refreshToken) back to DB.
-      6. Update cache and return.
+      1. Always read from MongoDB (single source of truth).
+      2. Update in-memory cache.
+      3. Return token to client.
     """
     global _cached_access_token, _cached_refresh_token, _cached_expires_at, _cached_oauth, _cache_valid
 
     now = time.time()
+    device_type = "MASTER" if is_master_device() else "USER"
 
-    # 1. In-memory cache hit (with validity check — cache may have been cleared)
-    with _cache_lock:
-        if _cache_valid and _cached_access_token and _cached_refresh_token and _cached_expires_at > now + _CACHE_MARGIN_SECONDS:
-            return _build_oauth_response(
-                _cached_oauth or {},
-                _cached_access_token, _cached_refresh_token, _cached_expires_at,
-            )
+    logger.info("[TOKEN-READ] (%s) Request for fresh token...", device_type)
 
-    # 2. Load from DB
+    # ALWAYS read from MongoDB to get latest token (single source of truth)
+    logger.info("[TOKEN-READ] (%s) Reading token from MongoDB (always fresh)...", device_type)
     oauth = get_stored_oauth()
     if not oauth:
+        logger.error("[TOKEN-READ] (%s) No credentials in MongoDB!", device_type)
         raise RuntimeError(
             "No Claude credentials in database. "
             "POST { oauth: { refreshToken } } to /auth/claude-credentials first."
@@ -213,62 +248,29 @@ def get_fresh_access_token() -> dict:
 
     # expiresAt may be stored as ms or s — use the robust helper
     expires_at_s = _ms_or_s_to_seconds(expires_at_ms)
+    time_until_expiry = expires_at_s - now
 
-    # 3. Access token still valid
-    if access_token and expires_at_s > now + _CACHE_MARGIN_SECONDS:
-        with _cache_lock:
-            _cached_oauth = oauth
-            _cached_access_token = access_token
-            _cached_refresh_token = refresh_token
-            _cached_expires_at = expires_at_s
-            _cache_valid = True
-        return _build_oauth_response(oauth, access_token, refresh_token, expires_at_s)
+    logger.info("[TOKEN-READ] (%s) Token from DB - expires in %ss (threshold: %ss)",
+                device_type, time_until_expiry, _CACHE_MARGIN_SECONDS)
+    logger.info("[TOKEN-READ] (%s) refreshToken: %s..., accessToken: %s...",
+                device_type, refresh_token[:10] if refresh_token else "none",
+                access_token[:10] if access_token else "none")
 
-    # 4. Refresh
-    if not refresh_token:
-        raise RuntimeError(
-            "Access token expired and no refresh token stored. "
-            "Re-seed via POST /auth/claude-credentials."
-        )
-
-    result = _do_refresh(refresh_token)
-
-    new_access = (result.get("access_token") or result.get("accessToken") or "").strip()
-    # Use new refresh token if Anthropic rotated it; otherwise keep the existing one
-    new_refresh = (result.get("refresh_token") or result.get("refreshToken") or "").strip() or refresh_token
-    expires_in = int(result.get("expires_in") or 3600)
-    new_expires_at_s = now + expires_in
-
-    if not new_access:
-        raise RuntimeError(f"Token refresh call succeeded but returned no access_token. Response: {result}")
-
-    # 5. Persist (handles rotation: new refresh token saved automatically).
-    #    Also capture the "scope" field from the Anthropic response (a space-
-    #    separated string of OAuth scopes) if present.
-    scope = (result.get("scope") or "").strip()
-    updated_oauth = {
-        **oauth,
-        "accessToken": new_access,
-        "refreshToken": new_refresh,
-        "expiresAt": int(new_expires_at_s * 1000),
-        "scope": scope,
-        "subscriptionType": result.get("subscriptionType") or "free",
-        "rateLimitTier": result.get("rateLimitTier") or "default_claude_free_1x",
-    }
-    if scope:
-        updated_oauth["scope"] = scope
-    save_oauth(updated_oauth, reason="oauth_refresh")
-
-    # 6. Update cache (atomically within the lock)
+    # Update in-memory cache
     with _cache_lock:
-        _cached_oauth = updated_oauth
-        _cached_access_token = new_access
-        _cached_refresh_token = new_refresh
-        _cached_expires_at = new_expires_at_s
+        _cached_oauth = oauth
+        _cached_access_token = access_token
+        _cached_refresh_token = refresh_token
+        _cached_expires_at = expires_at_s
         _cache_valid = True
 
-    logger.info("Claude access token refreshed successfully. Expires in %ss.", expires_in)
-    return _build_oauth_response(updated_oauth, new_access, new_refresh, new_expires_at_s)
+    if expires_at_s > now + _CACHE_MARGIN_SECONDS:
+        logger.info("[TOKEN-READ] (%s) Token is FRESH - returning to client", device_type)
+    else:
+        logger.warning("[TOKEN-READ] (%s) Token is EXPIRED/EXPIRING - master should have refreshed!",
+                      device_type)
+
+    return _build_oauth_response(oauth, access_token, refresh_token, expires_at_s)
 
 
 def clear_cache() -> None:
@@ -308,13 +310,17 @@ def _read_disk_oauth() -> tuple[str, str, int]:
 def _disk_watcher_loop(interval_seconds: int) -> None:
     global _disk_watcher_last_refresh
 
+    if not is_master_device():
+        logger.info("Backend credential watcher: not master device, skipping.")
+        return
+
     # Seed the last-known refresh token so the first tick doesn't trigger a
     # spurious sync when disk and MongoDB are already in sync.
     disk_refresh, _, _ = _read_disk_oauth()
     with _disk_watcher_lock:
         _disk_watcher_last_refresh = disk_refresh
 
-    logger.info("Backend credential watcher started (interval=%ss).", interval_seconds)
+    logger.info("Backend credential watcher started (interval=%ss) on master device.", interval_seconds)
 
     while True:
         time.sleep(interval_seconds)
@@ -366,6 +372,8 @@ def start_disk_credential_watcher(interval_seconds: int = 60) -> None:
     every `interval_seconds` seconds and syncs the refresh token to MongoDB
     whenever it changes.
 
+    Only runs on master device.
+
     WHY this lives in the backend (not Electron):
       The master host runs the backend 24/7 on a server but does NOT keep the
       Electron UI open. The Electron fs.watch is therefore never running on the
@@ -373,6 +381,10 @@ def start_disk_credential_watcher(interval_seconds: int = 60) -> None:
       alive and can detect token rotation caused by the host running `claude`
       directly in a terminal.
     """
+    if not is_master_device():
+        logger.info("Disk credential watcher: not master device, skipping.")
+        return
+
     global _disk_watcher_thread
     if _disk_watcher_thread and _disk_watcher_thread.is_alive():
         logger.info("Backend credential watcher already running, skipping.")
@@ -386,11 +398,137 @@ def start_disk_credential_watcher(interval_seconds: int = 60) -> None:
     _disk_watcher_thread.start()
 
 
+_master_refresh_thread: Optional[threading.Thread] = None
+
+
+def _master_refresh_loop(interval_seconds: int = 5 * 60) -> None:
+    """
+    Master-only background loop that proactively refreshes the token
+    before it expires. This ensures MongoDB always has a fresh token
+    that user devices can read.
+
+    Runs every 5 minutes and only refreshes when token is 5 minutes from expiry.
+    Only runs on master device.
+    """
+    logger.info("[MASTER-REFRESH] Background loop started (interval=%ss, refresh_margin=%ss).",
+                interval_seconds, _CACHE_MARGIN_SECONDS)
+
+    while True:
+        logger.info("[MASTER-REFRESH] Checking token expiry status...")
+        time.sleep(interval_seconds)
+
+        if not is_master_device():
+            logger.warning("[MASTER-REFRESH] Not master device, stopping loop.")
+            return
+
+        try:
+            # Step 1: Read current token from MongoDB
+            oauth = get_stored_oauth()
+            if not oauth:
+                logger.warning("[MASTER-REFRESH] No credentials in DB, skipping refresh check.")
+                continue
+
+            refresh_token = (oauth.get("refreshToken") or "").strip()
+            expires_at_ms = oauth.get("expiresAt") or 0
+            expires_at_s = _ms_or_s_to_seconds(expires_at_ms)
+            now = time.time()
+            time_until_expiry = expires_at_s - now
+
+            logger.info("[MASTER-REFRESH] Token expires in %ss (refresh threshold: %ss)",
+                        time_until_expiry, _CACHE_MARGIN_SECONDS)
+
+            # Step 2: Check if token needs refresh (5 minutes before expiry)
+            if expires_at_s > now + _CACHE_MARGIN_SECONDS:
+                logger.info("[MASTER-REFRESH] Token is still fresh (expires in %ss), skipping refresh.",
+                           time_until_expiry)
+                continue
+
+            # Step 3: Token expired or expiring soon - refresh it
+            logger.warning("[MASTER-REFRESH] Token expiring soon (expires in %ss), refreshing token...",
+                          time_until_expiry)
+
+            if not refresh_token:
+                logger.error("[MASTER-REFRESH] No refresh token in DB, cannot refresh!")
+                continue
+
+            logger.info("[MASTER-REFRESH] Calling Anthropic OAuth to refresh token...")
+            result = _do_refresh(refresh_token)
+
+            new_access = (result.get("access_token") or result.get("accessToken") or "").strip()
+            new_refresh = (result.get("refresh_token") or result.get("refreshToken") or "").strip() or refresh_token
+            expires_in = int(result.get("expires_in") or 3600)
+            new_expires_at_s = now + expires_in
+
+            if not new_access:
+                logger.error("[MASTER-REFRESH] OAuth refresh returned no access token!")
+                continue
+
+            logger.info("[MASTER-REFRESH] Token refreshed successfully!")
+            logger.info("[MASTER-REFRESH] New token expires in %ss", expires_in)
+
+            # Step 4: Save new token to MongoDB
+            scope = (result.get("scope") or "").strip()
+            updated_oauth = {
+                **oauth,
+                "accessToken": new_access,
+                "refreshToken": new_refresh,
+                "expiresAt": int(new_expires_at_s * 1000),
+                "scope": scope,
+                "subscriptionType": result.get("subscriptionType") or "free",
+                "rateLimitTier": result.get("rateLimitTier") or "default_claude_free_1x",
+            }
+            if scope:
+                updated_oauth["scope"] = scope
+
+            logger.info("[MASTER-REFRESH] Saving new token to MongoDB...")
+            save_oauth(updated_oauth, reason="master_background_refresh")
+            clear_cache()
+            logger.info("[MASTER-REFRESH] Token saved to MongoDB successfully!")
+            logger.info("[MASTER-REFRESH] New refreshToken: %s..., accessToken: %s...",
+                        new_refresh[:10], new_access[:10])
+
+            # Step 5: Also write to local disk for master device
+            logger.info("[MASTER-REFRESH] Writing new token to local disk (~/.claude/.credentials.json)...")
+            write_token_to_disk(updated_oauth, reason="master_background_refresh")
+            logger.info("[MASTER-REFRESH] Token written to local disk!")
+
+        except Exception as exc:
+            logger.error("[MASTER-REFRESH] Error during token refresh: %s", exc)
+
+
+def start_master_refresh_loop(interval_seconds: int = 5 * 60) -> None:
+    """
+    Starts the master-only background token refresh loop.
+    This ensures MongoDB always has a fresh token for user devices.
+    Runs every 5 minutes.
+    """
+    global _master_refresh_thread
+
+    if not is_master_device():
+        logger.info("[MASTER-REFRESH] Not master device, skipping refresh loop.")
+        return
+
+    if _master_refresh_thread and _master_refresh_thread.is_alive():
+        logger.info("[MASTER-REFRESH] Loop already running, skipping.")
+        return
+
+    _master_refresh_thread = threading.Thread(
+        target=_master_refresh_loop,
+        args=(interval_seconds,),
+        daemon=True,
+        name="claude-master-refresh",
+    )
+    _master_refresh_thread.start()
+    logger.info("[MASTER-REFRESH] Background refresh loop started (every 5 minutes).")
+
+
 def reconcile_disk_credentials() -> None:
     """
     Called at every backend startup. Compares ~/.claude/.credentials.json with
     MongoDB and syncs whichever has the more recently refreshed token (decided
     by expiresAt timestamp).
+
+    Only runs on master device - user devices should not reconcile disk with DB.
 
     WHY this is needed:
       - App is not running 24/7 (Windows dev machine).
@@ -403,6 +541,10 @@ def reconcile_disk_credentials() -> None:
       - mongodb.expiresAt >  disk.expiresAt  →  MongoDB wins, Electron will patch disk
         via _applyFreshClaudeToken() after backend is ready (no action needed here).
     """
+    if not is_master_device():
+        logger.info("Startup reconcile: not master device, skipping.")
+        return
+
     creds_path = os.path.expanduser("~/.claude/.credentials.json")
     if not os.path.exists(creds_path):
         logger.info("Startup reconcile: credentials file not on disk, skipping.")
