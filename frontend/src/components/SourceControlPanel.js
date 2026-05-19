@@ -4,7 +4,7 @@ import {
   VscSourceControl, VscChevronDown, VscChevronRight, VscEllipsis,
   VscGitMerge, VscClose, VscDiscard, VscArrowDown, VscArrowUp,
   VscCloud, VscTarget, VscSparkle, VscTag, VscCircleSlash,
-  VscRepoClone, VscTrash, VscEdit,
+  VscRepoClone, VscTrash, VscEdit, VscCopy,
 } from 'react-icons/vsc';
 import {
   SiJavascript, SiTypescript, SiReact, SiPython, SiHtml5,
@@ -445,6 +445,11 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   const [selectedCommit, setSelectedCommit] = useState(null);
   const [commitDetails, setCommitDetails] = useState(null);
   const [viewingDiff, setViewingDiff] = useState(null);
+  // ── Hash-copy feedback. Stores the full hash that was just copied so the
+  //    matching chip can briefly render "Copied!". A single shared piece of
+  //    state (rather than per-chip) keeps the timer logic outside the row
+  //    component, where it would otherwise cancel itself across re-renders.
+  const [copiedHash, setCopiedHash] = useState(null);
   const [collapsed, setCollapsed]   = useState({ staged: false, changes: false, graph: false, stash: true });
   const [panelH, setPanelH]         = useState({ changes: 300 });
   const isResizing = useRef(null);
@@ -1121,15 +1126,89 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
     } catch (_) {}
   };
 
-  const startResize = (e, panel) => {
+  // ── Copy commit hash with transient feedback ────────────────────────────────
+  // Reusable across the graph hash chip and the commit-details header chip.
+  // We deliberately copy the FULL 40-char hash (not the 7-char abbrev) so the
+  // user can paste it into a CLI or another tool without ambiguity.
+  const copyHashTimer = useRef(null);
+  const handleCopyHash = useCallback((fullHash) => {
+    if (!fullHash) return;
+    try { navigator.clipboard && navigator.clipboard.writeText(fullHash); } catch (_) {}
+    setCopiedHash(fullHash);
+    if (copyHashTimer.current) clearTimeout(copyHashTimer.current);
+    copyHashTimer.current = setTimeout(() => setCopiedHash(null), 1500);
+  }, []);
+
+  // ── SCM panel resize ──────────────────────────────────────────────────────
+  //
+  // Why ref-based imperative resize instead of `style={{ height }}` + setState?
+  //
+  // The Changes section must NOT have `style={{ height: panelH.changes }}` in
+  // JSX. If it does, every React re-render between mousedown and mouseup —
+  // and there are many: status polls, file-watcher events, parent re-renders
+  // from sibling state — will reset the height back to the stale
+  // `panelH.changes` value, undoing the drag's in-progress DOM write. That
+  // was the bug we were chasing: the math was right, the DOM write fired,
+  // but a re-render half a frame later wiped it out.
+  //
+  // The robust pattern instead:
+  //   * Hold the element in `panelMainRef`.
+  //   * On mount / on external state change, a useEffect syncs
+  //     `panelH.changes` → `el.style.height` so the user's persisted
+  //     preference survives reloads.
+  //   * During drag, write directly to `el.style.height` only — no setState,
+  //     no React render path involvement. Final value is committed to state
+  //     on mouseup so it persists across remounts.
+  const panelMainRef = useRef(null);
+
+  // Sync state → DOM. Runs on mount and whenever panelH.changes changes
+  // from a non-drag source. During an active drag we don't change state, so
+  // this effect doesn't fire — the DOM is purely under startResize's control.
+  useEffect(() => {
+    if (panelMainRef.current) {
+      panelMainRef.current.style.height = panelH.changes + 'px';
+    }
+  }, [panelH.changes]);
+
+  const startResize = useCallback((e) => {
     e.preventDefault();
-    isResizing.current = { panel, startY: e.clientY, startH: panelH[panel] };
-    const move = ev => { if (!isResizing.current) return; setPanelH(p => ({ ...p, [isResizing.current.panel]: Math.max(80, isResizing.current.startH + (ev.clientY - isResizing.current.startY)) })); };
-    const up   = () => { isResizing.current = null; document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.cursor = ''; };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
+    const startY   = e.clientY;
+    const handleEl = e.currentTarget;
+    const el       = panelMainRef.current;
+    if (!el) return;
+    const startH   = el.getBoundingClientRect().height;
+    const bodyEl   = handleEl?.closest?.('.scm-panel-body');
+    const totalH   = bodyEl ? bodyEl.getBoundingClientRect().height : 800;
+    const maxH     = Math.max(120, totalH - 120);
+
+    let lastH = startH;
+    const handleMouseMove = (ev) => {
+      const delta = ev.clientY - startY;
+      const next  = Math.max(80, Math.min(maxH, startH + delta));
+      if (next === lastH) return;
+      lastH = next;
+      el.style.height = next + 'px';
+    };
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup',   handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      handleEl?.classList?.remove('resizing');
+      if (lastH !== startH) {
+        // Commit final height to state so it survives remounts (e.g. when
+        // the user switches sidebar panels and comes back). The sync-effect
+        // above re-applies it imperatively after the next render.
+        setPanelH((p) => (p.changes === lastH ? p : { ...p, changes: lastH }));
+      }
+    };
+
     document.body.style.cursor = 'ns-resize';
-  };
+    document.body.style.userSelect = 'none';
+    handleEl?.classList?.add('resizing');
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup',   handleMouseUp);
+  }, []);
 
   const toggle = k => setCollapsed(p => ({ ...p, [k]: !p[k] }));
 
@@ -1316,7 +1395,15 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
           )}
 
           {/* ── Changes area ─────────────────────────────────────────────────── */}
-          <div className="scm-panel-main" style={{ height: panelH.changes }}>
+          {/*
+            Height is managed imperatively via panelMainRef + a useEffect that
+            syncs panelH.changes → DOM. We intentionally do NOT set
+            `style={{ height }}` here because React re-rendering during a
+            drag (status polls, file-watcher events, etc.) would overwrite
+            the in-progress drag's DOM height with the stale state value.
+            See the comment on startResize for the full reasoning.
+          */}
+          <div className="scm-panel-main" ref={panelMainRef}>
 
             {/* Commit input */}
             <div className="scm-commit-section">
@@ -1463,7 +1550,13 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
             )}
           </div>
 
-          <div className="scm-resize-handle" onMouseDown={e => startResize(e, 'changes')} />
+          <div
+            className="scm-resize-handle"
+            role="separator"
+            aria-orientation="horizontal"
+            title="Drag to resize"
+            onMouseDown={startResize}
+          />
 
           {/* ── Stashes ──────────────────────────────────────────────────────
               Collapsed by default; auto-shows a count badge. Each row reveals
@@ -1567,7 +1660,11 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
                                 <div className="scm-graph-row-bottom">
                                   <span className="scm-graph-author">{entry.author}</span>
                                   <span className="scm-graph-date">{entry.date}</span>
-                                  <span className="scm-graph-hash">{entry.hash.slice(0,7)}</span>
+                                  <CommitHashChip
+                                    fullHash={entry.hash}
+                                    copied={copiedHash === entry.hash}
+                                    onCopy={(e) => { e.stopPropagation(); handleCopyHash(entry.hash); }}
+                                  />
                                 </div>
                               </div>
                             </div>
@@ -1575,7 +1672,12 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
                             {isSelected && commitDetails && (
                               <div className="scm-commit-details">
                                 <div className="scm-commit-details-header">
-                                  <code className="scm-commit-details-hash">{commitDetails.hash?.slice(0,7)}</code>
+                                  <CommitHashChip
+                                    fullHash={commitDetails.hash}
+                                    copied={copiedHash === commitDetails.hash}
+                                    onCopy={(e) => { e.stopPropagation(); handleCopyHash(commitDetails.hash); }}
+                                    asCode
+                                  />
                                   <strong className="scm-commit-details-author">{commitDetails.author}</strong>
                                   <span className="scm-commit-details-date">{commitDetails.date}</span>
                                 </div>
@@ -1585,8 +1687,24 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
                                   {commitDetails.files?.map((f, fi) => {
                                     const [FIcon, fColor] = fileIcon(f.path.split('/').pop());
                                     const fsc = statusCfg(f.status[0]);
+                                    // Click → open a Monaco diff tab in the main editor area
+                                    // comparing `<hash>^` (parent) vs `<hash>`. That's the canonical
+                                    // "what did this commit do to this file" view. Falls back to
+                                    // a no-op if the host didn't supply an `onOpenFile` opener.
+                                    const openInEditor = () => {
+                                      if (typeof onOpenFile !== 'function') return;
+                                      onOpenFile(buildDiffTabKey(f.path, `COMMIT:${commitDetails.hash}`));
+                                    };
                                     return (
-                                      <div key={fi} className="scm-commit-details-file">
+                                      <div
+                                        key={fi}
+                                        className="scm-commit-details-file"
+                                        onClick={openInEditor}
+                                        style={{ cursor: typeof onOpenFile === 'function' ? 'pointer' : 'default' }}
+                                        title={typeof onOpenFile === 'function'
+                                          ? `Open diff in editor — ${f.path}`
+                                          : f.path}
+                                      >
                                         <FIcon size={11} style={{ color: fColor, flexShrink: 0 }} />
                                         <span className="scm-file-path">{f.path}</span>
                                         <span className="scm-status-letter" style={{ color: fsc.color, marginLeft: 'auto' }}>{fsc.label}</span>
@@ -2264,6 +2382,42 @@ function TagManager({ tags, onCreate, onDelete, onPush, onPushAll, onRefresh }) 
     </div>
   );
 }
+
+// ─── Commit hash chip ────────────────────────────────────────────────────────
+// Click-to-copy with transient "Copied!" feedback. Used in both the graph row
+// (compact `<span>` form) and the commit-details header (monospace `<code>`
+// form). Keyboard-accessible via the `<button>` semantics underneath.
+function CommitHashChip({ fullHash, copied, onCopy, asCode }) {
+  const short = (fullHash || '').slice(0, 7);
+  const monoStyle = { fontFamily: 'var(--font-mono, monospace)' };
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      title={copied ? 'Copied!' : `Copy commit hash · ${fullHash || ''}`}
+      className={asCode ? 'scm-commit-details-hash' : 'scm-graph-hash'}
+      style={{
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 3,
+        background: 'transparent',
+        border: 'none',
+        padding: 0,
+        font: 'inherit',
+        color: 'inherit',
+      }}
+    >
+      {asCode
+        ? <code style={monoStyle}>{short}</code>
+        : <span style={monoStyle}>{short}</span>}
+      {copied
+        ? <VscCheck size={11} style={{ color: '#73c991' }} />
+        : <VscCopy  size={11} style={{ opacity: 0.55 }} />}
+    </button>
+  );
+}
+
 
 function TagRow({ tag, onDelete, onPush }) {
   const [hover, setHover] = useState(false);

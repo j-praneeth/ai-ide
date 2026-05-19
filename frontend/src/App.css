@@ -811,6 +811,31 @@
   opacity: 1;
 }
 
+/* Resize handle between the Changes area and the Graph area. Visually
+   identical to .panel-resizer (the terminal splitter) — a 3px transparent
+   strip that highlights on hover/active so the IDE stays consistent. */
+.scm-resize-handle {
+  height: 3px;
+  flex: 0 0 3px;
+  cursor: ns-resize;
+  background: transparent;
+  position: relative;
+  user-select: none;
+  z-index: 10;
+  transition: background var(--duration-fast, 120ms);
+}
+.scm-resize-handle:hover,
+.scm-resize-handle.resizing {
+  background: var(--border, #3b3b3b);
+}
+
+/* The Changes section explicitly sets its height inline. Add min-height: 0
+   so the flex container doesn't fight the explicit height (default
+   min-height: auto blocks shrinkage below content size). */
+.scm-panel-main {
+  min-height: 0;
+}
+
 /* Graph section at bottom - fills remaining space */
 .scm-graph-section-wrap {
   flex: 1;
@@ -3147,6 +3172,15 @@
   color: var(--accent);
   font-weight: 500;
   cursor: default;
+}
+
+/* When a branch switch is in progress, grey the rows out and block clicks.
+   The row used to be a <button disabled> — it's now a <div role="button">
+   because real buttons can't legally nest the merge/rebase/delete action
+   buttons inside. We mirror the disabled UX via this class instead. */
+.branch-picker-item.is-disabled {
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 .branch-picker-item-name {

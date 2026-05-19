@@ -41,15 +41,26 @@ function describeTab(file) {
   if (isDiffTabKey(file)) {
     const parsed = parseDiffTabKey(file);
     const name = parsed ? parsed.path.split(/[\\/]/).filter(Boolean).pop() : 'Diff';
-    const stageSuffix = parsed && parsed.against === 'STAGE' ? ' (Index)' : ' (Working Tree)';
+    // The DiffTab now supports three comparison modes — derive the tab suffix
+    // from `against` so the tab strip surfaces what the user is looking at.
+    //   HEAD          → Working Tree
+    //   STAGE         → Index
+    //   COMMIT:<hash> → first 7 chars of the hash (matches git log conventions)
+    let suffix = ' (Working Tree)';
+    if (parsed) {
+      if (parsed.against === 'STAGE')                  suffix = ' (Index)';
+      else if (parsed.against === 'HEAD')              suffix = ' (Working Tree)';
+      else if (parsed.against.startsWith('COMMIT:'))   suffix = ` (${parsed.against.slice(7, 14)})`;
+      else                                             suffix = ` (${parsed.against})`;
+    }
     return {
       icon: (
         <span className="tab-file-icon" style={{ color: '#e5a000', display: 'flex', alignItems: 'center' }}>
           <VscGitCompare size={14} />
         </span>
       ),
-      label: `${name}${stageSuffix}`,
-      title: parsed ? `${parsed.path} — ${stageSuffix.trim()}` : file,
+      label: `${name}${suffix}`,
+      title: parsed ? `${parsed.path} — ${suffix.trim()}` : file,
     };
   }
   const fileName = file.split('/').pop();

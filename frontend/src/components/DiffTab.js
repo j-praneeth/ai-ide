@@ -12,17 +12,29 @@ import { API_URL as API } from '../config';
 //
 //     __nebula_diff__::<against>::<encoded path>
 //
-// against:  HEAD     — working tree vs HEAD     (unstaged change)
-//           STAGE    — staged vs HEAD           (staged change)
+// against:  HEAD            — working tree vs HEAD     (unstaged change)
+//           STAGE           — staged vs HEAD           (staged change)
+//           COMMIT:<hash>   — <hash>^ vs <hash>        (single commit's diff)
 //
 // All helpers below treat this scheme as opaque; nothing outside this file
-// should hand-construct the strings.
+// should hand-construct the strings. The COMMIT: prefix is NOT uppercased so
+// the hex hash survives the round-trip intact (git accepts uppercase hashes
+// too, but tooling everywhere else expects lowercase, so keep it lowercase).
 
 const PREFIX = '__nebula_diff__::';
 
+function _normalizeAgainst(against) {
+  const s = String(against || 'HEAD');
+  if (s.toUpperCase().startsWith('COMMIT:')) {
+    // Preserve original casing of the hash so future readers don't get
+    // tripped up by `git log` output that's all-lowercase.
+    return 'COMMIT:' + s.slice(7);
+  }
+  return s.toUpperCase();
+}
+
 export function buildDiffTabKey(path, against = 'HEAD') {
-  const a = String(against || 'HEAD').toUpperCase();
-  return `${PREFIX}${a}::${encodeURIComponent(path)}`;
+  return `${PREFIX}${_normalizeAgainst(against)}::${encodeURIComponent(path)}`;
 }
 
 export function isDiffTabKey(key) {
@@ -34,7 +46,10 @@ export function parseDiffTabKey(key) {
   const rest = key.slice(PREFIX.length);
   const idx = rest.indexOf('::');
   if (idx < 0) return null;
-  const against = rest.slice(0, idx).toUpperCase();
+  const rawAgainst = rest.slice(0, idx);
+  const against = rawAgainst.toUpperCase().startsWith('COMMIT:')
+    ? 'COMMIT:' + rawAgainst.slice(7)
+    : rawAgainst.toUpperCase();
   const path = decodeURIComponent(rest.slice(idx + 2));
   return { path, against };
 }
@@ -43,8 +58,12 @@ export function diffTabLabel(key) {
   const parsed = parseDiffTabKey(key);
   if (!parsed) return key;
   const name = parsed.path.split(/[\\/]/).filter(Boolean).pop() || parsed.path;
-  const suffix = parsed.against === 'STAGE' ? '(Index)' : '(Working Tree)';
-  return `${name} ${suffix}`;
+  if (parsed.against === 'STAGE') return `${name} (Index)`;
+  if (parsed.against === 'HEAD')  return `${name} (Working Tree)`;
+  if (parsed.against.startsWith('COMMIT:')) {
+    return `${name} (${parsed.against.slice(7, 14)})`;
+  }
+  return `${name} (${parsed.against})`;
 }
 
 // ─── Language inference (mirrors App.getLanguage but local so DiffTab is self-
@@ -134,11 +153,28 @@ export default function DiffTab({
 
     (async () => {
       try {
-        const isStage = against === 'STAGE';
-        const [leftRes, rightRes] = await Promise.all([
-          fetchRefContent(path, 'HEAD'),
-          isStage ? fetchRefContent(path, 'STAGE') : fetchWorkingTreeContent(path),
-        ]);
+        const isStage  = against === 'STAGE';
+        const isCommit = typeof against === 'string' && against.startsWith('COMMIT:');
+
+        // Decide what to fetch for each side based on the comparison mode.
+        //   HEAD          : HEAD          vs working tree
+        //   STAGE         : HEAD          vs index
+        //   COMMIT:<hash> : <hash>^       vs <hash>     (the diff that commit introduced)
+        let leftPromise;
+        let rightPromise;
+        if (isCommit) {
+          const hash = against.slice(7);
+          // hash^ may not exist for the very first commit — DiffTab renders
+          // (left = empty, right = full file) as "new file" in that case,
+          // which is exactly what git itself shows for the initial commit.
+          leftPromise  = fetchRefContent(path, `${hash}^`);
+          rightPromise = fetchRefContent(path, hash);
+        } else {
+          leftPromise  = fetchRefContent(path, 'HEAD');
+          rightPromise = isStage ? fetchRefContent(path, 'STAGE') : fetchWorkingTreeContent(path);
+        }
+
+        const [leftRes, rightRes] = await Promise.all([leftPromise, rightPromise]);
 
         // Guard against out-of-order requests (user switches paths quickly).
         if (reqIdRef.current !== reqId) return;
@@ -150,6 +186,9 @@ export default function DiffTab({
           rightExists: !!rightRes.exists,
           binary: !!(leftRes.binary || rightRes.binary),
         });
+        // For commit diffs, a missing-on-the-left side is normal (added file)
+        // and a missing-on-the-right side is normal (deleted file). Only show
+        // an error if BOTH sides failed — that's a real problem.
         if (leftRes.error && rightRes.error) {
           setErrorMsg(`${leftRes.error} / ${rightRes.error}`);
         }
@@ -208,33 +247,130 @@ export default function DiffTab({
           <span style={{ opacity: 0.6, marginLeft: 'auto' }}>new file</span>
         )}
       </div>
-      <DiffEditor
-        height="calc(100% - 26px)"
+      <ManagedDiffEditor
+        left={left}
+        right={right}
         language={language}
-        original={left}
-        modified={right}
         theme={monacoTheme}
-        options={{
-          fontSize: ideSettings.fontSize || 14,
-          fontFamily: ideSettings.fontFamily
-            ? `'${ideSettings.fontFamily}', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace`
-            : "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace",
-          fontLigatures: ideSettings.fontLigatures !== undefined ? ideSettings.fontLigatures : true,
-          lineHeight: 22,
-          readOnly: true,
-          originalEditable: false,
-          renderSideBySide: true,
-          renderOverviewRuler: true,
-          ignoreTrimWhitespace: false,
-          renderIndicators: true,
-          enableSplitViewResizing: true,
-          minimap: { enabled: false },
-          scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
-          automaticLayout: true,
-          wordWrap: ideSettings.wordWrap ? 'on' : 'off',
-          tabSize: ideSettings.tabSize || 2,
-        }}
+        ideSettings={ideSettings}
       />
     </div>
+  );
+}
+
+// ─── ManagedDiffEditor ─────────────────────────────────────────────────────
+//
+// Wraps @monaco-editor/react's <DiffEditor> with explicit TextModel lifecycle
+// management. The library disposes its auto-created models when `original` or
+// `modified` props change, and that disposal can race with Monaco's internal
+// `_onModelChanged` listener, producing:
+//
+//   "TextModel got disposed before DiffEditorWidget model got reset"
+//
+// during React unmount. The race is most easily triggered by rapid tab
+// switching, React 18 StrictMode's effect double-invocation, or fast
+// successive prop updates.
+//
+// Strategy: pass empty strings for initial props, then on `onMount` create
+// our own models. From then on we update the existing models via
+// `.setValue()` so the DiffEditor never sees its model reference change.
+// On unmount we schedule disposal on a microtask so any pending Monaco
+// listeners have already run.
+function ManagedDiffEditor({ left, right, language, theme, ideSettings }) {
+  const editorRef = useRef(null);     // monaco DiffEditor instance
+  const monacoRef = useRef(null);     // monaco namespace from onMount
+  const modelsRef = useRef(null);     // { original, modified }
+  const mountedRef = useRef(false);
+
+  // Update the model values whenever left/right/language change. We compare
+  // against the current model value to avoid no-op .setValue() calls (which
+  // still trigger render passes).
+  useEffect(() => {
+    const models = modelsRef.current;
+    if (!models) return;
+    try {
+      if (models.original && models.original.getValue() !== (left || '')) {
+        models.original.setValue(left || '');
+      }
+      if (models.modified && models.modified.getValue() !== (right || '')) {
+        models.modified.setValue(right || '');
+      }
+      // Keep the language in sync. Monaco accepts a setModelLanguage call
+      // on already-attached models without triggering full re-init.
+      const m = monacoRef.current;
+      if (m && language) {
+        if (models.original) m.editor.setModelLanguage(models.original, language);
+        if (models.modified) m.editor.setModelLanguage(models.modified, language);
+      }
+    } catch (_) { /* model already disposed in a strict-mode replay; ignore */ }
+  }, [left, right, language]);
+
+  const handleMount = (editor, monaco) => {
+    editorRef.current = editor;
+    monacoRef.current = monaco;
+    mountedRef.current = true;
+
+    // Create our own pair of models so the wrapper doesn't manage them.
+    const original = monaco.editor.createModel(left || '', language);
+    const modified = monaco.editor.createModel(right || '', language);
+    modelsRef.current = { original, modified };
+    editor.setModel({ original, modified });
+  };
+
+  // Cleanup: dispose models AFTER React has finished unmounting the editor.
+  // The microtask delay is the crucial bit — it lets Monaco's _onModelChanged
+  // listener finish processing the editor's own dispose() before we yank the
+  // models out from under it. Without the delay we hit the original error.
+  useEffect(() => {
+    return () => {
+      const models = modelsRef.current;
+      modelsRef.current = null;
+      mountedRef.current = false;
+      // Defer one microtask + one macrotask. Microtask drains the synchronous
+      // dispose chain Monaco fires; the setTimeout gives any queued layout
+      // listeners a chance to settle.
+      Promise.resolve().then(() => setTimeout(() => {
+        try { models?.original?.dispose(); } catch (_) {}
+        try { models?.modified?.dispose(); } catch (_) {}
+      }, 0));
+    };
+  }, []);
+
+  return (
+    <DiffEditor
+      height="calc(100% - 26px)"
+      // Initial models are placeholders — handleMount immediately replaces
+      // them with our managed pair. Pass empty strings to avoid pre-mount
+      // model creation by the wrapper itself.
+      original=""
+      modified=""
+      language={language}
+      theme={theme}
+      // Tell @monaco-editor/react NOT to touch our models when this React
+      // component unmounts. We dispose them ourselves with the right timing.
+      keepCurrentOriginalModel
+      keepCurrentModifiedModel
+      onMount={handleMount}
+      options={{
+        fontSize: ideSettings.fontSize || 14,
+        fontFamily: ideSettings.fontFamily
+          ? `'${ideSettings.fontFamily}', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace`
+          : "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, Monaco, monospace",
+        fontLigatures: ideSettings.fontLigatures !== undefined ? ideSettings.fontLigatures : true,
+        lineHeight: 22,
+        readOnly: true,
+        originalEditable: false,
+        renderSideBySide: true,
+        renderOverviewRuler: true,
+        ignoreTrimWhitespace: false,
+        renderIndicators: true,
+        enableSplitViewResizing: true,
+        minimap: { enabled: false },
+        scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+        automaticLayout: true,
+        wordWrap: ideSettings.wordWrap ? 'on' : 'off',
+        tabSize: ideSettings.tabSize || 2,
+      }}
+    />
   );
 }

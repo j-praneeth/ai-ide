@@ -220,44 +220,62 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
             ) : 'No branches found'}
           </div>
         ) : (
-          filtered.map(b => (
-            <button
-              key={b.name}
-              className={`branch-picker-item ${b.isCurrent ? 'current' : ''}`}
-              onClick={() => !b.isCurrent && handleSwitch(b.name)}
-              disabled={!!switching}
-            >
-              <span className="branch-picker-item-name">
-                {b.isRemote && <span className="branch-picker-remote-tag">remote</span>}
-                {b.displayName}
-              </span>
-              {b.isCurrent && <VscCheck size={14} className="branch-picker-check" />}
-              {!b.isCurrent && (
-                <>
-                  <button
-                    className="branch-picker-delete"
-                    title={`Merge '${b.displayName}' into current branch`}
-                    onClick={(e) => handleMergeBranch(e, b.name)}
-                  >
-                    <VscGitMerge size={14} />
-                  </button>
-                  <button
-                    className="branch-picker-delete"
-                    title={`Rebase current branch onto '${b.displayName}'`}
-                    onClick={(e) => handleRebaseOnto(e, b.name)}
-                  >
-                    <VscRepoForked size={14} />
-                  </button>
-                  {!b.isRemote && (
-                    <button className="branch-picker-delete" title="Delete Branch" onClick={(e) => handleDeleteBranch(e, b.name)}>
-                      <VscTrash size={14} />
+          filtered.map(b => {
+            // The row hosts secondary action buttons (merge/rebase/delete) on
+            // the right. Real <button> elements cannot be nested inside a
+            // <button>, so the row itself is a div with role="button" plus
+            // keyboard handlers — keeps accessibility intact without
+            // triggering React's validateDOMNesting warning.
+            const isDisabled = !!switching;
+            const canSwitch  = !b.isCurrent && !isDisabled;
+            const onRowActivate = () => { if (canSwitch) handleSwitch(b.name); };
+            return (
+              <div
+                key={b.name}
+                className={`branch-picker-item ${b.isCurrent ? 'current' : ''} ${isDisabled ? 'is-disabled' : ''}`}
+                role="button"
+                tabIndex={canSwitch ? 0 : -1}
+                aria-disabled={isDisabled || b.isCurrent}
+                onClick={onRowActivate}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onRowActivate();
+                  }
+                }}
+              >
+                <span className="branch-picker-item-name">
+                  {b.isRemote && <span className="branch-picker-remote-tag">remote</span>}
+                  {b.displayName}
+                </span>
+                {b.isCurrent && <VscCheck size={14} className="branch-picker-check" />}
+                {!b.isCurrent && (
+                  <>
+                    <button
+                      className="branch-picker-delete"
+                      title={`Merge '${b.displayName}' into current branch`}
+                      onClick={(e) => handleMergeBranch(e, b.name)}
+                    >
+                      <VscGitMerge size={14} />
                     </button>
-                  )}
-                </>
-              )}
-              {switching === b.displayName && <span className="branch-picker-switching">...</span>}
-            </button>
-          ))
+                    <button
+                      className="branch-picker-delete"
+                      title={`Rebase current branch onto '${b.displayName}'`}
+                      onClick={(e) => handleRebaseOnto(e, b.name)}
+                    >
+                      <VscRepoForked size={14} />
+                    </button>
+                    {!b.isRemote && (
+                      <button className="branch-picker-delete" title="Delete Branch" onClick={(e) => handleDeleteBranch(e, b.name)}>
+                        <VscTrash size={14} />
+                      </button>
+                    )}
+                  </>
+                )}
+                {switching === b.displayName && <span className="branch-picker-switching">...</span>}
+              </div>
+            );
+          })
         )}
       </div>
     </div>
