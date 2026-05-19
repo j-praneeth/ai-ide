@@ -42,7 +42,7 @@ def get_claude_token(request: Request):
     from .claude_token import get_fresh_access_token
 
     try:
-        data = get_fresh_access_token(force_refresh=False)
+        data = get_fresh_access_token()
         return {"ok": True, **data}
     except Exception as e:
         err_str = str(e)

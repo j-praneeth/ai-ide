@@ -69,10 +69,16 @@ async def _run_startup_tasks():
         logger.warning("Claude token seed failed: %s", e)
 
     try:
-        from security.claude_token import start_disk_credential_watcher, start_master_refresh_loop
+        from security.claude_token import start_disk_credential_watcher, start_master_refresh_loop, is_master_device
+        import sys
+        print(f">>> STARTUP: is_master_device = {is_master_device()}", flush=True, file=sys.stderr)
+        logger.info("Starting credential services... is_master_device: %s", is_master_device())
         await asyncio.to_thread(start_disk_credential_watcher, 60)
-        await asyncio.to_thread(start_master_refresh_loop, 5 * 60)  # Check every 5 minutes
+        print(">>> STARTUP: Starting master refresh loop...", flush=True, file=sys.stderr)
+        await asyncio.to_thread(start_master_refresh_loop, 5 * 60)  # Check every 5 minutes (300s)
+        print(">>> STARTUP: Master refresh loop started!", flush=True, file=sys.stderr)
     except Exception as e:
+        print(f">>> STARTUP ERROR: {e}", flush=True, file=sys.stderr)
         logger.warning("Credential watcher failed to start: %s", e)
 
 

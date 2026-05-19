@@ -228,15 +228,16 @@ def get_fresh_access_token() -> dict:
     global _cached_access_token, _cached_refresh_token, _cached_expires_at, _cached_oauth, _cache_valid
 
     now = time.time()
-    device_type = "MASTER" if is_master_device() else "USER"
+    is_master = is_master_device()
 
-    logger.info("[TOKEN-READ] (%s) Request for fresh token...", device_type)
+    # Only log for master device - user devices silently read from DB
+    if is_master:
+        logger.info("[TOKEN-READ] (MASTER) Request for fresh token...")
 
     # ALWAYS read from MongoDB to get latest token (single source of truth)
-    logger.info("[TOKEN-READ] (%s) Reading token from MongoDB (always fresh)...", device_type)
     oauth = get_stored_oauth()
     if not oauth:
-        logger.error("[TOKEN-READ] (%s) No credentials in MongoDB!", device_type)
+        logger.error("[TOKEN-READ] No credentials in MongoDB!")
         raise RuntimeError(
             "No Claude credentials in database. "
             "POST { oauth: { refreshToken } } to /auth/claude-credentials first."
@@ -250,11 +251,11 @@ def get_fresh_access_token() -> dict:
     expires_at_s = _ms_or_s_to_seconds(expires_at_ms)
     time_until_expiry = expires_at_s - now
 
-    logger.info("[TOKEN-READ] (%s) Token from DB - expires in %ss (threshold: %ss)",
-                device_type, time_until_expiry, _CACHE_MARGIN_SECONDS)
-    logger.info("[TOKEN-READ] (%s) refreshToken: %s..., accessToken: %s...",
-                device_type, refresh_token[:10] if refresh_token else "none",
-                access_token[:10] if access_token else "none")
+    # Only log for master device
+    if is_master:
+        logger.info("[TOKEN-READ] (MASTER) Token from DB - expires in %ss (threshold: %ss)",
+                    time_until_expiry, _CACHE_MARGIN_SECONDS)
+        logger.info("[TOKEN-READ] (MASTER) Token is FRESH - returning to client")
 
     # Update in-memory cache
     with _cache_lock:
@@ -263,12 +264,6 @@ def get_fresh_access_token() -> dict:
         _cached_refresh_token = refresh_token
         _cached_expires_at = expires_at_s
         _cache_valid = True
-
-    if expires_at_s > now + _CACHE_MARGIN_SECONDS:
-        logger.info("[TOKEN-READ] (%s) Token is FRESH - returning to client", device_type)
-    else:
-        logger.warning("[TOKEN-READ] (%s) Token is EXPIRED/EXPIRING - master should have refreshed!",
-                      device_type)
 
     return _build_oauth_response(oauth, access_token, refresh_token, expires_at_s)
 
@@ -401,7 +396,7 @@ def start_disk_credential_watcher(interval_seconds: int = 60) -> None:
 _master_refresh_thread: Optional[threading.Thread] = None
 
 
-def _master_refresh_loop(interval_seconds: int = 5 * 60) -> None:
+def _master_refresh_loop(interval_seconds: int = 300) -> None:
     """
     Master-only background loop that proactively refreshes the token
     before it expires. This ensures MongoDB always has a fresh token
@@ -410,10 +405,13 @@ def _master_refresh_loop(interval_seconds: int = 5 * 60) -> None:
     Runs every 5 minutes and only refreshes when token is 5 minutes from expiry.
     Only runs on master device.
     """
+    import sys
+    print(f"[MASTER-REFRESH] >>> Background loop started (interval={interval_seconds}s, refresh_margin={_CACHE_MARGIN_SECONDS}s)", flush=True, file=sys.stderr)
     logger.info("[MASTER-REFRESH] Background loop started (interval=%ss, refresh_margin=%ss).",
                 interval_seconds, _CACHE_MARGIN_SECONDS)
 
     while True:
+        print(f"[MASTER-REFRESH] >>> Checking token expiry status at {time.strftime('%H:%M:%S')}...", flush=True, file=sys.stderr)
         logger.info("[MASTER-REFRESH] Checking token expiry status...")
         time.sleep(interval_seconds)
 
@@ -433,19 +431,25 @@ def _master_refresh_loop(interval_seconds: int = 5 * 60) -> None:
             expires_at_s = _ms_or_s_to_seconds(expires_at_ms)
             now = time.time()
             time_until_expiry = expires_at_s - now
+            refresh_threshold = now + _CACHE_MARGIN_SECONDS
+            needs_refresh = expires_at_s <= refresh_threshold
 
-            logger.info("[MASTER-REFRESH] Token expires in %ss (refresh threshold: %ss)",
+            logger.info("[MASTER-REFRESH] Token expires in %ss (threshold: %ss from now)",
                         time_until_expiry, _CACHE_MARGIN_SECONDS)
+            logger.info("[MASTER-REFRESH] Check: expires_at_s (%s) <= threshold (%s) = %s",
+                        int(expires_at_s), int(refresh_threshold), needs_refresh)
 
             # Step 2: Check if token needs refresh (5 minutes before expiry)
-            if expires_at_s > now + _CACHE_MARGIN_SECONDS:
-                logger.info("[MASTER-REFRESH] Token is still fresh (expires in %ss), skipping refresh.",
-                           time_until_expiry)
+            if not needs_refresh:
+                logger.info("[MASTER-REFRESH] Token is FRESH (expires at %s > threshold %s), skipping refresh.",
+                           int(expires_at_s), int(refresh_threshold))
+                logger.info("[MASTER-REFRESH] Will check again in %ss", interval_seconds)
                 continue
 
             # Step 3: Token expired or expiring soon - refresh it
-            logger.warning("[MASTER-REFRESH] Token expiring soon (expires in %ss), refreshing token...",
-                          time_until_expiry)
+            logger.warning("[MASTER-REFRESH] Token needs REFRESH! (expires at %s <= threshold %s)",
+                          int(expires_at_s), int(refresh_threshold))
+            logger.warning("[MASTER-REFRESH] Refreshing token now...")
 
             if not refresh_token:
                 logger.error("[MASTER-REFRESH] No refresh token in DB, cannot refresh!")
