@@ -556,6 +556,322 @@ def git_run(body: GitRunBody):
         return {"ok": False, "output": str(e), "exit_code": -1}
 
 
+# ─── Branches / Remotes / Tags / In-progress detection ────────────────────────
+#
+# Read-only listing endpoints. Mutations (create/delete/rename, set-url, push
+# tags, merge, rebase, abort) all go through /git-run so we don't duplicate
+# the subprocess-wrapping boilerplate above. The frontend's gitService wraps
+# both these and /git-run with the same backend-readiness + retry layer.
+
+
+@router.get("/git-branches")
+def git_branches():
+    """
+    Return local + remote branches and the current branch name.
+
+    Shape:
+      {
+        ok: true,
+        current: "main",
+        local: [{ name, isCurrent, upstream, ahead, behind, sha }],
+        remote: [{ name, sha }],     # e.g. "origin/main"
+      }
+    """
+    root, err = _require_project_root()
+    if err:
+        return {"ok": False, "error": err.get("error", "no workspace"),
+                "current": "", "local": [], "remote": []}
+
+    # `for-each-ref` is the canonical way to enumerate branches with metadata
+    # in one shot — it avoids three separate `git branch` calls.
+    fmt_local  = "%(refname:short)%09%(objectname:short)%09%(upstream:short)%09%(upstream:track)"
+    fmt_remote = "%(refname:short)%09%(objectname:short)"
+
+    cur_out, _ = _run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"], timeout=5)
+    current = cur_out.strip()
+    # "HEAD" means detached HEAD — surface as empty string so the UI shows the
+    # raw SHA instead of pretending we're on a branch.
+    if current == "HEAD":
+        current = ""
+
+    local_out, lrc = _run_git(root, [
+        "for-each-ref", "--format", fmt_local, "refs/heads/"
+    ], timeout=15)
+    remote_out, rrc = _run_git(root, [
+        "for-each-ref", "--format", fmt_remote, "refs/remotes/"
+    ], timeout=15)
+
+    def _parse_track(track: str):
+        # "[ahead 2, behind 1]" / "[ahead 1]" / "[behind 3]" / "[gone]" / ""
+        if not track:
+            return 0, 0, False
+        gone = "gone" in track
+        ahead = behind = 0
+        m_a = _re.search(r"ahead (\d+)", track)
+        m_b = _re.search(r"behind (\d+)", track)
+        if m_a: ahead = int(m_a.group(1))
+        if m_b: behind = int(m_b.group(1))
+        return ahead, behind, gone
+
+    local = []
+    if lrc == 0:
+        for line in (local_out or "").splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            name     = parts[0] if len(parts) > 0 else ""
+            sha      = parts[1] if len(parts) > 1 else ""
+            upstream = parts[2] if len(parts) > 2 else ""
+            track    = parts[3] if len(parts) > 3 else ""
+            ahead, behind, gone = _parse_track(track)
+            local.append({
+                "name": name,
+                "sha": sha,
+                "isCurrent": name == current,
+                "upstream": upstream,
+                "ahead": ahead,
+                "behind": behind,
+                "gone": gone,
+            })
+
+    remote = []
+    if rrc == 0:
+        for line in (remote_out or "").splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            name = parts[0] if len(parts) > 0 else ""
+            sha  = parts[1] if len(parts) > 1 else ""
+            # Skip the symbolic "origin/HEAD" pointer — it's noise in the picker.
+            if name.endswith("/HEAD"):
+                continue
+            remote.append({"name": name, "sha": sha})
+
+    return {"ok": True, "current": current, "local": local, "remote": remote}
+
+
+@router.get("/git-remotes")
+def git_remotes():
+    """
+    Return configured remotes with their fetch/push URLs.
+
+    Shape: { ok, remotes: [{ name, fetch, push }] }
+    """
+    root, err = _require_project_root()
+    if err:
+        return {"ok": False, "error": err.get("error", "no workspace"), "remotes": []}
+
+    out, rc = _run_git(root, ["remote", "-v"], timeout=10)
+    if rc != 0:
+        return {"ok": True, "remotes": []}
+
+    # `git remote -v` lines look like:
+    #   origin  https://github.com/foo/bar.git (fetch)
+    #   origin  https://github.com/foo/bar.git (push)
+    by_name: dict = {}
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        name, url, kind = parts[0], parts[1], parts[2].strip("()")
+        entry = by_name.setdefault(name, {"name": name, "fetch": "", "push": ""})
+        if kind == "fetch":
+            entry["fetch"] = url
+        elif kind == "push":
+            entry["push"] = url
+    return {"ok": True, "remotes": list(by_name.values())}
+
+
+@router.get("/git-tags")
+def git_tags():
+    """
+    Return all tags with their target SHA and annotation subject (if any).
+
+    Shape: { ok, tags: [{ name, sha, subject, annotated }] }
+    """
+    root, err = _require_project_root()
+    if err:
+        return {"ok": False, "error": err.get("error", "no workspace"), "tags": []}
+
+    fmt = "%(refname:short)%09%(objectname:short)%09%(objecttype)%09%(contents:subject)"
+    out, rc = _run_git(root, ["for-each-ref", "--sort=-creatordate",
+                              "--format", fmt, "refs/tags/"], timeout=15)
+    if rc != 0:
+        return {"ok": True, "tags": []}
+
+    tags = []
+    for line in (out or "").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        name      = parts[0] if len(parts) > 0 else ""
+        sha       = parts[1] if len(parts) > 1 else ""
+        obj_type  = parts[2] if len(parts) > 2 else ""
+        subject   = parts[3] if len(parts) > 3 else ""
+        tags.append({
+            "name": name,
+            "sha": sha,
+            "annotated": obj_type == "tag",
+            "subject": subject,
+        })
+    return {"ok": True, "tags": tags}
+
+
+@router.get("/git-progress")
+def git_progress():
+    """
+    Detect in-progress merge / rebase / cherry-pick / revert / bisect so the
+    UI can offer Abort / Continue controls — same heuristics VS Code uses.
+
+    Shape: { ok, inProgress: { merge, rebase, cherryPick, revert, bisect } }
+    """
+    root, err = _require_project_root()
+    if err:
+        return {"ok": False, "inProgress": {}}
+
+    git_dir_out, rc = _run_git(root, ["rev-parse", "--git-dir"], timeout=5)
+    if rc != 0:
+        return {"ok": False, "inProgress": {}}
+
+    git_dir = Path(git_dir_out.strip())
+    if not git_dir.is_absolute():
+        git_dir = (root / git_dir).resolve()
+
+    progress = {
+        "merge":      (git_dir / "MERGE_HEAD").exists(),
+        "rebase":     (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists(),
+        "cherryPick": (git_dir / "CHERRY_PICK_HEAD").exists(),
+        "revert":     (git_dir / "REVERT_HEAD").exists(),
+        "bisect":     (git_dir / "BISECT_LOG").exists(),
+    }
+    return {"ok": True, "inProgress": progress}
+
+
+class GitCloneBody(BaseModel):
+    url: str
+    target_dir: str            # absolute path of the directory to clone into
+    depth: Optional[int] = None  # optional --depth N for shallow clone
+    branch: Optional[str] = None # optional --branch
+    timeout: int = 600         # 10 min default — large repos over slow links
+
+
+@router.post("/git-clone")
+def git_clone(body: GitCloneBody):
+    """
+    Clone a repository. Runs OUTSIDE the project root (target_dir may not even
+    exist yet). The frontend is expected to call /files/open-folder afterwards
+    to switch the workspace to the freshly cloned repo.
+
+    Shape: { ok, output, exit_code, target }
+    """
+    url    = (body.url or "").strip()
+    target = (body.target_dir or "").strip()
+    if not url:
+        return {"ok": False, "output": "url required", "exit_code": 1, "target": ""}
+    if not target:
+        return {"ok": False, "output": "target_dir required", "exit_code": 1, "target": ""}
+
+    target_path = Path(target).expanduser().resolve()
+    parent = target_path.parent
+    if not parent.exists() or not parent.is_dir():
+        return {"ok": False, "output": f"parent directory does not exist: {parent}",
+                "exit_code": 1, "target": str(target_path)}
+
+    args = ["clone", "--progress"]
+    if body.depth and body.depth > 0:
+        args += ["--depth", str(int(body.depth))]
+    if body.branch:
+        args += ["--branch", str(body.branch)]
+    args += [url, str(target_path)]
+
+    try:
+        r = subprocess.run(
+            ["git"] + args,
+            capture_output=True, text=True,
+            timeout=max(30, int(body.timeout or 600)),
+        )
+        out = (r.stdout or "") + (r.stderr or "")
+        return {
+            "ok": r.returncode == 0,
+            "output": out,
+            "exit_code": r.returncode,
+            "target": str(target_path),
+        }
+    except FileNotFoundError:
+        return {"ok": False, "output": "git not found in PATH",
+                "exit_code": 127, "target": str(target_path)}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "output": "git clone timed out",
+                "exit_code": -1, "target": str(target_path)}
+    except Exception as e:
+        return {"ok": False, "output": str(e),
+                "exit_code": -1, "target": str(target_path)}
+
+
+class GitInitBody(BaseModel):
+    target_dir: Optional[str] = None   # absolute path; defaults to current PROJECT_ROOT
+    initial_branch: Optional[str] = "main"
+
+
+@router.post("/git-init")
+def git_init(body: GitInitBody):
+    """
+    Initialize a git repository.
+
+    If target_dir is provided, init there (parent must exist). Otherwise
+    init in the current workspace. Always passes -b <initial_branch> when
+    the user's git supports it, defaulting to "main".
+
+    Shape: { ok, output, exit_code, target }
+    """
+    target = (body.target_dir or "").strip()
+    if target:
+        target_path = Path(target).expanduser().resolve()
+    else:
+        root, err = _require_project_root()
+        if err:
+            return {"ok": False, "output": err.get("error", "no workspace"),
+                    "exit_code": 1, "target": ""}
+        target_path = root
+
+    if not target_path.exists():
+        try:
+            target_path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return {"ok": False, "output": f"could not create {target_path}: {e}",
+                    "exit_code": 1, "target": str(target_path)}
+
+    initial_branch = (body.initial_branch or "main").strip() or "main"
+
+    # `-b <branch>` was added in git 2.28. If the user's git is older we'll
+    # retry without it and rely on init.defaultBranch / the legacy `master`.
+    def _try(args):
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(target_path)] + args,
+                capture_output=True, text=True, timeout=30,
+            )
+            return (r.stdout or "") + (r.stderr or ""), r.returncode
+        except FileNotFoundError:
+            return "git not found in PATH", 127
+        except Exception as e:
+            return str(e), -1
+
+    out, rc = _try(["init", "-b", initial_branch])
+    if rc != 0 and "unknown option" in (out or "").lower():
+        out, rc = _try(["init"])
+
+    return {
+        "ok": rc == 0,
+        "output": out,
+        "exit_code": rc,
+        "target": str(target_path),
+    }
+
+
 @router.get("/tree-children")
 def get_tree_children(path: str, show_hidden: bool = False):
     """Return children of a subdirectory (lazy loading on expand). show_hidden: include dotfiles/dotdirs."""
@@ -732,97 +1048,11 @@ def move_path(path: str, dest: str):
         return {"error": str(e)}
 
 
-# ── .gitignore parsing ───────────────────────────────────────────────────────
-# Cache: root_str → (mtime, compiled_rules)
-_gitignore_cache: dict = {}
-
-
-def _compile_gitignore(root: Path) -> list:
-    """Parse .gitignore and return compiled rule list. Results are mtime-cached."""
-    cache_key = str(root)
-    gitignore_path = root / ".gitignore"
-
-    if not gitignore_path.exists():
-        _gitignore_cache[cache_key] = (0.0, [])
-        return []
-
-    try:
-        mtime = gitignore_path.stat().st_mtime
-    except OSError:
-        return []
-
-    cached = _gitignore_cache.get(cache_key)
-    if cached and cached[0] == mtime:
-        return cached[1]
-
-    rules = []
-    try:
-        for line in gitignore_path.read_text(encoding='utf-8', errors='ignore').splitlines():
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            negated = line.startswith('!')
-            p = line[1:] if negated else line
-            dir_only = p.endswith('/')
-            if dir_only:
-                p = p[:-1]
-            anchored = p.startswith('/') or ('/' in p and not p.startswith('**'))
-            if p.startswith('/'):
-                p = p[1:]
-            if p:
-                rules.append((p, negated, dir_only, anchored))
-    except Exception:
-        pass
-
-    _gitignore_cache[cache_key] = (mtime, rules)
-    return rules
-
-
-def _path_is_ignored(rel_path: str, rules: list) -> bool:
-    """Return True if rel_path (forward-slash separated) matches any gitignore rule."""
-    rel_path = rel_path.replace('\\', '/')
-    parts = rel_path.split('/')
-    name = parts[-1]
-    ignored = False
-
-    for pattern, negated, _dir_only, anchored in rules:
-        matched = False
-        if anchored:
-            matched = (
-                fnmatch.fnmatch(rel_path, pattern) or
-                fnmatch.fnmatch(rel_path, f'**/{pattern}')
-            )
-        else:
-            # Match against filename or any ancestor component
-            if fnmatch.fnmatch(name, pattern):
-                matched = True
-            elif '/' in pattern:
-                matched = fnmatch.fnmatch(rel_path, pattern)
-            else:
-                matched = any(fnmatch.fnmatch(part, pattern) for part in parts)
-        if matched:
-            ignored = not negated
-
-    return ignored
-
-
-class GitIgnoreBody(BaseModel):
-    paths: List[str] = []
-
-
-@router.post("/git-check-ignore")
-def git_check_ignore(body: GitIgnoreBody):
-    """Return which paths are matched by the workspace .gitignore."""
-    root, err = _require_project_root()
-    if err:
-        return {"ignored": []}
-
-    rules = _compile_gitignore(root)
-    if not rules:
-        return {"ignored": []}
-
-    ignored = [p for p in body.paths[:500] if _path_is_ignored(p, rules)]
-    return {"ignored": ignored}
+# NOTE: /git-check-ignore is registered exactly once near the top of this file
+# using a real `git check-ignore --stdin` subprocess. A second duplicate
+# handler that used an fnmatch-based parser was removed — FastAPI only honoured
+# the last registration, so the manual parser was overriding the authoritative
+# git-driven implementation. Always trust git's own ignore semantics.
 
 
 _SEARCH_SKIP = {
