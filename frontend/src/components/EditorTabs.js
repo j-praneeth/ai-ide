@@ -1,5 +1,19 @@
 import React from 'react';
-import { VscClose, VscCircleFilled } from 'react-icons/vsc';
+import { VscClose, VscCircleFilled, VscGitCompare } from 'react-icons/vsc';
+import { isDiffTabKey, parseDiffTabKey } from './DiffTab';
+
+// Mirrors GIT_DECORATION in FileExplorer.js / STATUS_CONFIG in SourceControlPanel.js.
+// Kept inline (rather than imported) so EditorTabs stays a self-contained leaf —
+// changes to either of those files don't risk a hidden render-time regression here.
+const GIT_BADGE = {
+  M: { color: '#e5a000', title: 'Modified'  },
+  A: { color: '#73c991', title: 'Added'     },
+  D: { color: '#f14c4c', title: 'Deleted'   },
+  R: { color: '#f97316', title: 'Renamed'   },
+  C: { color: '#60a5fa', title: 'Copied'    },
+  U: { color: '#3dc9b0', title: 'Untracked' },
+  '!': { color: '#f14c4c', title: 'Conflict' },
+};
 
 function getFileLanguageIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
@@ -21,26 +35,79 @@ function getFileLanguageIcon(name) {
   return <span className="tab-file-icon" style={{ color: '#6a6a6a' }}>F</span>;
 }
 
-export default function EditorTabs({ openFiles, activeFile, onSelectFile, onCloseFile, modifiedFiles }) {
+// Returns { icon, label, title } for any tab entry — handles both file paths
+// and synthetic diff-tab keys (see DiffTab.buildDiffTabKey).
+function describeTab(file) {
+  if (isDiffTabKey(file)) {
+    const parsed = parseDiffTabKey(file);
+    const name = parsed ? parsed.path.split(/[\\/]/).filter(Boolean).pop() : 'Diff';
+    const stageSuffix = parsed && parsed.against === 'STAGE' ? ' (Index)' : ' (Working Tree)';
+    return {
+      icon: (
+        <span className="tab-file-icon" style={{ color: '#e5a000', display: 'flex', alignItems: 'center' }}>
+          <VscGitCompare size={14} />
+        </span>
+      ),
+      label: `${name}${stageSuffix}`,
+      title: parsed ? `${parsed.path} — ${stageSuffix.trim()}` : file,
+    };
+  }
+  const fileName = file.split('/').pop();
+  return {
+    icon: getFileLanguageIcon(fileName),
+    label: fileName,
+    title: file,
+  };
+}
+
+export default function EditorTabs({
+  openFiles, activeFile, onSelectFile, onCloseFile, modifiedFiles,
+  // Map of repo-relative path → git status code (M/A/D/R/C/U/!).
+  // Optional — when omitted, tabs render exactly as before.
+  gitDecorations,
+}) {
   if (openFiles.length === 0) return null;
 
   return (
     <div className="editor-tabs">
       <div className="tabs-scroll">
         {openFiles.map(file => {
-          const fileName = file.split('/').pop();
           const isActive = file === activeFile;
-          const isModified = modifiedFiles && modifiedFiles.has(file);
+          const isDiff = isDiffTabKey(file);
+          // Diff tabs are read-only — never flag them as modified.
+          const isModified = !isDiff && modifiedFiles && modifiedFiles.has(file);
+          const { icon, label, title } = describeTab(file);
+
+          // Tab label colour follows git status (parity with file-tree
+          // decorations). Diff tabs keep their default colour; the dedicated
+          // diff icon already signals what they are.
+          const gitCode = !isDiff && gitDecorations ? gitDecorations[file] : null;
+          const badge = gitCode ? GIT_BADGE[gitCode] : null;
+          const labelStyle = badge ? { color: badge.color } : undefined;
 
           return (
             <div
               key={file}
-              className={`tab ${isActive ? 'active' : ''}`}
+              className={`tab ${isActive ? 'active' : ''}${badge ? ` tab-git-${gitCode === '!' ? 'conflict' : 'changed'}` : ''}`}
               onClick={() => onSelectFile(file)}
-              title={file}
+              title={badge ? `${title}  ·  ${badge.title}` : title}
             >
-              {getFileLanguageIcon(fileName)}
-              <span className="tab-name">{fileName}</span>
+              {icon}
+              <span className="tab-name" style={labelStyle}>{label}</span>
+              {badge && (
+                <span
+                  className="tab-git-badge"
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: badge.color,
+                    letterSpacing: '0.02em',
+                  }}
+                >
+                  {gitCode === '!' ? '!' : gitCode}
+                </span>
+              )}
               {isModified && !isActive && (
                 <VscCircleFilled size={8} className="tab-modified-dot" />
               )}

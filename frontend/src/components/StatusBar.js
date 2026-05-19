@@ -6,6 +6,8 @@ import {
   VscBell,
   VscCheck,
   VscTrash,
+  VscGitMerge,
+  VscRepoForked,
 } from 'react-icons/vsc';
 import axios from 'axios';
 import { API_URL as API } from '../config';
@@ -153,6 +155,43 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
     } catch (_) {}
   };
 
+  // Run a write op against the current branch using a remote/local branch as
+  // the source (merge into current / rebase current onto). Both use the
+  // argument-list git-run endpoint so paths with spaces/special chars are
+  // handled identically on every platform.
+  const runGitArgs = async (args, timeoutMs = 90000) => {
+    const res = await axios.post(
+      `${API}/files/git-run`,
+      { args, timeout: Math.floor(timeoutMs / 1000) },
+      { timeout: timeoutMs + 5000 },
+    );
+    return res.data || { ok: false, output: 'no response', exit_code: -1 };
+  };
+
+  const handleMergeBranch = async (e, branchName) => {
+    e.stopPropagation();
+    // Source for the merge — git accepts both local "feature" and
+    // "origin/feature" forms; we hand the user's display name through as-is.
+    const src = branchName.replace(/^remotes\//, '');
+    if (!window.confirm(`Merge '${src}' into the current branch?`)) return;
+    const r = await runGitArgs(['merge', src]);
+    if (!r.ok) {
+      window.alert(`Merge failed:\n${(r.output || '').slice(0, 600)}`);
+    }
+    try { window.dispatchEvent(new CustomEvent('nebula:git-refresh-request')); } catch (_) {}
+  };
+
+  const handleRebaseOnto = async (e, branchName) => {
+    e.stopPropagation();
+    const onto = branchName.replace(/^remotes\//, '');
+    if (!window.confirm(`Rebase the current branch onto '${onto}'?`)) return;
+    const r = await runGitArgs(['rebase', onto]);
+    if (!r.ok) {
+      window.alert(`Rebase failed (you may be mid-rebase — use 'git rebase --continue/--abort'):\n${(r.output || '').slice(0, 600)}`);
+    }
+    try { window.dispatchEvent(new CustomEvent('nebula:git-refresh-request')); } catch (_) {}
+  };
+
   return (
     <div className="branch-picker" ref={pickerRef}>
       <div className="branch-picker-header">
@@ -193,10 +232,28 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
                 {b.displayName}
               </span>
               {b.isCurrent && <VscCheck size={14} className="branch-picker-check" />}
-              {!b.isCurrent && !b.isRemote && (
-                <button className="branch-picker-delete" title="Delete Branch" onClick={(e) => handleDeleteBranch(e, b.name)}>
-                  <VscTrash size={14} />
-                </button>
+              {!b.isCurrent && (
+                <>
+                  <button
+                    className="branch-picker-delete"
+                    title={`Merge '${b.displayName}' into current branch`}
+                    onClick={(e) => handleMergeBranch(e, b.name)}
+                  >
+                    <VscGitMerge size={14} />
+                  </button>
+                  <button
+                    className="branch-picker-delete"
+                    title={`Rebase current branch onto '${b.displayName}'`}
+                    onClick={(e) => handleRebaseOnto(e, b.name)}
+                  >
+                    <VscRepoForked size={14} />
+                  </button>
+                  {!b.isRemote && (
+                    <button className="branch-picker-delete" title="Delete Branch" onClick={(e) => handleDeleteBranch(e, b.name)}>
+                      <VscTrash size={14} />
+                    </button>
+                  )}
+                </>
               )}
               {switching === b.displayName && <span className="branch-picker-switching">...</span>}
             </button>

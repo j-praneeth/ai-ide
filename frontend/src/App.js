@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import Editor from '@monaco-editor/react';
+import DiffTab, { buildDiffTabKey, isDiffTabKey, parseDiffTabKey } from './components/DiffTab';
 import axios from 'axios';
 import './App.css';
 import { API_URL as API } from './config';
@@ -144,6 +145,12 @@ function App() {
     return '';
   });
   const [webFolderHandle, setWebFolderHandle] = useState(null);
+
+  // Map of repo-relative path (forward slashes) → status code (M / A / D / U / R / C / !).
+  // Fed by a 15s poll against /files/git-status-bundle (same endpoint the SCM
+  // panel uses). Consumed by FileExplorer to draw inline git decorations.
+  const [gitDecorations, setGitDecorations] = useState({});
+
   /** Bump when switching workspaces so terminal / local UI fully remounts. */
   const [workspaceKey, setWorkspaceKey] = useState(0);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
@@ -250,6 +257,150 @@ function App() {
     extensionRegistry.addEventListener('change', handler);
     return () => extensionRegistry.removeEventListener('change', handler);
   }, []);
+
+  // ── Git decorations (file-tree badges + colors) ──────────────
+  // Poll the same status bundle the SCM panel uses. Cheap on the backend (one
+  // execSync git invocation per tick, 15s cadence) and the FileExplorer only
+  // re-renders when the parsed map actually changes shape, so the cost is
+  // bounded even in huge repos.
+  useEffect(() => {
+    const hasNativeWorkspace = !!projectRoot;
+    if (!hasNativeWorkspace) {
+      // Web folder mode (FS Access API) has no git knowledge — clear and skip.
+      setGitDecorations({});
+      return undefined;
+    }
+    let cancelled = false;
+
+    const parse = (porcelain) => {
+      const map = {};
+      if (!porcelain) return map;
+      for (const rawLine of porcelain.split('\n')) {
+        if (!rawLine) continue;
+        // Porcelain format: XY <path>   (or XY <orig> -> <new> for renames)
+        const code0 = rawLine[0] || ' ';
+        const code1 = rawLine[1] || ' ';
+        let rest = rawLine.slice(3);
+        if (rest.includes(' -> ')) rest = rest.split(' -> ').pop();
+        let rel = (rest || '').trim().replace(/^"(.*)"$/, '$1');
+        if (!rel) continue;
+        rel = rel.replace(/\\/g, '/');
+        // VS Code's precedence: untracked > conflict > index > worktree.
+        let code;
+        if (code0 === '?' && code1 === '?') code = 'U';
+        else if (code0 === 'U' || code1 === 'U' || (code0 === 'A' && code1 === 'A') || (code0 === 'D' && code1 === 'D')) code = '!';
+        else if (code0 !== ' ' && code0 !== '?') code = code0;
+        else code = code1;
+        map[rel] = code;
+      }
+      return map;
+    };
+
+    const shallowEqual = (a, b) => {
+      const ak = Object.keys(a); const bk = Object.keys(b);
+      if (ak.length !== bk.length) return false;
+      for (const k of ak) if (a[k] !== b[k]) return false;
+      return true;
+    };
+
+    const tick = async () => {
+      try {
+        const res = await axios.get(`${API}/files/git-status-bundle`, { timeout: 30000 });
+        if (cancelled) return;
+        if (!res.data || res.data.ok === false) {
+          setGitDecorations(prev => (Object.keys(prev).length ? {} : prev));
+          return;
+        }
+        const next = parse(res.data.status || '');
+        setGitDecorations(prev => (shallowEqual(prev, next) ? prev : next));
+      } catch (_) {
+        // Backend not ready / transient — keep prior decorations.
+      }
+    };
+
+    tick();
+    const id = setInterval(tick, 15000);
+
+    // ── Live watcher → status refresh ─────────────────────────────────────
+    //
+    // The backend already runs a watchdog/FSEvents/inotify watcher on the
+    // project root (publishes events on /files/watch). It includes .git/
+    // because that lives under the root, so commits, stages, checkouts,
+    // stashes — anything that mutates .git/index or working-tree files —
+    // produce events here.
+    //
+    // We coalesce: any incoming batch refreshes the git bundle once, after a
+    // 200ms quiet window. The 15s safety-net poll above still catches edge
+    // cases (e.g. .git lives outside the root, or the WS dropped silently).
+    let ws = null;
+    let wsRetryTimer = null;
+    let wsKeepalive = null;
+    let debounceTimer = null;
+
+    const refreshNow = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        tick();
+        // Notify other panels (SCM) that something git-relevant moved on
+        // disk, so they can refresh their own caches without polling.
+        try { window.dispatchEvent(new CustomEvent('nebula:git-fs-change')); } catch (_) {}
+      }, 200);
+    };
+
+    const wsUrl = (() => {
+      try {
+        // Build ws://host:port/files/watch from the API URL we already use.
+        const u = new URL(API, window.location.origin);
+        const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${proto}//${u.host}/files/watch`;
+      } catch (_) {
+        return null;
+      }
+    })();
+
+    const connectWs = () => {
+      if (cancelled || !wsUrl) return;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (_) {
+        ws = null;
+        wsRetryTimer = setTimeout(connectWs, 5000);
+        return;
+      }
+      ws.onmessage = (ev) => {
+        if (cancelled) return;
+        let msg = null;
+        try { msg = JSON.parse(ev.data); } catch (_) { return; }
+        if (msg && Array.isArray(msg.changes) && msg.changes.length > 0) {
+          refreshNow();
+        }
+      };
+      ws.onclose = () => {
+        if (cancelled) return;
+        wsRetryTimer = setTimeout(connectWs, 3000);
+      };
+      ws.onerror = () => { try { ws && ws.close(); } catch (_) {} };
+    };
+    connectWs();
+
+    // Belt-and-braces: also listen for explicit refresh requests from other
+    // panels (SCM panel emits after every commit / stage / push), so a user
+    // action immediately repaints decorations without waiting for the WS
+    // event to round-trip through the OS watcher.
+    const onExplicitRefresh = () => refreshNow();
+    window.addEventListener('nebula:git-refresh-request', onExplicitRefresh);
+
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      if (wsRetryTimer) clearTimeout(wsRetryTimer);
+      if (wsKeepalive) clearInterval(wsKeepalive);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      window.removeEventListener('nebula:git-refresh-request', onExplicitRefresh);
+      try { ws && ws.close(); } catch (_) {}
+    };
+  }, [projectRoot]);
 
   // ── Auto-update IPC listeners (Electron only) ────────────────
   const [updateError, setUpdateError] = useState('');
@@ -472,6 +623,16 @@ function App() {
   }, [sidebarWidth]);
   // Open a file (from backend or from web folder handle). Optional opts: { line, search: { query, caseSensitive, wholeWord, useRegex } }
   const openFile = useCallback(async (path, opts = {}) => {
+    // Diff tabs use a synthetic key (see DiffTab.buildDiffTabKey). They live
+    // in the same openFiles array so the user can switch via the tab strip,
+    // but they don't load file content — DiffTab fetches HEAD / index / WT on
+    // its own. Short-circuit before any file-content fetch.
+    if (isDiffTabKey(path)) {
+      pendingSearchNavRef.current = null;
+      setOpenFiles(prev => (prev.includes(path) ? prev : [...prev, path]));
+      setActiveFile(path);
+      return;
+    }
     const line = opts.line != null ? Number(opts.line) : null;
     if (line != null && Number.isFinite(line) && opts.search) {
       pendingSearchNavRef.current = {
@@ -1480,6 +1641,9 @@ function App() {
                 selectedFile={activeFile}
                 onRefresh={loadTree}
                 onLoadChildren={webFolderHandle ? loadChildrenFromHandle : undefined}
+                gitDecorations={gitDecorations}
+                projectRoot={projectRoot}
+                onOpenDiff={(p, against) => openFile(buildDiffTabKey(p, against || 'HEAD'))}
                 showHiddenFiles={showHiddenFiles}
                 onToggleShowHidden={() => {
                   setShowHiddenFiles(prev => {
@@ -1534,14 +1698,28 @@ function App() {
               onSelectFile={setActiveFile}
               onCloseFile={closeFile}
               modifiedFiles={modifiedFiles}
+              gitDecorations={gitDecorations}
             />
 
             {/* Breadcrumbs */}
-            {activeFile && renderBreadcrumbs()}
+            {activeFile && !isDiffTabKey(activeFile) && renderBreadcrumbs()}
 
             {/* Editor */}
             <div className="editor-content">
-              {activeFile ? (
+              {activeFile && isDiffTabKey(activeFile) ? (
+                (() => {
+                  const parsed = parseDiffTabKey(activeFile);
+                  return parsed ? (
+                    <DiffTab
+                      key={activeFile}
+                      path={parsed.path}
+                      against={parsed.against}
+                      monacoTheme="nebula"
+                      ideSettings={ideSettings}
+                    />
+                  ) : renderWelcome();
+                })()
+              ) : activeFile ? (
                 <Editor
                   height="100%"
                   language={getLanguage(activeFile)}

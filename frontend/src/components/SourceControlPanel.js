@@ -13,6 +13,7 @@ import {
 import { MdInsertDriveFile } from 'react-icons/md';
 import axios from 'axios';
 import { API_URL as API } from '../config';
+import { buildDiffTabKey } from './DiffTab';
 
 // ─── Backend runners ──────────────────────────────────────────────────────────
 
@@ -76,19 +77,39 @@ function friendlyGitError(output = '') {
 }
 
 // ─── Git porcelain parser ─────────────────────────────────────────────────────
+//
+// Splits the porcelain output into three buckets that mirror VS Code's SCM
+// view exactly:
+//
+//   conflicts — files in an unmerged state (codes DD, AU, UD, UA, DU, AA, UU);
+//               these need user intervention before they can be staged.
+//   staged    — entries with a non-space, non-'?' index code; safe to commit.
+//   unstaged  — entries with a non-space worktree code, OR untracked files.
+//
+// A conflict file is reported ONCE (in `conflicts`); it does not appear under
+// staged or unstaged. That matches VS Code's behaviour and prevents the user
+// from accidentally `git add`ing a half-resolved file by clicking "Stage" in
+// the Changes section.
+const CONFLICT_KEYS = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
 function parsePorcelain(output) {
-  const staged = [], unstaged = [];
+  const staged = [], unstaged = [], conflicts = [];
   for (const line of (output || '').trim().split('\n').filter(Boolean)) {
     const code0 = line[0] || ' ', code1 = line[1] || ' ';
     let path = line.slice(3).trim();
     if (path.includes(' -> ')) path = path.split(' -> ')[1].trim();
     path = path.replace(/^"(.*)"$/, '$1').trim();
     if (!path) continue;
+
+    const codePair = code0 + code1;
+    if (CONFLICT_KEYS.has(codePair)) {
+      conflicts.push({ path, status: '!', conflictKind: codePair });
+      continue;
+    }
     if (code0 !== ' ' && code0 !== '?') staged.push({ path, status: code0 });
     if ((code1 !== ' ' && code1 !== '?') || code0 === '?')
       unstaged.push({ path, status: code0 === '?' ? 'U' : code1 });
   }
-  return { staged, unstaged };
+  return { staged, unstaged, conflicts };
 }
 
 function getFileInfo(p) {
@@ -165,6 +186,122 @@ const FileRow = memo(function FileRow({ file, onOpenDiff, primaryAction, seconda
         ) : (
           <span className="scm-status-letter" style={{ color: sc.color }}>{sc.label}</span>
         )}
+      </div>
+    </div>
+  );
+});
+
+// ─── Conflict row ─────────────────────────────────────────────────────────────
+//
+// Shows a conflicted file with three inline actions (mirrors VS Code's
+// "Resolve in Merge Editor" / "Accept Current/Incoming" buttons):
+//   ⬅ Accept Current Change  (--ours, then add)
+//   ➡ Accept Incoming Change (--theirs, then add)
+//   ✓ Mark as Resolved       (the user fixed the markers by hand)
+// Clicking the row body opens the diff editor (HEAD ↔ working tree by
+// default — DiffTab is built around 2-pane comparison; a full 3-way merge
+// editor is a separate slice).
+const CONFLICT_LABEL = {
+  UU: 'Both modified',
+  AA: 'Both added',
+  DD: 'Both deleted',
+  AU: 'Added by us',
+  UA: 'Added by them',
+  DU: 'Deleted by us',
+  UD: 'Deleted by them',
+};
+
+const ConflictRow = memo(function ConflictRow({ file, onOpenDiff, onAcceptCurrent, onAcceptIncoming, onMarkResolved }) {
+  const [hover, setHover] = useState(false);
+  const { name, dir } = getFileInfo(file.path);
+  const [IconComp, iconColor] = fileIcon(name);
+  const kindLabel = CONFLICT_LABEL[file.conflictKind] || 'Conflict';
+
+  // For DD (both deleted) there's no content to merge — the only sane action
+  // is "Mark as Resolved" (which `git add` records the deletion).
+  const isBothDeleted = file.conflictKind === 'DD';
+
+  return (
+    <div
+      className="scm-file-row scm-conflict-row"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      onClick={() => onOpenDiff(file.path)}
+      title={`${file.path} — ${kindLabel}`}
+    >
+      <IconComp size={13} style={{ color: iconColor, flexShrink: 0 }} />
+      <span className="scm-file-name" style={{ color: '#f14c4c' }}>{name}</span>
+      {dir && <span className="scm-file-dir">{dir}</span>}
+      <div className="scm-file-row-right">
+        {hover ? (
+          <div className="scm-file-actions">
+            {!isBothDeleted && (
+              <button
+                className="scm-file-action"
+                title="Accept Current Change (ours)"
+                onClick={e => { e.stopPropagation(); onAcceptCurrent(file.path); }}
+              >
+                <VscArrowDown size={13} style={{ transform: 'rotate(90deg)' }} />
+              </button>
+            )}
+            {!isBothDeleted && (
+              <button
+                className="scm-file-action"
+                title="Accept Incoming Change (theirs)"
+                onClick={e => { e.stopPropagation(); onAcceptIncoming(file.path); }}
+              >
+                <VscArrowDown size={13} style={{ transform: 'rotate(-90deg)' }} />
+              </button>
+            )}
+            <button
+              className="scm-file-action"
+              title="Mark as Resolved (stage)"
+              onClick={e => { e.stopPropagation(); onMarkResolved(file.path); }}
+            >
+              <VscCheck size={13} />
+            </button>
+          </div>
+        ) : (
+          <span className="scm-status-letter" style={{ color: '#f14c4c' }} title={kindLabel}>!</span>
+        )}
+      </div>
+    </div>
+  );
+});
+
+// ─── Stash row ────────────────────────────────────────────────────────────────
+// One row per `git stash list` entry. Hover reveals Pop / Apply / Drop. The
+// row body shows the canonical stash ref (`stash@{N}`) plus the message git
+// records ("WIP on main: 1234 init", or the user's `-m` text).
+const StashRow = memo(function StashRow({ entry, onPop, onApply, onDrop }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      className="scm-file-row"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={entry.message}
+    >
+      <SiGit size={13} style={{ color: '#f05033', flexShrink: 0 }} />
+      <span className="scm-file-name" style={{ fontFamily: 'var(--font-mono, monospace)' }}>{entry.id}</span>
+      <span className="scm-file-dir">{entry.message}</span>
+      <div className="scm-file-row-right">
+        {hover ? (
+          <div className="scm-file-actions">
+            <button className="scm-file-action" title="Apply (keep stash)"
+              onClick={(e) => { e.stopPropagation(); onApply(); }}>
+              <VscArrowDown size={13} />
+            </button>
+            <button className="scm-file-action" title="Pop (apply and drop)"
+              onClick={(e) => { e.stopPropagation(); onPop(); }}>
+              <VscArrowUp size={13} />
+            </button>
+            <button className="scm-file-action" title="Drop"
+              onClick={(e) => { e.stopPropagation(); onDrop(); }}>
+              <VscClose size={13} />
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -343,11 +480,27 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   const [selectedCommit, setSelectedCommit] = useState(null);
   const [commitDetails, setCommitDetails] = useState(null);
   const [viewingDiff, setViewingDiff] = useState(null);
-  const [collapsed, setCollapsed]   = useState({ staged: false, changes: false, graph: false });
+  const [collapsed, setCollapsed]   = useState({ staged: false, changes: false, graph: false, stash: true });
   const [panelH, setPanelH]         = useState({ changes: 300 });
   const isResizing = useRef(null);
   const commitDropdownRef = useRef(null);
   const firstFetchDone = useRef(false);
+
+  // Stash list — parsed `git stash list --format=%gd<TAB>%s`.
+  // Each entry: { id: 'stash@{0}', message: 'WIP on main…' }
+  const [stashList, setStashList] = useState([]);
+  const [graphContextMenu, setGraphContextMenu] = useState(null); // { x, y, hash, subject }
+
+  // Open a Monaco diff tab in the main editor area when an opener is available
+  // (the App.js wiring exposes one). Falls back to the in-panel modal viewer
+  // for embeddings that don't host the editor, preserving prior behaviour.
+  const openDiffTab = useCallback((relPath, isStaged) => {
+    if (typeof onOpenFile === 'function') {
+      onOpenFile(buildDiffTabKey(relPath, isStaged ? 'STAGE' : 'HEAD'));
+      return;
+    }
+    setViewingDiff({ path: relPath, isStaged: !!isStaged });
+  }, [onOpenFile]);
 
   useEffect(() => {
     if (!commitDropdown) return;
@@ -401,6 +554,12 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
     }
   }, [hasWorkspace]);
 
+  // Broadcast a refresh hint after any local git write so the explorer's
+  // decoration map repaints instantly. App.js listens for this and debounces.
+  const requestExplorerRefresh = useCallback(() => {
+    try { window.dispatchEvent(new CustomEvent('nebula:git-refresh-request')); } catch (_) {}
+  }, []);
+
   // Initial load
   useEffect(() => { fetchStatus(false); }, [fetchStatus]);
 
@@ -409,6 +568,18 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
     if (!hasWorkspace) return;
     const id = setInterval(() => fetchStatus(true), 15000);
     return () => clearInterval(id);
+  }, [fetchStatus, hasWorkspace]);
+
+  // Live watcher: App.js opens a single WebSocket against /files/watch and
+  // dispatches 'nebula:git-fs-change' whenever the OS watcher reports a
+  // batch (debounced 200ms). We piggy-back on that so this panel refreshes
+  // the instant the user's commit / stage / push lands, without waiting for
+  // the 15s safety-net poll above.
+  useEffect(() => {
+    if (!hasWorkspace) return undefined;
+    const onFsChange = () => fetchStatus(true);
+    window.addEventListener('nebula:git-fs-change', onFsChange);
+    return () => window.removeEventListener('nebula:git-fs-change', onFsChange);
   }, [fetchStatus, hasWorkspace]);
 
   // ── Fetch git graph ─────────────────────────────────────────────────────────
@@ -428,10 +599,13 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   }, [hasWorkspace]);
 
   const hasRepo = !error && statusOutput !== null;
-  const { staged = [], unstaged = [] } = hasRepo ? parsePorcelain(statusOutput) : {};
+  const { staged = [], unstaged = [], conflicts = [] } = hasRepo ? parsePorcelain(statusOutput) : {};
   const hasStaged = staged.length > 0;
-  const hasChanges = hasStaged || unstaged.length > 0;
-  const canCommit = hasChanges && commitMessage.trim();
+  const hasConflicts = conflicts.length > 0;
+  const hasChanges = hasStaged || unstaged.length > 0 || hasConflicts;
+  // VS Code blocks `git commit` while there are unmerged paths — the index
+  // is in a partial state and the user must resolve all conflicts first.
+  const canCommit = hasChanges && commitMessage.trim() && !hasConflicts;
 
   useEffect(() => {
     if (hasWorkspace && hasRepo && !collapsed.graph && graphEntries.length === 0 && !graphLoading)
@@ -439,12 +613,161 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   }, [hasWorkspace, hasRepo, collapsed.graph, graphEntries.length, graphLoading, fetchGraph]);
 
   // ── Git operations ──────────────────────────────────────────────────────────
-  const handleStage   = async p => { try { await runGit(['add', p]); await fetchStatus(true); } catch (e) { setError(e.message); } };
-  const handleUnstage = async p => { try { await runGit(['reset', 'HEAD', p]); await fetchStatus(true); } catch (e) { setError(e.message); } };
+  const handleStage   = async p => { try { await runGit(['add', p]); await fetchStatus(true); requestExplorerRefresh(); } catch (e) { setError(e.message); } };
+  const handleUnstage = async p => { try { await runGit(['reset', 'HEAD', p]); await fetchStatus(true); requestExplorerRefresh(); } catch (e) { setError(e.message); } };
   const handleDiscard = async p => {
     if (!window.confirm(`Discard changes in ${p}?`)) return;
-    try { await runGit(['checkout', '--', p]); await fetchStatus(true); } catch (e) { setError(e.message); }
+    try { await runGit(['checkout', '--', p]); await fetchStatus(true); requestExplorerRefresh(); } catch (e) { setError(e.message); }
   };
+
+  // ── Merge conflict resolution ───────────────────────────────────────────────
+  // VS Code exposes three top-level actions on each conflicted file:
+  //   Accept Current Change (--ours)   → `git checkout --ours <p> && git add <p>`
+  //   Accept Incoming Change (--theirs)→ `git checkout --theirs <p> && git add <p>`
+  //   Open the side-by-side merge diff → we open OURS ↔ THEIRS via DiffTab
+  // After any "accept" we re-fetch status; once all conflicts vanish the
+  // commit button re-enables automatically.
+  const handleAcceptCurrent = useCallback(async (p) => {
+    try {
+      const r1 = await runGit(['checkout', '--ours', '--', p]);
+      if (r1.exit_code !== 0) { setError(friendlyGitError(r1.output)); return; }
+      const r2 = await runGit(['add', p]);
+      if (r2.exit_code !== 0) { setError(friendlyGitError(r2.output)); return; }
+      await fetchStatus(true);
+      requestExplorerRefresh();
+    } catch (e) { setError(friendlyGitError(e.message)); }
+  }, [fetchStatus, requestExplorerRefresh]);
+
+  const handleAcceptIncoming = useCallback(async (p) => {
+    try {
+      const r1 = await runGit(['checkout', '--theirs', '--', p]);
+      if (r1.exit_code !== 0) { setError(friendlyGitError(r1.output)); return; }
+      const r2 = await runGit(['add', p]);
+      if (r2.exit_code !== 0) { setError(friendlyGitError(r2.output)); return; }
+      await fetchStatus(true);
+      requestExplorerRefresh();
+    } catch (e) { setError(friendlyGitError(e.message)); }
+  }, [fetchStatus, requestExplorerRefresh]);
+
+  // "Mark as resolved" — the user manually edited the file and just wants to
+  // tell git the conflict markers are gone. Same as `git add` but framed
+  // explicitly so the user understands the consequence.
+  const handleMarkResolved = useCallback(async (p) => {
+    try {
+      const r = await runGit(['add', p]);
+      if (r.exit_code !== 0) { setError(friendlyGitError(r.output)); return; }
+      await fetchStatus(true);
+      requestExplorerRefresh();
+    } catch (e) { setError(friendlyGitError(e.message)); }
+  }, [fetchStatus, requestExplorerRefresh]);
+
+  // ── Stash operations ────────────────────────────────────────────────────────
+  // `git stash list --format=%gd%x09%s` → `stash@{0}<TAB>WIP on main: 1234 init`
+  const fetchStashList = useCallback(async () => {
+    if (!hasWorkspace) return;
+    try {
+      const r = await runGit(['stash', 'list', '--format=%gd%x09%s']);
+      if (r.exit_code !== 0) { setStashList([]); return; }
+      const entries = (r.output || '').trim().split('\n').filter(Boolean).map(line => {
+        const tab = line.indexOf('\t');
+        if (tab < 0) return { id: line.trim(), message: '' };
+        return { id: line.slice(0, tab).trim(), message: line.slice(tab + 1).trim() };
+      });
+      setStashList(entries);
+    } catch (_) { setStashList([]); }
+  }, [hasWorkspace]);
+
+  const handleStashPush = useCallback(async () => {
+    const msg = (window.prompt('Stash message (optional):', '') || '').trim();
+    try {
+      const args = msg ? ['stash', 'push', '-m', msg] : ['stash', 'push'];
+      const r = await runGit(args);
+      if (r.exit_code !== 0) setError(friendlyGitError(r.output));
+      await fetchStatus(true);
+      await fetchStashList();
+      requestExplorerRefresh();
+    } catch (e) { setError(friendlyGitError(e.message)); }
+  }, [fetchStatus, fetchStashList, requestExplorerRefresh]);
+
+  const handleStashPop = useCallback(async (id) => {
+    try {
+      const r = await runGit(['stash', 'pop', id]);
+      if (r.exit_code !== 0) setError(friendlyGitError(r.output));
+      await fetchStatus(true);
+      await fetchStashList();
+      requestExplorerRefresh();
+    } catch (e) { setError(friendlyGitError(e.message)); }
+  }, [fetchStatus, fetchStashList, requestExplorerRefresh]);
+
+  const handleStashApply = useCallback(async (id) => {
+    try {
+      const r = await runGit(['stash', 'apply', id]);
+      if (r.exit_code !== 0) setError(friendlyGitError(r.output));
+      await fetchStatus(true);
+      requestExplorerRefresh();
+    } catch (e) { setError(friendlyGitError(e.message)); }
+  }, [fetchStatus, requestExplorerRefresh]);
+
+  const handleStashDrop = useCallback(async (id) => {
+    if (!window.confirm(`Drop ${id}? This cannot be undone.`)) return;
+    try {
+      const r = await runGit(['stash', 'drop', id]);
+      if (r.exit_code !== 0) setError(friendlyGitError(r.output));
+      await fetchStashList();
+    } catch (e) { setError(friendlyGitError(e.message)); }
+  }, [fetchStashList]);
+
+  // ── Commit-graph actions (right-click on a row) ─────────────────────────────
+  const handleCherryPick = useCallback(async (hash) => {
+    try {
+      const r = await runGit(['cherry-pick', hash], 90000);
+      if (r.exit_code !== 0) setError(friendlyGitError(r.output));
+      await fetchStatus(true);
+      await fetchGraph();
+      requestExplorerRefresh();
+    } catch (e) { setError(friendlyGitError(e.message)); }
+  }, [fetchStatus, fetchGraph, requestExplorerRefresh]);
+
+  const handleResetTo = useCallback(async (hash, mode) => {
+    // mode: 'soft' | 'mixed' | 'hard'
+    const confirmMsg = mode === 'hard'
+      ? `Hard-reset to ${hash.slice(0, 7)}? Working tree changes will be DISCARDED.`
+      : `Reset to ${hash.slice(0, 7)} (${mode})?`;
+    if (!window.confirm(confirmMsg)) return;
+    try {
+      const r = await runGit(['reset', `--${mode}`, hash]);
+      if (r.exit_code !== 0) setError(friendlyGitError(r.output));
+      await fetchStatus(true);
+      await fetchGraph();
+      requestExplorerRefresh();
+    } catch (e) { setError(friendlyGitError(e.message)); }
+  }, [fetchStatus, fetchGraph, requestExplorerRefresh]);
+
+  // Initial stash fetch + refresh on demand.
+  useEffect(() => {
+    if (!hasWorkspace) { setStashList([]); return; }
+    fetchStashList();
+  }, [hasWorkspace, fetchStashList]);
+
+  // Stash list is also stale after every write op — re-fetch when the panel
+  // refreshes its status bundle.
+  useEffect(() => {
+    if (!hasWorkspace) return undefined;
+    const onFsChange = () => fetchStashList();
+    window.addEventListener('nebula:git-fs-change', onFsChange);
+    return () => window.removeEventListener('nebula:git-fs-change', onFsChange);
+  }, [hasWorkspace, fetchStashList]);
+
+  // Open a 2-pane diff comparing OURS (index stage 2) vs THEIRS (stage 3).
+  // The user can also see BASE (stage 1) by switching tools — we ship the
+  // simple OURS↔THEIRS view first, matching VS Code's default merge editor.
+  const handleOpenConflictDiff = useCallback((p) => {
+    if (typeof onOpenFile !== 'function') return;
+    // The "against" value is plumbed through DiffTab; here we want HEAD on
+    // the left so the user sees their branch as the baseline. (We could
+    // build a dedicated 3-way view later — out of scope for this slice.)
+    onOpenFile(buildDiffTabKey(p, 'HEAD'));
+  }, [onOpenFile]);
 
   const doCommit = async (stageAllFirst = false) => {
     if (!commitMessage.trim()) { setCommitError('Enter a commit message.'); return false; }
@@ -473,6 +796,7 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
       setCommitError(null);
       await fetchStatus(true);
       setGraphEntries([]);
+      requestExplorerRefresh();
       return true;
     } catch (e) { setCommitError(friendlyGitError(e.message)); return false; }
     finally { setCommitting(false); }
@@ -492,7 +816,7 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
         : ['push'];
       const r = await runGit(pushArgs, 120000);
       if (r.exit_code !== 0) setCommitError(friendlyGitError(r.output));
-      else { await fetchStatus(true); await fetchGraph(); }
+      else { await fetchStatus(true); await fetchGraph(); requestExplorerRefresh(); }
     } catch (e) { setCommitError(friendlyGitError(e.message)); }
     finally { setInitialLoading(false); }
   };
@@ -503,7 +827,8 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
     try {
       const pushArgs = (!hasUpstream && branch) ? ['push', '--set-upstream', 'origin', branch] : ['push'];
       const r = await runGit(pushArgs, 120000);
-      if (r.exit_code !== 0) setCommitError(friendlyGitError(r.output)); else await fetchStatus(true);
+      if (r.exit_code !== 0) setCommitError(friendlyGitError(r.output));
+      else { await fetchStatus(true); requestExplorerRefresh(); }
     } catch (e) { setCommitError(friendlyGitError(e.message)); } finally { setInitialLoading(false); }
   };
   const handlePull = async () => {
@@ -511,13 +836,14 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
     setCommitError(null);
     try {
       const r = await runGit(['pull'], 120000);
-      if (r.exit_code !== 0) setCommitError(friendlyGitError(r.output)); else await fetchStatus(true);
+      if (r.exit_code !== 0) setCommitError(friendlyGitError(r.output));
+      else { await fetchStatus(true); requestExplorerRefresh(); }
     } catch (e) { setCommitError(friendlyGitError(e.message)); } finally { setInitialLoading(false); }
   };
   const handleFetch = async () => {
     setInitialLoading(true);
     setCommitError(null);
-    try { await runGit(['fetch']); await fetchStatus(true); }
+    try { await runGit(['fetch']); await fetchStatus(true); requestExplorerRefresh(); }
     catch (e) { setCommitError(friendlyGitError(e.message)); } finally { setInitialLoading(false); }
   };
 
@@ -658,8 +984,9 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
                     <div className="scm-commit-dropdown-sep" />
                     <div className="scm-commit-dropdown-item" onClick={async () => {
                       setCommitDropdown(false); setInitialLoading(true);
-                      try { await runCommand('git stash'); await fetchStatus(true); }
-                      catch (e) { setError(e.message); }
+                      try {
+                        await handleStashPush();
+                      } catch (e) { setError(e.message); }
                       finally { setInitialLoading(false); }
                     }}><VscCircleSlash size={13} /> Stash All</div>
                   </div>
@@ -672,6 +999,30 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
                 </button>
               )}
             </div>
+
+            {/* Merge Changes — VS Code parity: list of unmerged paths with
+                Accept Current / Accept Incoming / Open Diff / Mark Resolved
+                actions. Rendered above Staged so the user can't miss it. */}
+            {hasConflicts && (
+              <div className="scm-section">
+                <SectionHeader
+                  title="Merge Changes" count={conflicts.length}
+                  collapsed={false} onToggle={() => {}}
+                />
+                <div className="scm-file-list">
+                  {conflicts.map(file => (
+                    <ConflictRow
+                      key={file.path}
+                      file={file}
+                      onOpenDiff={p => handleOpenConflictDiff(p)}
+                      onAcceptCurrent={handleAcceptCurrent}
+                      onAcceptIncoming={handleAcceptIncoming}
+                      onMarkResolved={handleMarkResolved}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Staged Changes */}
             {staged.length > 0 && (
@@ -691,7 +1042,7 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
                     {staged.map(file => (
                       <FileRow
                         key={file.path} file={file}
-                        onOpenDiff={p => setViewingDiff({ path: p, isStaged: true })}
+                        onOpenDiff={p => openDiffTab(p, true)}
                         primaryAction={handleUnstage}
                         primaryIcon={<VscRemove size={13} />}
                         primaryTitle="Unstage"
@@ -720,7 +1071,7 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
                     {unstaged.map(file => (
                       <FileRow
                         key={file.path} file={file}
-                        onOpenDiff={p => setViewingDiff({ path: p, isStaged: false })}
+                        onOpenDiff={p => openDiffTab(p, false)}
                         primaryAction={handleStage}
                         primaryIcon={<VscAdd size={13} />}
                         primaryTitle="Stage"
@@ -743,6 +1094,39 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
           </div>
 
           <div className="scm-resize-handle" onMouseDown={e => startResize(e, 'changes')} />
+
+          {/* ── Stashes ──────────────────────────────────────────────────────
+              Collapsed by default; auto-shows a count badge. Each row reveals
+              Pop / Apply / Drop on hover (mirrors VS Code stash list). */}
+          {stashList.length > 0 && (
+            <div className="scm-section">
+              <SectionHeader
+                title="Stashes"
+                count={stashList.length}
+                collapsed={collapsed.stash}
+                onToggle={() => toggle('stash')}
+                actions={
+                  <button className="scm-file-action" title="Refresh stash list"
+                    onClick={(e) => { e.stopPropagation(); fetchStashList(); }}>
+                    <VscRefresh size={13} />
+                  </button>
+                }
+              />
+              {!collapsed.stash && (
+                <div className="scm-file-list">
+                  {stashList.map(s => (
+                    <StashRow
+                      key={s.id}
+                      entry={s}
+                      onPop={() => handleStashPop(s.id)}
+                      onApply={() => handleStashApply(s.id)}
+                      onDrop={() => handleStashDrop(s.id)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ── Graph ──────────────────────────────────────────────────────── */}
           <div className="scm-graph-section-wrap" style={{ flex: collapsed.graph ? '0 0 auto' : '1 1 0', minHeight: 0 }}>
@@ -778,6 +1162,16 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
                             <div
                               className={`scm-graph-row${isSelected ? ' selected' : ''}`}
                               onClick={() => handleCommitClick(entry.hash)}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setGraphContextMenu({
+                                  x: e.clientX,
+                                  y: e.clientY,
+                                  hash: entry.hash,
+                                  subject: entry.subject || entry.hash.slice(0, 7),
+                                });
+                              }}
                               title={`${entry.hash.slice(0,7)} · ${entry.author}`}
                             >
                               <CommitSVG entry={entry} isFirst={i === 0} />
@@ -842,6 +1236,76 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Commit-graph context menu ─────────────────────────────────────
+          Right-click on any commit row opens this anchored at the cursor.
+          Covers cherry-pick (the most common request) plus the three reset
+          flavours and a "Copy hash" convenience. */}
+      {graphContextMenu && (
+        <>
+          <div
+            className="scm-graph-context-overlay"
+            onClick={() => setGraphContextMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setGraphContextMenu(null); }}
+            style={{ position: 'fixed', inset: 0, zIndex: 999 }}
+          />
+          <div
+            className="scm-graph-context-menu"
+            style={{
+              position: 'fixed',
+              top: graphContextMenu.y,
+              left: graphContextMenu.x,
+              zIndex: 1000,
+              background: 'var(--bg-elevated, #252526)',
+              border: '1px solid var(--border, #2b2b2b)',
+              borderRadius: 4,
+              padding: 4,
+              minWidth: 220,
+              boxShadow: '0 6px 24px rgba(0,0,0,0.4)',
+              fontSize: 12,
+              color: 'var(--text-primary, #d4d4d4)',
+            }}
+          >
+            <div
+              className="scm-commit-dropdown-item"
+              onClick={() => { const h = graphContextMenu.hash; setGraphContextMenu(null); handleCherryPick(h); }}
+            >
+              <VscArrowDown size={13} /> Cherry-pick this commit
+            </div>
+            <div className="scm-commit-dropdown-sep" />
+            <div
+              className="scm-commit-dropdown-item"
+              onClick={() => { const h = graphContextMenu.hash; setGraphContextMenu(null); handleResetTo(h, 'soft'); }}
+            >
+              Reset to here (soft)
+            </div>
+            <div
+              className="scm-commit-dropdown-item"
+              onClick={() => { const h = graphContextMenu.hash; setGraphContextMenu(null); handleResetTo(h, 'mixed'); }}
+            >
+              Reset to here (mixed)
+            </div>
+            <div
+              className="scm-commit-dropdown-item"
+              onClick={() => { const h = graphContextMenu.hash; setGraphContextMenu(null); handleResetTo(h, 'hard'); }}
+              style={{ color: '#f14c4c' }}
+            >
+              Reset to here (hard) — discards changes
+            </div>
+            <div className="scm-commit-dropdown-sep" />
+            <div
+              className="scm-commit-dropdown-item"
+              onClick={() => {
+                const h = graphContextMenu.hash;
+                setGraphContextMenu(null);
+                try { navigator.clipboard && navigator.clipboard.writeText(h); } catch (_) {}
+              }}
+            >
+              Copy commit hash
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

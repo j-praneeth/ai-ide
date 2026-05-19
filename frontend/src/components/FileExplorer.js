@@ -59,6 +59,25 @@ const HOVER_DELAY_MS = 150;  // prefetch delay on hover
 const LRU_MAX_SIZE   = 500;  // max cached folder entries
 const MAX_CONCURRENT_LOADS = 3; // max simultaneous folder fetches
 
+// ─── Git decoration palette (matches SourceControlPanel STATUS_CONFIG and
+//     VS Code's gitDecoration.* theme colors) ────────────────────────────────
+const GIT_DECORATION = {
+  M: { color: '#e5a000', title: 'Modified'  },
+  A: { color: '#73c991', title: 'Added'     },
+  D: { color: '#f14c4c', title: 'Deleted'   },
+  R: { color: '#f97316', title: 'Renamed'   },
+  C: { color: '#60a5fa', title: 'Copied'    },
+  U: { color: '#3dc9b0', title: 'Untracked' },
+  '!': { color: '#f14c4c', title: 'Conflict' },
+};
+// Higher = more severe. Folder rollups display the highest-severity descendant.
+const GIT_SEVERITY = { '!': 6, U: 5, D: 4, M: 3, R: 2, C: 1, A: 0 };
+function moreSevere(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return (GIT_SEVERITY[a] || 0) >= (GIT_SEVERITY[b] || 0) ? a : b;
+}
+
 // ─── LRU cache (matches VS Code's TreeRenderer node cache behavior) ──────────
 class LRUCache {
   constructor(max = LRU_MAX_SIZE) {
@@ -232,7 +251,7 @@ const TreeRow = memo(function TreeRow({
   flatItems, selectedFile, expandedFolders, loadingFolders,
   toggleFolder, openFile, onContextMenu, onDragStart,
   onDragOver, onDragLeave, onDrop, dropTarget, onMouseEnter, onMouseLeave,
-  gitIgnored,
+  gitIgnored, gitDecorations, gitFolderRollup, onOpenDiff,
 }) {
 
   const item = flatItems[index];
@@ -246,13 +265,22 @@ const TreeRow = memo(function TreeRow({
   const paddingLeft = depth * INDENT_SIZE + 8;
   const dimGit = !!(gitIgnored && gitIgnored[path]);
 
+  // Git decoration for this row.
+  // - Files: direct status from porcelain map.
+  // - Folders: highest-severity status across direct/indirect descendants.
+  const gitCode = node.type === 'folder'
+    ? (gitFolderRollup && gitFolderRollup[path])
+    : (gitDecorations && gitDecorations[path]);
+  const deco = gitCode ? GIT_DECORATION[gitCode] : null;
+  const labelColorStyle = deco ? { color: deco.color } : undefined;
+
   if (node.type === 'folder') {
     const folderColor = getFolderColor(node.name);
     const FolderIcon = isExpanded ? MdFolderOpen : MdFolder;
     return (
       <div
         style={{ ...style, paddingLeft, display: 'flex', alignItems: 'center', cursor: 'pointer' }}
-        className={`tree-item tree-folder${isSelected ? ' selected' : ''}${isDropTgt ? ' tree-drop-target' : ''}${dimGit ? ' tree-git-ignored' : ''}`}
+        className={`tree-item tree-folder${isSelected ? ' selected' : ''}${isDropTgt ? ' tree-drop-target' : ''}${dimGit ? ' tree-git-ignored' : ''}${deco ? ' tree-git-changed' : ''}`}
         onClick={() => toggleFolder(path)}
         onMouseEnter={() => onMouseEnter(path, node.type)}
         onMouseLeave={() => onMouseLeave(path)}
@@ -262,6 +290,7 @@ const TreeRow = memo(function TreeRow({
         onDragOver={e => onDragOver(e, path)}
         onDragLeave={onDragLeave}
         onDrop={e => onDrop(e, path)}
+        title={deco ? `${deco.title} (descendant)` : undefined}
       >
         <span className="tree-chevron">
           {isLoading
@@ -274,23 +303,35 @@ const TreeRow = memo(function TreeRow({
         <span className="folder-icon" style={{ color: folderColor, display: 'flex', alignItems: 'center' }}>
           <FolderIcon size={16} />
         </span>
-        <span className="tree-label">{node.name}</span>
+        <span className="tree-label" style={labelColorStyle}>{node.name}</span>
       </div>
     );
   }
 
   // File row — Material + SI icon per file type
   const [FileIconComp, iconColor] = getFileIconColor(node.name);
+  const handleFileClick = (e) => {
+    // Alt/Option-click on a changed file opens the diff editor (VS Code parity:
+    // Cmd-K Cmd-D / "Open Changes" shortcut). Regular click still opens the
+    // file in the editor.
+    if (gitCode && onOpenDiff && (e.altKey || e.metaKey === false && e.ctrlKey === false && e.shiftKey === true)) {
+      e.preventDefault();
+      onOpenDiff(path, 'HEAD');
+      return;
+    }
+    openFile(path);
+  };
   return (
     <div
       style={{ ...style, paddingLeft, display: 'flex', alignItems: 'center', cursor: 'pointer' }}
-      className={`tree-item tree-file${isSelected ? ' selected' : ''}${dimGit ? ' tree-git-ignored' : ''}`}
-      onClick={() => openFile(path)}
+      className={`tree-item tree-file${isSelected ? ' selected' : ''}${dimGit ? ' tree-git-ignored' : ''}${deco ? ` tree-git-${gitCode === '!' ? 'conflict' : 'changed'}` : ''}`}
+      onClick={handleFileClick}
       onMouseEnter={() => onMouseEnter(path, node.type)}
       onMouseLeave={() => onMouseLeave(path)}
       onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onContextMenu(e, path, 'file'); }}
       draggable
       onDragStart={e => onDragStart(e, path, 'file')}
+      title={deco ? deco.title : undefined}
     >
       <span className="tree-chevron" style={{ visibility: 'hidden' }}>
         <VscChevronRight size={14} />
@@ -298,7 +339,22 @@ const TreeRow = memo(function TreeRow({
       <span className="file-icon" style={{ color: iconColor, display: 'flex', alignItems: 'center' }}>
         <FileIconComp size={15} />
       </span>
-      <span className="tree-label">{node.name}</span>
+      <span className="tree-label" style={labelColorStyle}>{node.name}</span>
+      {deco && (
+        <span
+          className="tree-git-badge"
+          style={{
+            marginLeft: 'auto',
+            marginRight: 8,
+            fontSize: 11,
+            fontWeight: 700,
+            color: deco.color,
+            letterSpacing: '0.02em',
+          }}
+        >
+          {gitCode === '!' ? '!' : gitCode}
+        </span>
+      )}
     </div>
   );
 });
@@ -308,6 +364,14 @@ export default function FileExplorer({
   tree, treeLoading, openFile, selectedFile, onRefresh,
   showHiddenFiles, onToggleShowHidden, triggerNewFile, onNewFileDone,
   onOpenFolder, onLoadChildren,
+  // Git decoration props are optional — when omitted the explorer renders
+  // exactly as before, so embeddings that don't surface git state
+  // (e.g. web-mode FS Access folders) continue to work.
+  gitDecorations,
+  // Reserved for future per-platform path mapping (web folder paths vs repo
+  // paths). Currently unused; declared so callers can pass it safely.
+  projectRoot, // eslint-disable-line no-unused-vars
+  onOpenDiff,
 }) {
   const [expandedFolders, setExpandedFolders] = useState(new Set());
   const [lazyChildren,    setLazyChildren]    = useState({});
@@ -774,6 +838,26 @@ export default function FileExplorer({
     loadGenForPathRef.current.clear();
   }, []);
 
+  // Folder rollup: for each ancestor of every changed file, store the highest-
+  // severity descendant status. VS Code does the same — the folder label
+  // tints to indicate "there's a change in here somewhere" without you having
+  // to expand.
+  const gitFolderRollup = useMemo(() => {
+    const out = {};
+    if (!gitDecorations) return out;
+    for (const filePath of Object.keys(gitDecorations)) {
+      const code = gitDecorations[filePath];
+      const parts = filePath.split('/');
+      parts.pop(); // drop file name; ancestors only
+      let acc = '';
+      for (const seg of parts) {
+        acc = acc ? `${acc}/${seg}` : seg;
+        out[acc] = moreSevere(out[acc], code);
+      }
+    }
+    return out;
+  }, [gitDecorations]);
+
   // ── itemData passed to react-window rows (stable reference via useMemo) ───────
   // Mirrors VS Code's IListRenderer being called with the same data object.
   const itemData = useMemo(() => ({
@@ -792,11 +876,15 @@ export default function FileExplorer({
     onMouseEnter:  handleMouseEnter,
     onMouseLeave:  handleMouseLeave,
     gitIgnored,
+    gitDecorations: gitDecorations || null,
+    gitFolderRollup,
+    onOpenDiff,
   }), [
     flatItems, selectedFile, expandedFolders, loadingFolders,
     toggleFolder, openFile, handleContextMenu, handleDragStart,
     handleDragOver, handleDragLeave, handleDrop, dropTarget,
     handleMouseEnter, handleMouseLeave, gitIgnored,
+    gitDecorations, gitFolderRollup, onOpenDiff,
   ]);
 
   // ── Render ────────────────────────────────────────────────────────────────────

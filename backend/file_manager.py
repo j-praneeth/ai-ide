@@ -445,6 +445,81 @@ def git_status_bundle():
     }
 
 
+@router.get("/git-show")
+def git_show(path: str, ref: str = "HEAD"):
+    """
+    Return the content of a tracked file at a specific ref.
+
+    ref values:
+        "HEAD"  — content of the file as it appears in the HEAD commit
+        "STAGE" — content of the file as it currently sits in the index
+                  (i.e. what would be committed if you ran `git commit` now)
+        otherwise — passed through verbatim, so callers can ask for any
+                    arbitrary revision (branch / commit hash / tag).
+
+    Returns:
+        { ok: bool, content: str, exists: bool, error?: str }
+
+        exists=False is the normal case for untracked / newly-added files —
+        the diff viewer should render an empty left-hand pane.
+    """
+    root, err = _require_project_root()
+    if err:
+        return {"ok": False, "exists": False, "content": "", "error": err.get("error", "no workspace")}
+
+    rel = (path or "").strip().lstrip("/").lstrip("\\")
+    if not rel:
+        return {"ok": False, "exists": False, "content": "", "error": "path required"}
+
+    # Normalize to forward slashes for git (it accepts both but is consistent
+    # with the porcelain output the renderer already sees).
+    rel_for_git = rel.replace("\\", "/")
+
+    ref_norm = (ref or "HEAD").strip().upper()
+    if ref_norm == "HEAD":
+        spec = f"HEAD:{rel_for_git}"
+    elif ref_norm in ("STAGE", "STAGED", "INDEX", ":0"):
+        spec = f":0:{rel_for_git}"
+    else:
+        # Caller-provided revision (branch / commit / tag). Keep their case.
+        spec = f"{ref}:{rel_for_git}"
+
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), "show", spec],
+            capture_output=True, timeout=30,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "exists": False, "content": "", "error": "git not found in PATH"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "exists": False, "content": "", "error": "git show timed out"}
+    except Exception as e:
+        return {"ok": False, "exists": False, "content": "", "error": str(e)}
+
+    if r.returncode != 0:
+        # The most common non-zero exit is "fatal: path X exists on disk but
+        # not in <ref>" — i.e. an untracked / newly-added file. That's not an
+        # error from the UI's perspective; report exists=False with no content.
+        stderr = (r.stderr or b"").decode("utf-8", errors="replace")
+        is_missing = (
+            "exists on disk, but not in" in stderr
+            or "does not exist" in stderr
+            or "fatal: path" in stderr
+        )
+        if is_missing:
+            return {"ok": True, "exists": False, "content": ""}
+        return {"ok": False, "exists": False, "content": "", "error": stderr.strip() or "git show failed"}
+
+    try:
+        content = (r.stdout or b"").decode("utf-8")
+    except UnicodeDecodeError:
+        # Binary file — surface that so the renderer can show a placeholder
+        # rather than a wall of mojibake.
+        return {"ok": True, "exists": True, "content": "", "binary": True}
+
+    return {"ok": True, "exists": True, "content": content}
+
+
 class GitRunBody(BaseModel):
     args: list  # e.g. ["commit", "-m", "my message"]
     timeout: int = 60  # generous default — push/pull over slow networks can take a while
