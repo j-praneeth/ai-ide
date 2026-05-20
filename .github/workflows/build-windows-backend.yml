@@ -22,6 +22,10 @@ jobs:
         run: |
           cd backend
           python -m PyInstaller --onefile --name nebula-backend --distpath ../dist/backend main.py --add-data "agent:agent" --add-data "relay_config.json:."
+        env:
+          RELAY_URL: ${{ secrets.RELAY_URL }}
+          RELAY_SECRET: ${{ secrets.RELAY_SECRET }}
+          RELAY_AUTO_CONNECT: ${{ secrets.RELAY_AUTO_CONNECT }}
 
       - name: Upload Windows backend
         uses: actions/upload-artifact@v4
