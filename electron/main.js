@@ -2344,6 +2344,33 @@ function _makeBrowserWindow() {
   });
   try { Menu.setApplicationMenu(null); } catch (_) {}
   try { win.setMenuBarVisibility(false); win.setMenu(null); } catch (_) {}
+
+  // Setting the application menu to null kills the default DevTools
+  // accelerators (Cmd+Option+I on macOS, Ctrl+Shift+I and F12 elsewhere)
+  // because those shortcuts are bound to the menu's "View → Toggle
+  // Developer Tools" item. Register them imperatively here so the user can
+  // still inspect the renderer in packaged builds — without DevTools we
+  // can't diagnose any production-only issue.
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    const key = (input.key || '').toLowerCase();
+    const isInspectShortcut =
+      key === 'f12' ||
+      (key === 'i' && input.shift && (input.control || input.meta)) ||
+      (key === 'i' && input.shift && input.alt && input.meta); // macOS Cmd+Option+Shift+I
+    if (!isInspectShortcut) return;
+    event.preventDefault();
+    try {
+      if (win.webContents.isDevToolsOpened()) {
+        win.webContents.closeDevTools();
+      } else {
+        win.webContents.openDevTools({ mode: 'detach' });
+      }
+    } catch (e) {
+      console.warn('[devtools] toggle failed:', e?.message);
+    }
+  });
+
   win.webContents.on('will-navigate', (event, url) => {
     try {
       if (!url || typeof url !== 'string') return;
@@ -2507,6 +2534,55 @@ ipcMain.on('get-url-config-sync', (event) => {
 
 ipcMain.handle('get-platform', () => {
   return process.platform;
+});
+
+// Renderer-initiated DevTools toggle. Lets the in-app "Open DevTools"
+// button in error screens work even when the user doesn't remember the
+// keyboard shortcut — which is otherwise the only way in packaged builds
+// because the application menu is intentionally killed.
+ipcMain.handle('app:open-devtools', () => {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.webContents.isDevToolsOpened()) {
+        mainWindow.webContents.closeDevTools();
+      } else {
+        mainWindow.webContents.openDevTools({ mode: 'detach' });
+      }
+      return { ok: true };
+    }
+    return { ok: false, error: 'No active window' };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+});
+
+// Reports backend health from the main process so the renderer can show
+// a live indicator instead of just spinning forever. The reply includes
+// the URL we're polling, the running PID (if any), and the last error
+// string so the user can see exactly what's stuck without DevTools.
+ipcMain.handle('app:backend-diagnostics', async () => {
+  const url = `http://127.0.0.1:${backendPort || '?'}`;
+  const probeResult = await new Promise((resolve) => {
+    if (!backendPort) {
+      resolve({ ok: false, error: 'backendPort not yet assigned' });
+      return;
+    }
+    const req = http.get(`${url}/health`, { timeout: 1500 }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve({ ok: res.statusCode === 200, status: res.statusCode, body: body.slice(0, 200) }));
+    });
+    req.on('error', (err) => resolve({ ok: false, error: err.message || String(err) }));
+    req.on('timeout', () => { try { req.destroy(); } catch (_) {} resolve({ ok: false, error: 'health probe timed out' }); });
+  });
+  return {
+    apiUrl: url,
+    port: backendPort,
+    isDev,
+    processPid: backendProcess?.pid || null,
+    processAlive: !!backendProcess && backendProcess.exitCode === null,
+    probe: probeResult,
+  };
 });
 
 ipcMain.handle('auth:read-disk', () => readPersistedAuth());

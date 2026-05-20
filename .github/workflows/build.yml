@@ -1,0 +1,115 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - win
+          - mac
+          - all
+      publish:
+        description: 'Publish to GitHub'
+        required: true
+        default: 'always'
+        type: choice
+        options:
+          - always
+          - tag
+          - never
+
+jobs:
+  build-windows:
+    if: inputs.platform == 'win' || inputs.platform == 'all'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          npm install
+
+      - name: Build frontend
+        run: npm run build:frontend
+
+      - name: Build Windows backend
+        run: npm run build:backend:win
+
+      - name: Build CLI vault
+        run: npm run build:vault
+
+      - name: Build with KEK and publish
+        env:
+          NEBULA_CLI_KEK: ${{ secrets.NEBULA_CLI_KEK }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: node scripts/build-with-kek.mjs --win --publish ${{ inputs.publish }}
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        if: inputs.publish == 'never'
+        with:
+          name: nebula-ide-windows
+          path: release/**/*.exe
+          retention-days: 5
+
+  build-mac:
+    if: inputs.platform == 'mac' || inputs.platform == 'all'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          npm install
+          brew install python3
+
+      - name: Build frontend
+        run: npm run build:frontend
+
+      - name: Build macOS backend
+        run: npm run build:backend:mac
+
+      - name: Build CLI vault
+        run: npm run build:vault
+
+      - name: Build with KEK and publish
+        env:
+          NEBULA_CLI_KEK: ${{ secrets.NEBULA_CLI_KEK }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: node scripts/build-with-kek.mjs --mac --publish ${{ inputs.publish }}
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        if: inputs.publish == 'never'
+        with:
+          name: nebula-ide-macos
+          path: release/**/*.dmg
+          retention-days: 5

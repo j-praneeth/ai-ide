@@ -496,15 +496,41 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   }, [commitDropdown]);
 
   // ── Fetch git status via single bundle endpoint ─────────────────────────────
+  //
+  // IMPORTANT: do NOT wrap fetchStatusBundle in another withRetry here.
+  // gitService.fetchStatusBundle already runs through `gated()` which
+  // internally calls withGitRetry. Stacking a second retry around it
+  // multiplies attempt counts: previously 8×8 retries × 60s axios timeout
+  // could leave the panel showing "Checking repository…" for up to an hour
+  // in production when the bundled backend was slow to come up or its port
+  // was unreachable. One retry layer is enough.
+  //
+  // We also apply a hard 15s ceiling on the INITIAL fetch (foreground) via
+  // an AbortController-style race. If the call hasn't returned by then we
+  // surface a real, actionable error with a Retry button rather than
+  // leaving the user staring at a spinner forever.
   const fetchStatus = useCallback(async (isBackground = false) => {
     if (!hasWorkspace) { setInitialLoading(false); setStatusOutput(null); setBranch(''); return; }
     if (!isBackground) { setError(null); setInitialLoading(true); }
     else setBgRefreshing(true);
+
+    // Foreground fetches race against a 15s ceiling; background polls have
+    // no ceiling so they can quietly recover from a slow backend without
+    // making noise in the UI.
+    const HARD_CEILING_MS = 15000;
+    const ceiling = isBackground
+      ? null
+      : new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Backend did not respond within 15 seconds')), HARD_CEILING_MS),
+        );
+
     try {
-      // Retry up to 3 times on transient network/timeout errors before giving up
-      const data = await withRetry(() => fetchStatusBundle());
+      const data = ceiling
+        ? await Promise.race([fetchStatusBundle(), ceiling])
+        : await fetchStatusBundle();
+
       if (!data.ok) {
-        // "not a git repository" is a real error — show it
+        // "not a git repository" is a real, terminal error — show it.
         if (!isBackground) {
           setStatusOutput(null);
           setError(data.error || 'Not a git repository');
@@ -520,18 +546,24 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
       setHasUpstream(!!data.upstream);
       setAhead(data.ahead || 0);
       setBehind(data.behind || 0);
-      // Clear any previous error once we succeed
       setError(null);
     } catch (e) {
-      // On background polls, never overwrite the current UI with a timeout error —
-      // the data the user sees stays intact and we silently retry on the next tick.
+      // Background polls swallow errors — the previous UI state stays.
       if (!isBackground) {
         setStatusOutput(null);
         setBranch('');
         setHasUpstream(false);
-        // Show a friendlier message instead of the raw axios timeout string
-        const msg = e.message || '';
-        setError(/timeout|ECONNABORTED/i.test(msg) ? 'Taking longer than usual — retrying…' : msg || 'Unable to read git status');
+        const msg = String(e?.message || '');
+        // Pick a friendly, actionable message based on the error shape.
+        if (/15 seconds/i.test(msg)) {
+          setError('Backend not responding. The Python service may still be starting — click Retry, or open DevTools (Ctrl/Cmd+Shift+I) to inspect.');
+        } else if (/network|ECONNREFUSED|ECONNRESET/i.test(msg)) {
+          setError('Cannot reach the backend service. Try restarting the app, or run it from a terminal to see backend startup logs.');
+        } else if (/timeout|ECONNABORTED/i.test(msg)) {
+          setError('Request timed out. The repository may be very large — click Retry.');
+        } else {
+          setError(msg || 'Unable to read git status');
+        }
       }
     } finally {
       setInitialLoading(false);
@@ -549,18 +581,11 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   // Initial load
   useEffect(() => { fetchStatus(false); }, [fetchStatus]);
 
-  // Background polling — no spinner flash, 15s interval to avoid piling up on slow repos
-  useEffect(() => {
-    if (!hasWorkspace) return;
-    const id = setInterval(() => fetchStatus(true), 15000);
-    return () => clearInterval(id);
-  }, [fetchStatus, hasWorkspace]);
-
   // Live watcher: App.js opens a single WebSocket against /files/watch and
   // dispatches 'nebula:git-fs-change' whenever the OS watcher reports a
   // batch (debounced 200ms). We piggy-back on that so this panel refreshes
-  // the instant the user's commit / stage / push lands, without waiting for
-  // the 15s safety-net poll above.
+  // the instant the user's commit / stage / push lands.
+  // NO polling - only fetch when file system changes are detected!
   useEffect(() => {
     if (!hasWorkspace) return undefined;
     const onFsChange = () => fetchStatus(true);
@@ -1221,15 +1246,7 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   );
 
   if (initialLoading && !firstFetchDone.current) return (
-    <div className="scm-panel">
-      <div className="scm-panel-header">
-        <span className="scm-panel-title">SOURCE CONTROL</span>
-        <div className="scm-panel-actions">
-          <div className="scm-spinner" />
-        </div>
-      </div>
-      <div className="scm-loading">Checking repository…</div>
-    </div>
+    <SourceControlLoadingScreen onRetry={() => fetchStatus(false)} />
   );
 
   if (viewingDiff) return (
@@ -1322,7 +1339,24 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
         <div className="scm-empty">
           <VscSourceControl size={40} className="scm-empty-icon" />
           <p className="scm-empty-text">{typeof error === 'string' ? error : 'No git repository found.'}</p>
-          <button className="scm-btn primary" onClick={async () => {
+          {/* Backend-connectivity errors get a Retry button + DevTools/
+              diagnostics access at the top — "Initialize Repository"
+              is misleading if the issue is that the backend isn't
+              responding (init would fail too). */}
+          {typeof error === 'string' && /backend|reach|respond|network|timeout|connection/i.test(error) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center' }}>
+              <button className="scm-btn primary" onClick={() => fetchStatus(false)}>
+                <VscRefresh size={12} style={{ marginRight: 6, verticalAlign: '-2px' }} />
+                Retry
+              </button>
+              {window.electronAPI?.openDevTools && (
+                <button className="scm-btn" onClick={() => window.electronAPI.openDevTools()}>
+                  Open DevTools
+                </button>
+              )}
+            </div>
+          )}
+          <button className="scm-btn primary" style={{ marginTop: 8 }} onClick={async () => {
             setInitialLoading(true);
             try {
               const r = await gitInit();
@@ -2378,6 +2412,114 @@ function TagManager({ tags, onCreate, onDelete, onPush, onPushAll, onRefresh }) 
             Create tag
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Initial loading screen ──────────────────────────────────────────────────
+//
+// Shown while the very first /files/git-status-bundle is in-flight. We escalate
+// the message over time so a long wait never leaves the user wondering whether
+// the IDE is frozen:
+//
+//   < 3s   → "Checking repository…"          (fast, normal)
+//   3–8s   → adds "Connecting to the backend service…"
+//   ≥ 8s   → adds Retry + diagnostics + Open DevTools buttons (prod path)
+//
+// In packaged builds the menu is killed, so the default Cmd/Ctrl+Shift+I
+// shortcut for DevTools doesn't work. The "Open DevTools" button calls a
+// preload-exposed IPC handler that toggles the inspector imperatively.
+// "Show diagnostics" fetches the live backend status (URL, port, last
+// probe result) so the user can see what's actually broken without
+// opening DevTools at all.
+function SourceControlLoadingScreen({ onRetry }) {
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [diag, setDiag]           = useState(null);
+  const [showDiag, setShowDiag]   = useState(false);
+
+  useEffect(() => {
+    const t0 = Date.now();
+    const id = setInterval(() => setElapsedMs(Date.now() - t0), 500);
+    return () => clearInterval(id);
+  }, []);
+
+  const slow  = elapsedMs >= 3000;
+  const stuck = elapsedMs >= 8000;
+
+  const fetchDiag = async () => {
+    setShowDiag(true);
+    try {
+      const d = await window.electronAPI?.getBackendDiagnostics?.();
+      setDiag(d);
+    } catch (e) {
+      setDiag({ error: String(e?.message || e) });
+    }
+  };
+
+  return (
+    <div className="scm-panel">
+      <div className="scm-panel-header">
+        <span className="scm-panel-title">SOURCE CONTROL</span>
+        <div className="scm-panel-actions">
+          <div className="scm-spinner" />
+        </div>
+      </div>
+      <div className="scm-loading" style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start', padding: '12px 16px' }}>
+        <span>Checking repository…</span>
+        {slow && (
+          <span style={{ fontSize: 11, opacity: 0.7 }}>
+            Connecting to the backend service…
+          </span>
+        )}
+        {stuck && (
+          <>
+            <span style={{ fontSize: 11, opacity: 0.7, lineHeight: 1.4 }}>
+              The backend is taking longer than expected. If this is a new install,
+              the Python service may still be extracting. Otherwise it may have
+              failed to start.
+            </span>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+              <button
+                className="scm-btn primary"
+                onClick={onRetry}
+                title="Cancel the wait and retry"
+              >
+                <VscRefresh size={12} style={{ marginRight: 6, verticalAlign: '-2px' }} />
+                Retry now
+              </button>
+              <button
+                className="scm-btn"
+                onClick={fetchDiag}
+                title="Show backend connection details"
+              >
+                Show diagnostics
+              </button>
+              {window.electronAPI?.openDevTools && (
+                <button
+                  className="scm-btn"
+                  onClick={() => window.electronAPI.openDevTools()}
+                  title="Open the developer tools to inspect"
+                >
+                  Open DevTools
+                </button>
+              )}
+            </div>
+            {showDiag && (
+              <pre style={{
+                marginTop: 8, padding: 8, fontSize: 10.5, lineHeight: 1.45,
+                background: 'var(--bg-input, #1e1e1e)',
+                border: '1px solid var(--border, #2b2b2b)',
+                borderRadius: 4, maxWidth: '100%', whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all',
+              }}>
+                {diag
+                  ? JSON.stringify(diag, null, 2)
+                  : 'Fetching diagnostics…'}
+              </pre>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

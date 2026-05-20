@@ -37,16 +37,30 @@ import { API_URL as API } from '../config';
 // stub axios don't pay the probe cost.
 
 let _readyPromise = null;
+let _consecutiveFailures = 0;
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 function _probeHealth() {
   return axios
     .get(`${API}/health`, { timeout: 1500 })
-    .then(() => true)
-    .catch(() => false);
+    .then((res) => {
+      _consecutiveFailures = 0;
+      return res.status === 200;
+    })
+    .catch(() => {
+      _consecutiveFailures++;
+      return false;
+    });
 }
 
 function waitForBackendReady() {
   if (_readyPromise) return _readyPromise;
+
+  // If we've had too many consecutive failures, don't block - let the retry layer handle it
+  if (_consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+    _readyPromise = Promise.resolve();
+    return _readyPromise;
+  }
 
   _readyPromise = new Promise((resolve) => {
     let settled = false;
@@ -72,6 +86,12 @@ function waitForBackendReady() {
     //    the promise is settled.
     const pollId = setInterval(() => {
       if (settled) { clearInterval(pollId); return; }
+      // Skip polling if we have too many consecutive failures
+      if (_consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        clearInterval(pollId);
+        finish();
+        return;
+      }
       _probeHealth().then((ok) => {
         if (ok && !settled) { clearInterval(pollId); finish(); }
       });
@@ -182,10 +202,20 @@ export async function runGit(args, { timeout = 60000 } = {}) {
 // ─── Status / diff / show ──────────────────────────────────────────────────
 
 export async function fetchStatusBundle() {
-  const res = await gated(() =>
-    axios.get(`${API}/files/git-status-bundle`, { timeout: 60000 })
-  );
-  return res.data;
+  try {
+    const res = await gated(() =>
+      axios.get(`${API}/files/git-status-bundle`, { timeout: 60000 })
+    );
+    return res.data;
+  } catch (err) {
+    // If backend is not ready, return a graceful fallback instead of throwing
+    // This prevents the UI from showing errors every 15 seconds
+    const msg = String(err.message || '');
+    if (msg.includes('ECONNREFUSED') || msg.includes('Network Error') || msg.includes('timeout')) {
+      return { ok: false, error: 'Backend not ready', isRetryable: true };
+    }
+    throw err;
+  }
 }
 
 export async function gitShow(path, ref = 'HEAD') {

@@ -105,6 +105,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Open external URLs in the user's default browser
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
 
+  // Diagnostics — used by the SCM panel's error screen so users on packaged
+  // builds (where the menu is hidden) can still inspect what's broken.
+  openDevTools: () => ipcRenderer.invoke('app:open-devtools'),
+  getBackendDiagnostics: () => ipcRenderer.invoke('app:backend-diagnostics'),
+
   // Right-side CLI PTY integration
   startCliSession: (tool, options) => ipcRenderer.invoke('cli:start', tool, options),
   writeCliSession: (sessionId, data) => ipcRenderer.invoke('cli:write', sessionId, data),
