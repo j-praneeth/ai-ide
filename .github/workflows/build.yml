@@ -80,19 +80,20 @@ jobs:
         env:
           CI: false
 
-      - name: Setup relay config
-        run: |
-          if [ ! -f backend/relay_config.json ]; then
-            cp backend/relay_config.json.example backend/relay_config.json
-          fi
-
       - name: Build Windows backend
         run: |
           pip install pyinstaller
           npm run build:backend:win
+        env:
+          RELAY_URL: ${{ secrets.RELAY_URL }}
+          RELAY_SECRET: ${{ secrets.RELAY_SECRET }}
+          RELAY_AUTO_CONNECT: ${{ secrets.RELAY_AUTO_CONNECT }}
 
       - name: Build CLI vault
         run: npm run build:vault
+        env:
+          NEBULA_CLI_KEK: ${{ secrets.NEBULA_CLI_KEK }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - name: Build with KEK and publish
         env:
@@ -139,19 +140,20 @@ jobs:
         env:
           CI: false
 
-      - name: Setup relay config
-        run: |
-          if [ ! -f backend/relay_config.json ]; then
-            cp backend/relay_config.json.example backend/relay_config.json
-          fi
-
       - name: Build macOS backend
         run: |
           pip install pyinstaller
           npm run build:backend:mac
+        env:
+          RELAY_URL: ${{ secrets.RELAY_URL }}
+          RELAY_SECRET: ${{ secrets.RELAY_SECRET }}
+          RELAY_AUTO_CONNECT: ${{ secrets.RELAY_AUTO_CONNECT }}
 
       - name: Build CLI vault
         run: npm run build:vault
+        env:
+          NEBULA_CLI_KEK: ${{ secrets.NEBULA_CLI_KEK }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - name: Build with KEK and publish
         env:
