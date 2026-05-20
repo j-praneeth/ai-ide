@@ -79,6 +79,12 @@ jobs:
           export CI=false
           npm run build
 
+      - name: Setup relay config
+        run: |
+          if [ ! -f backend/relay_config.json ]; then
+            cp backend/relay_config.json.example backend/relay_config.json
+          fi
+
       - name: Build Windows backend
         run: |
           pip install pyinstaller
@@ -130,6 +136,12 @@ jobs:
           cd frontend
           export CI=false
           npm run build
+
+      - name: Setup relay config
+        run: |
+          if [ ! -f backend/relay_config.json ]; then
+            cp backend/relay_config.json.example backend/relay_config.json
+          fi
 
       - name: Build macOS backend
         run: |
