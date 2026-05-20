@@ -9,8 +9,7 @@ import {
   VscGitMerge,
   VscRepoForked,
 } from 'react-icons/vsc';
-import axios from 'axios';
-import { API_URL as API } from '../config';
+import { runGit } from '../lib/gitService';
 
 function getLanguageFromFile(filename) {
   if (!filename) return '';
@@ -57,9 +56,10 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
   useEffect(() => {
     const fetchBranches = async () => {
       try {
-        const res = await axios.post(`${API}/terminal/run`, { command: 'git branch -a --no-color' });
-        const output = (res.data.output || '').trim();
-        if (res.data.exit_code === 0 && output) {
+        // runGit goes through waitForBackendReady + retry — safe to call on mount.
+        const res = await runGit(['branch', '-a', '--no-color']);
+        const output = (res.output || '').trim();
+        if (res.exit_code === 0 && output) {
           const parsed = output.split('\n').map(line => {
             const isCurrent = line.startsWith('*');
             const name = line.replace(/^\*?\s+/, '').trim();
@@ -105,14 +105,14 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
     }
     setSwitching(checkoutName);
     try {
-      const res = await axios.post(`${API}/terminal/run`, { command: `git checkout ${checkoutName}` });
-      if (res.data.exit_code === 0) {
+      const res = await runGit(['checkout', checkoutName]);
+      if (res.exit_code === 0) {
         if (onSwitch) onSwitch(checkoutName);
         onClose();
       } else {
-        // Try creating branch if it doesn't exist locally
-        const res2 = await axios.post(`${API}/terminal/run`, { command: `git checkout -b ${checkoutName}` });
-        if (res2.data.exit_code === 0) {
+        // Try creating the branch locally if it only exists on the remote.
+        const res2 = await runGit(['checkout', '-b', checkoutName]);
+        if (res2.exit_code === 0) {
           if (onSwitch) onSwitch(checkoutName);
           onClose();
         }
@@ -125,8 +125,9 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
     if (!filter) return;
     setSwitching(filter);
     try {
-      const res = await axios.post(`${API}/terminal/run`, { command: `git checkout -b ${filter}` });
-      if (res.data.exit_code === 0) {
+      // Pass filter as an argument element — never interpolated into a shell string.
+      const res = await runGit(['checkout', '-b', filter]);
+      if (res.exit_code === 0) {
         if (onSwitch) onSwitch(filter);
         onClose();
       }
@@ -138,11 +139,11 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
     e.stopPropagation();
     if (!window.confirm(`Are you sure you want to delete branch '${branchName}'?`)) return;
     try {
-      await axios.post(`${API}/terminal/run`, { command: `git branch -D ${branchName}` });
+      await runGit(['branch', '-D', branchName]);
       // Refresh list
-      const res = await axios.post(`${API}/terminal/run`, { command: 'git branch -a --no-color' });
-      const output = (res.data.output || '').trim();
-      if (res.data.exit_code === 0 && output) {
+      const res = await runGit(['branch', '-a', '--no-color']);
+      const output = (res.output || '').trim();
+      if (res.exit_code === 0 && output) {
         const parsed = output.split('\n').map(line => {
           const isCurrent = line.startsWith('*');
           const name = line.replace(/^\*?\s+/, '').trim();
@@ -155,26 +156,11 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
     } catch (_) {}
   };
 
-  // Run a write op against the current branch using a remote/local branch as
-  // the source (merge into current / rebase current onto). Both use the
-  // argument-list git-run endpoint so paths with spaces/special chars are
-  // handled identically on every platform.
-  const runGitArgs = async (args, timeoutMs = 90000) => {
-    const res = await axios.post(
-      `${API}/files/git-run`,
-      { args, timeout: Math.floor(timeoutMs / 1000) },
-      { timeout: timeoutMs + 5000 },
-    );
-    return res.data || { ok: false, output: 'no response', exit_code: -1 };
-  };
-
   const handleMergeBranch = async (e, branchName) => {
     e.stopPropagation();
-    // Source for the merge — git accepts both local "feature" and
-    // "origin/feature" forms; we hand the user's display name through as-is.
     const src = branchName.replace(/^remotes\//, '');
     if (!window.confirm(`Merge '${src}' into the current branch?`)) return;
-    const r = await runGitArgs(['merge', src]);
+    const r = await runGit(['merge', src], { timeout: 90000 });
     if (!r.ok) {
       window.alert(`Merge failed:\n${(r.output || '').slice(0, 600)}`);
     }
@@ -185,7 +171,7 @@ function BranchPicker({ currentBranch, onClose, onSwitch }) {
     e.stopPropagation();
     const onto = branchName.replace(/^remotes\//, '');
     if (!window.confirm(`Rebase the current branch onto '${onto}'?`)) return;
-    const r = await runGitArgs(['rebase', onto]);
+    const r = await runGit(['rebase', onto], { timeout: 90000 });
     if (!r.ok) {
       window.alert(`Rebase failed (you may be mid-rebase — use 'git rebase --continue/--abort'):\n${(r.output || '').slice(0, 600)}`);
     }
@@ -295,26 +281,18 @@ export default function StatusBar({ activeFile, cursorPosition, encoding, hasWor
       return;
     }
     try {
-      const branchRes = await axios.post(
-        `${API}/terminal/run`,
-        { command: 'git branch --show-current' },
-        { timeout: 180000 },
-      );
-      const branchName = (branchRes.data.output || '').trim();
-      if (branchName && branchRes.data.exit_code === 0) {
+      const branchRes = await runGit(['branch', '--show-current'], { timeout: 180000 });
+      const branchName = (branchRes.output || '').trim();
+      if (branchName && branchRes.exit_code === 0) {
         setBranch(branchName);
       } else {
         setBranch('');
       }
 
       // Do not use -uall here — it can enumerate huge untracked trees and stall for minutes.
-      const statusRes = await axios.post(
-        `${API}/terminal/run`,
-        { command: 'git status --porcelain' },
-        { timeout: 180000 },
-      );
-      const lines = (statusRes.data.output || '').trim().split('\n').filter(Boolean);
-      setGitChanges(statusRes.data.exit_code === 0 ? lines.length : 0);
+      const statusRes = await runGit(['status', '--porcelain'], { timeout: 180000 });
+      const lines = (statusRes.output || '').trim().split('\n').filter(Boolean);
+      setGitChanges(statusRes.exit_code === 0 ? lines.length : 0);
     } catch {
       setBranch('');
       setGitChanges(0);

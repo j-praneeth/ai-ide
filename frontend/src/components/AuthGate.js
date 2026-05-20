@@ -140,12 +140,15 @@ export default function AuthGate({ children, requireAuth: forceRequireAuth }) {
     const params = new URLSearchParams(window.location.search);
     const forceLogin = params.get('login') === 'true';
 
+    // In Electron the backend:ready event is the proper signal; give it 60s.
+    // In browser dev mode there's no backend:ready so 5s is a reasonable cap.
+    const timeoutMs = window.electronAPI?.onBackendReady ? 60000 : 5000;
     const timeout = setTimeout(() => {
       if (!cancelled) {
         console.warn("Auth status check timed out, falling back to offline mode");
         setLoading(false);
       }
-    }, 5000);
+    }, timeoutMs);
 
     const doAuthCheck = async () => {
       if (cancelled) return;

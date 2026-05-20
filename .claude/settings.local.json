@@ -55,7 +55,9 @@
       "Bash(node --check /Users/cittaai/Documents/GitHub/ai-ide/electron/main.js)",
       "Bash(node --check /Users/cittaai/Documents/GitHub/ai-ide/electron/preload.js)",
       "Bash(npx --no-install -- eslint --no-eslintrc --parser-options=ecmaVersion:latest,sourceType:module,ecmaFeatures:{jsx:true} src/App.js)",
-      "Bash(node -e \"const fs=require\\('fs'\\); const acorn=require\\('acorn'\\); const t=fs.readFileSync\\('src/App.js','utf-8'\\); acorn.parse\\(t, {ecmaVersion:'latest', sourceType:'module', allowImportExportEverywhere:true, plugins:{}}\\); console.log\\('OK'\\);\")"
+      "Bash(node -e \"const fs=require\\('fs'\\); const acorn=require\\('acorn'\\); const t=fs.readFileSync\\('src/App.js','utf-8'\\); acorn.parse\\(t, {ecmaVersion:'latest', sourceType:'module', allowImportExportEverywhere:true, plugins:{}}\\); console.log\\('OK'\\);\")",
+      "Bash(dir electron\\\\main.js)",
+      "Bash(Select-Object -ExpandProperty Name)"
     ]
   }
 }

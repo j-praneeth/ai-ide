@@ -38,7 +38,10 @@ import { API_URL as API } from '../config';
 
 let _readyPromise = null;
 let _consecutiveFailures = 0;
-const MAX_CONSECUTIVE_FAILURES = 3;
+// Allow up to 15 consecutive failures (~9s at 600ms intervals) before giving up.
+// Python backend startup on Windows regularly takes 3–8s so 3 was too low and
+// released the gate before the backend was actually ready.
+const MAX_CONSECUTIVE_FAILURES = 15;
 
 function _probeHealth() {
   return axios
@@ -53,7 +56,7 @@ function _probeHealth() {
     });
 }
 
-function waitForBackendReady() {
+export function waitForBackendReady() {
   if (_readyPromise) return _readyPromise;
 
   // If we've had too many consecutive failures, don't block - let the retry layer handle it

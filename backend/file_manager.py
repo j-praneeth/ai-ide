@@ -376,15 +376,22 @@ def git_check_ignore(body: GitCheckIgnoreBody):
         return {"ignored": []}
 
 
+_GIT_NOT_FOUND = 127  # sentinel: git binary absent from PATH
+
 def _run_git(root: Path, args: list, timeout: int = 10) -> tuple:
-    """Run a git command in root; returns (stdout, returncode)."""
+    """Run a git command in root; returns (stdout, returncode).
+    returncode == _GIT_NOT_FOUND (127) means git is not in PATH.
+    returncode == -1 means timeout or unexpected OS error.
+    """
     try:
         r = subprocess.run(
             ["git", "-C", str(root)] + args,
             capture_output=True, text=True, timeout=timeout,
         )
         return (r.stdout or ""), r.returncode
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError:
+        return "", _GIT_NOT_FOUND
+    except OSError:
         return "", -1
     except subprocess.TimeoutExpired:
         return "", -1
@@ -408,6 +415,8 @@ def git_status_bundle():
 
     # Quick repo check — 5s is plenty for rev-parse
     _, rc = _run_git(root, ["rev-parse", "--git-dir"], timeout=5)
+    if rc == _GIT_NOT_FOUND:
+        return {"ok": False, "error": "git not found in PATH"}
     if rc != 0:
         return {"ok": False, "error": "not a git repository"}
 

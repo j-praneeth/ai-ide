@@ -51,6 +51,7 @@ import {
 } from 'react-icons/si';
 import { API_URL as API } from '../config';
 import { Throttler, RunOnceScheduler, Limiter } from '../lib/async';
+import { waitForBackendReady } from '../lib/gitService';
 
 // ─── Constants (match VS Code explorer) ──────────────────────────────────────
 const ROW_HEIGHT     = 22;   // px — VS Code uses 22px for explorer rows
@@ -681,7 +682,7 @@ export default function FileExplorer({
       } catch (_) {}
     }
 
-    connect();
+    waitForBackendReady().then(() => { if (active) connect(); });
     return () => {
       active = false;
       refreshScheduler.dispose();

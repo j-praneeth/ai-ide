@@ -23,6 +23,7 @@ import { VscDeviceMobile, VscTerminal, VscSync, VscRefresh } from 'react-icons/v
 import { listDirFromHandle, getHandleForPath, getFileContentFromHandle, writeFileToHandle } from './lib/webFs';
 import { authFetch, getAuthUser } from './lib/auth';
 import { Throttler, SequencerByKey } from './lib/async';
+import { waitForBackendReady } from './lib/gitService';
 import { buildMatchRegex, firstMatchColumnsInLine } from './lib/searchMatch';
 import { extensionRegistry } from './lib/extensionRegistry';
 
@@ -318,7 +319,7 @@ function App() {
       }
     };
 
-    tick();
+    waitForBackendReady().then(() => { if (!cancelled) tick(); });
     const id = setInterval(tick, 15000);
 
     // ── Live watcher → status refresh ─────────────────────────────────────
@@ -382,7 +383,7 @@ function App() {
       };
       ws.onerror = () => { try { ws && ws.close(); } catch (_) {} };
     };
-    connectWs();
+    waitForBackendReady().then(() => { if (!cancelled) connectWs(); });
 
     // Belt-and-braces: also listen for explicit refresh requests from other
     // panels (SCM panel emits after every commit / stage / push), so a user

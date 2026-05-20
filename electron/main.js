@@ -452,6 +452,41 @@ function ensureCliPaths(env = process.env) {
   }
 }
 
+/**
+ * Enrich the environment object that will be handed to the Python backend
+ * process so that `git` (and other tools the backend may shell out to) can
+ * be found even when Electron was launched from a GUI context with a minimal
+ * PATH.
+ *
+ * On macOS/Linux this delegates to ensureCliPaths() which already adds
+ * Homebrew, nvm, volta, etc.
+ *
+ * On Windows, Electron's PATH typically lacks the Git installation directory.
+ * We probe the standard install locations and prepend them when they exist.
+ */
+function _enrichBackendEnv(env) {
+  // Reuse the same PATH enrichment we already apply for CLI tools.
+  ensureCliPaths(env);
+
+  if (process.platform === 'win32') {
+    // Git for Windows standard install locations (64-bit and 32-bit).
+    const gitCandidates = [
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'cmd'),
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin'),
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'cmd'),
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin'),
+      // Scoop installs to the user's home dir
+      path.join(os.homedir(), 'scoop', 'apps', 'git', 'current', 'cmd'),
+      path.join(os.homedir(), 'scoop', 'shims'),
+      // Winget / Microsoft Store installs
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'cmd'),
+    ];
+    for (const p of gitCandidates) {
+      if (p && fs.existsSync(p)) prependToPath(p, env);
+    }
+  }
+}
+
 function getNpmGlobalBinDir() {
   // Return cached value synchronously if available
   if (_npmGlobalBinDirCache !== undefined) return _npmGlobalBinDirCache;
@@ -1842,18 +1877,34 @@ function closeSplash() {
 async function findSystemPython() {
   if (_systemPythonCache !== undefined) return _systemPythonCache;
 
-  // On Windows: try 'python', 'python3', then the launcher 'py' with -3 flag.
-  // On Mac/Linux: try 'python3' first, then 'python'.
-  const candidates = process.platform === 'win32'
-    ? [['python', []], ['python3', []], ['py', ['-3']]]
-    : [['python3', []], ['python', []]];
+  // macOS GUI apps launch with a minimal PATH that often excludes Homebrew's
+  // bin dirs. Probe absolute paths first so we find Python even when PATH is
+  // stripped to /usr/bin:/bin.  Fallback to bare names so pyenv/conda shims
+  // (which shadow absolute paths) are still respected when they are in PATH.
+  let candidates;
+  if (process.platform === 'win32') {
+    candidates = [['python', []], ['python3', []], ['py', ['-3']]];
+  } else if (process.platform === 'darwin') {
+    candidates = [
+      ['/opt/homebrew/bin/python3', []],   // Apple Silicon Homebrew
+      ['/usr/local/bin/python3', []],       // Intel Homebrew / older installs
+      ['/usr/bin/python3', []],             // macOS system (Monterey+, Ventura+)
+      ['/opt/homebrew/bin/python', []],
+      ['/usr/local/bin/python', []],
+      ['python3', []],
+      ['python', []],
+    ];
+  } else {
+    candidates = [['python3', []], ['python', []]];
+  }
 
   for (const [cmd, extraArgs] of candidates) {
     try {
-      const { stdout } = await runFile(cmd, [...extraArgs, '--version'], {
+      const { stdout, stderr } = await runFile(cmd, [...extraArgs, '--version'], {
         timeout: 5000, env: { ...process.env },
       });
-      const version = (stdout || '').trim();
+      // Python 2 prints version to stderr; Python 3 uses stdout.
+      const version = ((stdout || '') + (stderr || '')).trim();
       if (version.includes('Python 3')) {
         console.log(`Found system Python: ${cmd} (${version})`);
         _systemPythonCache = cmd;
@@ -2006,28 +2057,43 @@ async function setupEmbeddedNode() {
 
 // ─── Embedded Python Download (Windows) ─────────────────────────
 
-function downloadFile(url, dest) {
+function downloadFile(url, dest, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (err) => {
+      if (settled) return;
+      settled = true;
+      if (err) { try { fs.unlinkSync(dest); } catch (_) {} reject(err); }
+      else resolve();
+    };
+
+    const overallTimer = setTimeout(
+      () => done(new Error(`Download timed out after ${timeoutMs / 1000}s: ${url}`)),
+      timeoutMs,
+    );
+
     const file = fs.createWriteStream(dest);
+    file.on('error', (err) => { clearTimeout(overallTimer); done(err); });
+
     const get = url.startsWith('https') ? https.get : http.get;
 
     const request = (targetUrl) => {
-      get(targetUrl, (response) => {
-        // Handle redirects
+      const req = get(targetUrl, (response) => {
         if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
           request(response.headers.location);
           return;
         }
         if (response.statusCode !== 200) {
-          reject(new Error(`Download failed with status ${response.statusCode}`));
+          clearTimeout(overallTimer);
+          done(new Error(`Download failed with HTTP ${response.statusCode}: ${targetUrl}`));
           return;
         }
         response.pipe(file);
-        file.on('finish', () => file.close(resolve));
-      }).on('error', (err) => {
-        fs.unlink(dest, () => {});
-        reject(err);
+        file.on('finish', () => { clearTimeout(overallTimer); file.close(() => done(null)); });
       });
+      // Per-connection timeout — catches stalled sockets before the overall timer.
+      req.setTimeout(30000, () => { req.destroy(); });
+      req.on('error', (err) => { clearTimeout(overallTimer); done(err); });
     };
 
     request(url);
@@ -2106,10 +2172,11 @@ async function installDependencies(pythonCmd, backendSourceDir) {
   const reqFile = path.join(backendSourceDir, 'requirements.txt');
   if (!fs.existsSync(reqFile)) return;
 
-  // Check if deps already installed by testing a key import
+  // Check if deps already installed by testing a key import.
+  // 20 s covers cold Python start (~2-3 s) + first-time import overhead.
   try {
     await runFile(pythonCmd, ['-c', 'import fastapi; import uvicorn'], {
-      timeout: 10000, env: { ...process.env },
+      timeout: 20000, env: { ...process.env },
     });
     console.log('Dependencies already installed');
     return;
@@ -2248,17 +2315,38 @@ async function startBackend(port, projectRoot = null) {
       env: { ...process.env },
       cwd: cwd,
     };
-    
+
     if (process.platform === 'win32') {
-      spawnOptions.shell = true;
-      spawnOptions.windowsHide = false;
+      // Use shell only for bare command names (e.g. 'python', 'python3').
+      // Absolute paths must NOT go through the shell — cmd.exe breaks paths
+      // that contain spaces (common in user profile dirs and Program Files).
+      spawnOptions.shell = !path.isAbsolute(command);
+      spawnOptions.windowsHide = true;
     }
+
+    // Enrich the backend's PATH so git (and other tools the backend shells out
+    // to) is discoverable even when Electron's GUI-launch PATH is minimal.
+    _enrichBackendEnv(spawnOptions.env);
+
+    // ── Single settle-once wrapper ───────────────────────────────
+    // Both the stderr-message path and the health-poll path call finish().
+    // The first caller wins; subsequent calls are silently dropped.
+    let _settled = false;
+    const stderrChunks = [];  // rolling buffer for diagnostics
+    const _lastStderr = () => stderrChunks.join('').slice(-3000).trim();
+
+    const finish = (err) => {
+      if (_settled) return;
+      _settled = true;
+      if (err) reject(err);
+      else resolve();
+    };
 
     try {
       backendProcess = spawn(command, args, spawnOptions);
     } catch (err) {
       console.error('[Backend] Spawn error:', err);
-      return reject(err);
+      return finish(err);
     }
 
     backendProcess.stdout.on('data', (data) => {
@@ -2266,56 +2354,72 @@ async function startBackend(port, projectRoot = null) {
     });
 
     backendProcess.stderr.on('data', (data) => {
-      const msg = data.toString().trim();
-      console.log(`[Backend] ${msg}`);
-      if (msg.includes('Application startup complete') || msg.includes('Uvicorn running on')) {
-        resolve();
+      const chunk = data.toString();
+      stderrChunks.push(chunk);
+      // Keep rolling buffer ≤ 6 KB
+      while (stderrChunks.length > 1 &&
+             stderrChunks.reduce((n, c) => n + c.length, 0) > 6144) {
+        stderrChunks.shift();
+      }
+      console.log(`[Backend] ${chunk.trim()}`);
+      if (chunk.includes('Application startup complete') || chunk.includes('Uvicorn running on')) {
+        finish(null);
       }
     });
 
     backendProcess.on('error', (err) => {
       console.error('[Backend] Failed to start backend:', err);
-      reject(err);
+      finish(err);
     });
 
     backendProcess.on('exit', (code, signal) => {
       console.log(`[Backend] Process exited with code ${code}, signal: ${signal}`);
       backendProcess = null;
+      // If the process dies before we declared success, fail fast instead of
+      // waiting for the 120-second health-check timeout.
+      if (!_settled && signal !== 'SIGTERM' && signal !== 'SIGKILL' && code !== 0) {
+        const out = _lastStderr();
+        const detail = out ? `\n\nLast output:\n${out}` : '';
+        finish(new Error(
+          `Backend process exited with code ${code} before becoming ready.${detail}`
+        ));
+      }
     });
 
-    // Poll health endpoint — start quickly, retry every 200ms
+    // ── Health polling ───────────────────────────────────────────
+    // PyInstaller binary starts in ~100-500 ms; Python source needs 1-3 s.
+    // Give Python source a longer initial delay so we don't flood logs with
+    // connection-refused errors during the normal import phase.
     const startTime = Date.now();
-    const maxWait = 60000;
+    const maxWait = 120000;          // 2 min — covers first-time pip install
+    const initialDelay = bundledExe ? 100 : 800;
+    const pollInterval = bundledExe ? 200 : 500;
 
     console.log('[Backend] Waiting for health check on port', port);
 
     const pollHealth = () => {
+      if (_settled) return;
       if (Date.now() - startTime > maxWait) {
-        console.log('[Backend] Timeout waiting for backend to start');
-        reject(new Error('Backend failed to start within 60 seconds'));
+        const out = _lastStderr();
+        const detail = out ? `\n\nLast output:\n${out}` : '';
+        finish(new Error(`Backend failed to start within ${maxWait / 1000}s.${detail}`));
         return;
       }
 
-      const req = http.get(`http://127.0.0.1:${port}/health`, (res) => {
+      const req = http.get(`http://127.0.0.1:${port}/health`, { timeout: 1500 }, (res) => {
+        res.resume(); // consume body to free the socket
         if (res.statusCode === 200) {
-          resolve();
+          finish(null);
         } else {
-          setTimeout(pollHealth, 200);
+          setTimeout(pollHealth, pollInterval);
         }
       });
 
-      req.on('error', () => {
-        setTimeout(pollHealth, 200);
-      });
-
-      req.setTimeout(1000, () => {
-        req.destroy();
-        setTimeout(pollHealth, 200);
-      });
+      req.on('error', () => { setTimeout(pollHealth, pollInterval); });
+      req.setTimeout(1500, () => { req.destroy(); setTimeout(pollHealth, pollInterval); });
     };
 
-    // First check after 100ms — PyInstaller binary is often ready by then
-    setTimeout(pollHealth, 100);
+    setTimeout(pollHealth, initialDelay);
   });
 }
 
