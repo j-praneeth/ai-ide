@@ -74,7 +74,10 @@ jobs:
           npm install
 
       - name: Build frontend
-        run: npm run build:frontend
+        run: |
+          cd frontend
+          export CI=false
+          npm run build
 
       - name: Build Windows backend
         run: npm run build:backend:win
@@ -121,7 +124,10 @@ jobs:
           brew install python3
 
       - name: Build frontend
-        run: npm run build:frontend
+        run: |
+          cd frontend
+          export CI=false
+          npm run build
 
       - name: Build macOS backend
         run: npm run build:backend:mac

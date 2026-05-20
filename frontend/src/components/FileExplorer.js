@@ -314,7 +314,7 @@ const TreeRow = memo(function TreeRow({
     // Alt/Option-click on a changed file opens the diff editor (VS Code parity:
     // Cmd-K Cmd-D / "Open Changes" shortcut). Regular click still opens the
     // file in the editor.
-    if (gitCode && onOpenDiff && (e.altKey || e.metaKey === false && e.ctrlKey === false && e.shiftKey === true)) {
+    if (gitCode && onOpenDiff && (e.altKey || (e.metaKey === false && e.ctrlKey === false && e.shiftKey === true))) {
       e.preventDefault();
       onOpenDiff(path, 'HEAD');
       return;

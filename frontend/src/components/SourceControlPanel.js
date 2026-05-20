@@ -26,9 +26,7 @@ import {
 } from '../lib/gitService';
 
 // Local alias so existing callsites stay terse. The retry layer is now baked
-// into every gitService method, so `withRetry` is rarely needed here — but
-// the graph fetcher still uses it directly against axios, so re-export.
-const withRetry = (fn) => withGitRetry(fn);
+// into every gitService method.
 
 // ─── Git porcelain parser ─────────────────────────────────────────────────────
 //
@@ -452,7 +450,6 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   const [copiedHash, setCopiedHash] = useState(null);
   const [collapsed, setCollapsed]   = useState({ staged: false, changes: false, graph: false, stash: true });
   const [panelH, setPanelH]         = useState({ changes: 300 });
-  const isResizing = useRef(null);
   const commitDropdownRef = useRef(null);
   const firstFetchDone = useRef(false);
 
