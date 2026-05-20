@@ -2148,11 +2148,12 @@ function getBundledBackendExe() {
   }
 
   if (fs.existsSync(exePath)) {
-    console.log('Found bundled backend at:', exePath);
+    console.log('[Backend] Found bundled backend at:', exePath);
     return exePath;
   }
 
-  console.log('Bundled backend not found at:', exePath);
+  console.log('[Backend] Bundled backend NOT found at:', exePath);
+  console.log('[Backend] Checking resourcesPath:', process.resourcesPath);
   return null;
 }
 
@@ -2181,13 +2182,16 @@ async function startBackend(port, projectRoot = null) {
 
     // ─── Strategy 1: Bundled PyInstaller executable ───────────
     const bundledExe = getBundledBackendExe();
+    console.log('[Backend] Platform:', process.platform, '| isDev:', isDev, '| Bundled exe:', bundledExe);
+    
     if (bundledExe) {
-      console.log('Using bundled PyInstaller backend');
+      console.log('Using bundled PyInstaller backend:', bundledExe);
       command = bundledExe;
       args = ['--port', port.toString(), '--host', '0.0.0.0'];
       if (initialProjectRoot) args.push('--project-root', initialProjectRoot);
       cwd = undefined;
     } else {
+      console.log('[Backend] Will try Python fallback');
       // ─── Strategy 2: Find or setup Python ───────────────────
       let pythonCmd = null;
       const backendSourceDir = getBackendSourceDir();
@@ -2235,14 +2239,27 @@ async function startBackend(port, projectRoot = null) {
       cwd = backendSourceDir;
     }
 
-    console.log(`Starting backend: ${command} ${args.join(' ')}`);
+    console.log(`[Backend] Starting: ${command} ${args.join(' ')}`);
+    console.log(`[Backend] CWD: ${cwd || 'default'}`);
     updateSplash('Starting IDE...');
 
-    backendProcess = spawn(command, args, {
+    const spawnOptions = {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
       cwd: cwd,
-    });
+    };
+    
+    if (process.platform === 'win32') {
+      spawnOptions.shell = true;
+      spawnOptions.windowsHide = false;
+    }
+
+    try {
+      backendProcess = spawn(command, args, spawnOptions);
+    } catch (err) {
+      console.error('[Backend] Spawn error:', err);
+      return reject(err);
+    }
 
     backendProcess.stdout.on('data', (data) => {
       console.log(`[Backend] ${data.toString().trim()}`);
@@ -2257,12 +2274,12 @@ async function startBackend(port, projectRoot = null) {
     });
 
     backendProcess.on('error', (err) => {
-      console.error('Failed to start backend:', err);
+      console.error('[Backend] Failed to start backend:', err);
       reject(err);
     });
 
-    backendProcess.on('exit', (code) => {
-      console.log(`Backend process exited with code ${code}`);
+    backendProcess.on('exit', (code, signal) => {
+      console.log(`[Backend] Process exited with code ${code}, signal: ${signal}`);
       backendProcess = null;
     });
 
@@ -2270,8 +2287,11 @@ async function startBackend(port, projectRoot = null) {
     const startTime = Date.now();
     const maxWait = 60000;
 
+    console.log('[Backend] Waiting for health check on port', port);
+
     const pollHealth = () => {
       if (Date.now() - startTime > maxWait) {
+        console.log('[Backend] Timeout waiting for backend to start');
         reject(new Error('Backend failed to start within 60 seconds'));
         return;
       }
