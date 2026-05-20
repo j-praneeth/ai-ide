@@ -80,7 +80,9 @@ jobs:
           npm run build
 
       - name: Build Windows backend
-        run: npm run build:backend:win
+        run: |
+          pip install pyinstaller
+          npm run build:backend:win
 
       - name: Build CLI vault
         run: npm run build:vault
@@ -130,7 +132,9 @@ jobs:
           npm run build
 
       - name: Build macOS backend
-        run: npm run build:backend:mac
+        run: |
+          pip install pyinstaller
+          npm run build:backend:mac
 
       - name: Build CLI vault
         run: npm run build:vault
