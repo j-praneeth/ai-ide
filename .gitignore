@@ -18,7 +18,6 @@ dist/
 build/
 
 # Relay config (contains secrets — never commit)
-backend/relay_config.json
 mobile/.env
 backend/.env.example
 

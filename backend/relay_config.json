@@ -1,0 +1,5 @@
+{
+  "relay_url": "RELAY_URL",
+  "relay_secret": "RELAY_SECRET",
+  "auto_connect": false
+}
