@@ -341,10 +341,35 @@ def _disk_watcher_loop(interval_seconds: int) -> None:
                 continue  # disk and MongoDB already agree
 
             logger.info(
-                "Backend credential watcher: refresh token rotated on disk (disk=%s..., stored=%s...), syncing to MongoDB.",
+                "Backend credential watcher: refresh token rotated on disk (disk=%s..., stored=%s...).",
                 disk_refresh[:8] if disk_refresh else 'none',
                 stored_refresh[:8] if stored_refresh else 'none',
             )
+
+            # Compare freshness before syncing — only overwrite MongoDB if
+            # the disk token is actually newer, otherwise claude CLI writing
+            # stale creds could corrupt a freshly-refreshed token in MongoDB.
+            disk_expires_s = _ms_or_s_to_seconds(disk_expires)
+            stored_expires_raw = (stored or {}).get("expiresAt", 0)
+            stored_expires_s = _ms_or_s_to_seconds(stored_expires_raw)
+
+            if stored and stored_refresh and stored_expires_s >= disk_expires_s:
+                logger.info(
+                    "Backend credential watcher: MongoDB token is at least as fresh as disk "
+                    "(disk expiresAt=%s, db expiresAt=%s). Skipping sync.",
+                    disk_expires_s, stored_expires_s,
+                )
+                # Update last_refresh so we don't reprocess the same file change
+                with _disk_watcher_lock:
+                    _disk_watcher_last_refresh = disk_refresh
+                continue
+
+            logger.info(
+                "Backend credential watcher: disk token is fresher than MongoDB (disk expiresAt=%s, db expiresAt=%s). "
+                "Syncing disk → MongoDB.",
+                disk_expires_s, stored_expires_s,
+            )
+
             # Use a single atomic save + cache clear
             expires_at_s = _ms_or_s_to_seconds(disk_expires)
             save_oauth({
@@ -410,94 +435,102 @@ def _master_refresh_loop(interval_seconds: int = 300) -> None:
     logger.info("[MASTER-REFRESH] Background loop started (interval=%ss, refresh_margin=%ss).",
                 interval_seconds, _CACHE_MARGIN_SECONDS)
 
-    while True:
-        print(f"[MASTER-REFRESH] >>> Checking token expiry status at {time.strftime('%H:%M:%S')}...", flush=True, file=sys.stderr)
-        logger.info("[MASTER-REFRESH] Checking token expiry status...")
-        time.sleep(interval_seconds)
+    # Do an immediate first check so that expired tokens are refreshed right away
+    # rather than waiting `interval_seconds` before the first check.
+    _do_master_refresh_check()
 
-        if not is_master_device():
-            logger.warning("[MASTER-REFRESH] Not master device, stopping loop.")
+    while True:
+        time.sleep(interval_seconds)
+        _do_master_refresh_check()
+
+
+def _do_master_refresh_check() -> None:
+    """Performs one iteration of the master refresh check."""
+    import sys
+    print(f"[MASTER-REFRESH] >>> Checking token expiry status at {time.strftime('%H:%M:%S')}...", flush=True, file=sys.stderr)
+    logger.info("[MASTER-REFRESH] Checking token expiry status...")
+
+    if not is_master_device():
+        logger.warning("[MASTER-REFRESH] Not master device, stopping loop.")
+        return
+
+    try:
+        # Step 1: Read current token from MongoDB
+        oauth = get_stored_oauth()
+        if not oauth:
+            logger.warning("[MASTER-REFRESH] No credentials in DB, skipping refresh check.")
             return
 
-        try:
-            # Step 1: Read current token from MongoDB
-            oauth = get_stored_oauth()
-            if not oauth:
-                logger.warning("[MASTER-REFRESH] No credentials in DB, skipping refresh check.")
-                continue
+        refresh_token = (oauth.get("refreshToken") or "").strip()
+        expires_at_ms = oauth.get("expiresAt") or 0
+        expires_at_s = _ms_or_s_to_seconds(expires_at_ms)
+        now = time.time()
+        time_until_expiry = expires_at_s - now
+        refresh_threshold = now + _CACHE_MARGIN_SECONDS
+        needs_refresh = expires_at_s <= refresh_threshold
 
-            refresh_token = (oauth.get("refreshToken") or "").strip()
-            expires_at_ms = oauth.get("expiresAt") or 0
-            expires_at_s = _ms_or_s_to_seconds(expires_at_ms)
-            now = time.time()
-            time_until_expiry = expires_at_s - now
-            refresh_threshold = now + _CACHE_MARGIN_SECONDS
-            needs_refresh = expires_at_s <= refresh_threshold
+        logger.info("[MASTER-REFRESH] Token expires in %ss (threshold: %ss from now)",
+                    time_until_expiry, _CACHE_MARGIN_SECONDS)
+        logger.info("[MASTER-REFRESH] Check: expires_at_s (%s) <= threshold (%s) = %s",
+                    int(expires_at_s), int(refresh_threshold), needs_refresh)
 
-            logger.info("[MASTER-REFRESH] Token expires in %ss (threshold: %ss from now)",
-                        time_until_expiry, _CACHE_MARGIN_SECONDS)
-            logger.info("[MASTER-REFRESH] Check: expires_at_s (%s) <= threshold (%s) = %s",
-                        int(expires_at_s), int(refresh_threshold), needs_refresh)
+        # Step 2: Check if token needs refresh (5 minutes before expiry)
+        if not needs_refresh:
+            logger.info("[MASTER-REFRESH] Token is FRESH (expires at %s > threshold %s), skipping refresh.",
+                       int(expires_at_s), int(refresh_threshold))
+            return
 
-            # Step 2: Check if token needs refresh (5 minutes before expiry)
-            if not needs_refresh:
-                logger.info("[MASTER-REFRESH] Token is FRESH (expires at %s > threshold %s), skipping refresh.",
-                           int(expires_at_s), int(refresh_threshold))
-                logger.info("[MASTER-REFRESH] Will check again in %ss", interval_seconds)
-                continue
+        # Step 3: Token expired or expiring soon - refresh it
+        logger.warning("[MASTER-REFRESH] Token needs REFRESH! (expires at %s <= threshold %s)",
+                      int(expires_at_s), int(refresh_threshold))
+        logger.warning("[MASTER-REFRESH] Refreshing token now...")
 
-            # Step 3: Token expired or expiring soon - refresh it
-            logger.warning("[MASTER-REFRESH] Token needs REFRESH! (expires at %s <= threshold %s)",
-                          int(expires_at_s), int(refresh_threshold))
-            logger.warning("[MASTER-REFRESH] Refreshing token now...")
+        if not refresh_token:
+            logger.error("[MASTER-REFRESH] No refresh token in DB, cannot refresh!")
+            return
 
-            if not refresh_token:
-                logger.error("[MASTER-REFRESH] No refresh token in DB, cannot refresh!")
-                continue
+        logger.info("[MASTER-REFRESH] Calling Anthropic OAuth to refresh token...")
+        result = _do_refresh(refresh_token)
 
-            logger.info("[MASTER-REFRESH] Calling Anthropic OAuth to refresh token...")
-            result = _do_refresh(refresh_token)
+        new_access = (result.get("access_token") or result.get("accessToken") or "").strip()
+        new_refresh = (result.get("refresh_token") or result.get("refreshToken") or "").strip() or refresh_token
+        expires_in = int(result.get("expires_in") or 3600)
+        new_expires_at_s = now + expires_in
 
-            new_access = (result.get("access_token") or result.get("accessToken") or "").strip()
-            new_refresh = (result.get("refresh_token") or result.get("refreshToken") or "").strip() or refresh_token
-            expires_in = int(result.get("expires_in") or 3600)
-            new_expires_at_s = now + expires_in
+        if not new_access:
+            logger.error("[MASTER-REFRESH] OAuth refresh returned no access token!")
+            return
 
-            if not new_access:
-                logger.error("[MASTER-REFRESH] OAuth refresh returned no access token!")
-                continue
+        logger.info("[MASTER-REFRESH] Token refreshed successfully!")
+        logger.info("[MASTER-REFRESH] New token expires in %ss", expires_in)
 
-            logger.info("[MASTER-REFRESH] Token refreshed successfully!")
-            logger.info("[MASTER-REFRESH] New token expires in %ss", expires_in)
+        # Step 4: Save new token to MongoDB
+        scope = (result.get("scope") or "").strip()
+        updated_oauth = {
+            **oauth,
+            "accessToken": new_access,
+            "refreshToken": new_refresh,
+            "expiresAt": int(new_expires_at_s * 1000),
+            "scope": scope,
+            "subscriptionType": result.get("subscriptionType") or "free",
+            "rateLimitTier": result.get("rateLimitTier") or "default_claude_free_1x",
+        }
+        if scope:
+            updated_oauth["scope"] = scope
 
-            # Step 4: Save new token to MongoDB
-            scope = (result.get("scope") or "").strip()
-            updated_oauth = {
-                **oauth,
-                "accessToken": new_access,
-                "refreshToken": new_refresh,
-                "expiresAt": int(new_expires_at_s * 1000),
-                "scope": scope,
-                "subscriptionType": result.get("subscriptionType") or "free",
-                "rateLimitTier": result.get("rateLimitTier") or "default_claude_free_1x",
-            }
-            if scope:
-                updated_oauth["scope"] = scope
+        logger.info("[MASTER-REFRESH] Saving new token to MongoDB...")
+        save_oauth(updated_oauth, reason="master_background_refresh")
+        clear_cache()
+        logger.info("[MASTER-REFRESH] Token saved to MongoDB successfully!")
+        logger.info("[MASTER-REFRESH] New refreshToken: %s..., accessToken: %s...",
+                    new_refresh[:10], new_access[:10])
+        # NOTE: We deliberately do NOT write to ~/.claude/.credentials.json here.
+        # That file belongs to `claude` CLI, which uses its own OAuth client ID.
+        # Our refreshed token uses a different client ID and would cause 401
+        # if claude CLI tried to use it. claude CLI manages its own file.
 
-            logger.info("[MASTER-REFRESH] Saving new token to MongoDB...")
-            save_oauth(updated_oauth, reason="master_background_refresh")
-            clear_cache()
-            logger.info("[MASTER-REFRESH] Token saved to MongoDB successfully!")
-            logger.info("[MASTER-REFRESH] New refreshToken: %s..., accessToken: %s...",
-                        new_refresh[:10], new_access[:10])
-
-            # Step 5: Also write to local disk for master device
-            logger.info("[MASTER-REFRESH] Writing new token to local disk (~/.claude/.credentials.json)...")
-            write_token_to_disk(updated_oauth, reason="master_background_refresh")
-            logger.info("[MASTER-REFRESH] Token written to local disk!")
-
-        except Exception as exc:
-            logger.error("[MASTER-REFRESH] Error during token refresh: %s", exc)
+    except Exception as exc:
+        logger.error("[MASTER-REFRESH] Error during token refresh: %s", exc)
 
 
 def start_master_refresh_loop(interval_seconds: int = 5 * 60) -> None:
@@ -594,7 +627,7 @@ def reconcile_disk_credentials() -> None:
         else:
             logger.info(
                 "Startup reconcile: MongoDB token is newer (db expiresAt=%s, disk expiresAt=%s). "
-                "Electron will patch disk via _applyFreshClaudeToken after startup.",
+                "Leaving disk unchanged — claude CLI manages its own credentials file.",
                 stored_exp_s, disk_exp_s,
             )
 
