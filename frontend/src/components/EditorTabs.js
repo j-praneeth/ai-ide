@@ -119,7 +119,7 @@ export default function EditorTabs({
                   {gitCode === '!' ? '!' : gitCode}
                 </span>
               )}
-              {isModified && !isActive && (
+              {isModified && (
                 <VscCircleFilled size={8} className="tab-modified-dot" />
               )}
               <button

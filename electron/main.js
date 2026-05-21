@@ -1332,20 +1332,29 @@ async function _applyFreshClaudeToken() {
   try {
     const data = await _fetchClaudeTokenFromBackend();
 
-    // Guard: if both disk and backend have JWT access tokens with different
-    // "sub" (subject) claims, the backend has credentials for a different
-    // account. Skip the refresh to preserve the bundled credentials.
-    // If tokens are opaque (not JWT), trust the backend and proceed.
+    // Guard: if the disk token is still VALID and its JWT subject differs from
+    // the backend token, preserve the disk credentials (different account).
+    // If the disk token is EXPIRED, always trust the backend — stale bundled
+    // credentials must never block a fresh token.
     if (data.accessToken) {
-      const diskSub = _decodeJwtSubject(_readDiskAccessToken());
+      const diskToken = _readDiskAccessToken();
+      const diskSub = _decodeJwtSubject(diskToken);
       const backendSub = _decodeJwtSubject(data.accessToken);
-      if (diskSub && backendSub && diskSub !== backendSub) {
+      const diskExpired = !diskToken || cliBundle.isAccessTokenExpired();
+      if (diskSub && backendSub && diskSub !== backendSub && !diskExpired) {
         console.warn(
           '[claude-token] Backend user (sub=' + backendSub + ') differs from disk (sub=' + diskSub + '). ' +
-          'Skipping refresh to preserve bundled credentials.'
+          'Disk token is still valid — preserving disk credentials.'
         );
         _lastRefreshResult = { ok: true };
         return _lastRefreshResult;
+      }
+
+      if (diskSub && backendSub && diskSub !== backendSub && diskExpired) {
+        console.warn(
+          '[claude-token] Backend user (sub=' + backendSub + ') differs from disk (sub=' + diskSub + '). ' +
+          'Disk token is EXPIRED — trusting backend credentials.'
+        );
       }
 
       console.log(`[claude-token] Token refreshed. Access token ${data.accessToken.slice(0, 8)}..., expiresAt=${data.expiresAt}, hasRefresh=${!!data.refreshToken}`);
@@ -1376,6 +1385,8 @@ async function _applyFreshClaudeToken() {
 // Sync the on-disk credentials to the backend after bundle install. Ensures MongoDB
 // matches the bundled credentials so the token refresh loop never returns a different
 // account's token.
+// IMPORTANT: Only syncs if the backend has NO credentials yet — never overwrites
+// a pre-seeded (admin-pasted or env-seeded) credential with stale bundle data.
 async function _syncBundleCredentialsToBackend() {
   if (!backendPort) return;
   const credsPath = path.join(app.getPath('home'), '.claude', '.credentials.json');
@@ -1386,6 +1397,31 @@ async function _syncBundleCredentialsToBackend() {
     const oauth = creds.claudeAiOauth || creds.oauth || creds;
     const refreshToken = (oauth.refreshToken || oauth.refresh_token || '').trim();
     if (!refreshToken) return;
+
+    // Only sync if the backend has NO stored credentials — avoids overwriting
+    // a pre-seeded (admin/env) credential with stale bundle data.
+    const hasBackendCreds = await new Promise((resolve) => {
+      const base = _getNebulaBackendUrl();
+      const req = http.get(`${base}/auth/claude-token-sync`, { timeout: 5000 }, (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            resolve(!!(data.ok && data.accessToken));
+          } catch (_) { resolve(false); }
+        });
+      });
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+    });
+
+    if (hasBackendCreds) {
+      console.log('[cli-bundle] Backend already has credentials — skipping bundle-to-backend sync.');
+      return;
+    }
+
+    console.log('[cli-bundle] Backend has no credentials — syncing bundle credentials.');
     const body = JSON.stringify({
       oauth: {
         ...oauth,
@@ -3293,6 +3329,18 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
       cwd = (perPath && fs.existsSync(perPath)) ? perPath : app.getPath('home');
     } else {
       cwd = (currentProjectRoot && fs.existsSync(currentProjectRoot)) ? currentProjectRoot : app.getPath('home');
+    }
+  }
+
+  // Safety: ensure the Claude onboarding state file exists BEFORE spawning.
+  // Without ~/.claude.json the CLI shows the login flow even with valid creds.
+  if (tool === 'claude' || tool === 'codex') {
+    const claudeHomeJson = path.join(app.getPath('home'), '.claude.json');
+    if (!fs.existsSync(claudeHomeJson)) {
+      try {
+        fs.writeFileSync(claudeHomeJson, JSON.stringify({ hasCompletedOnboarding: true, onboardingComplete: true }, null, 2), { mode: 0o600 });
+        console.log(`[cli-start] Created missing ${claudeHomeJson}`);
+      } catch (_) {}
     }
   }
 

@@ -19,10 +19,10 @@ import OpenFolderDialog from './components/OpenFolderDialog';
 import MobileCompanionPopup from './components/MobileCompanionPopup';
 import CliPanel from './components/CliPanel';
 import AuthGate from './components/AuthGate';
-import { VscDeviceMobile, VscTerminal, VscSync, VscRefresh } from 'react-icons/vsc';
+import { VscDeviceMobile, VscTerminal, VscSync, VscRefresh, VscFile, VscSearch } from 'react-icons/vsc';
 import { listDirFromHandle, getHandleForPath, getFileContentFromHandle, writeFileToHandle } from './lib/webFs';
 import { authFetch, getAuthUser } from './lib/auth';
-import { Throttler, SequencerByKey } from './lib/async';
+import { Throttler, ResourceQueue } from './lib/async';
 import { waitForBackendReady } from './lib/gitService';
 import { buildMatchRegex, firstMatchColumnsInLine } from './lib/searchMatch';
 import { extensionRegistry } from './lib/extensionRegistry';
@@ -34,8 +34,28 @@ axios.defaults.timeout = 120000;
 // Module-level singletons — mirrors VS Code's service-level Throttler instances.
 // Throttler: at most 1 in-flight tree load + 1 pending (new requests replace old pending)
 const _treeLoadThrottler = new Throttler();
-// SequencerByKey: file saves are serialised per path — prevents out-of-order writes
-const _fileSaveSequencer = new SequencerByKey();
+// ResourceQueue: file saves are serialised per path — prevents out-of-order writes
+const _fileSaveSequencer = new ResourceQueue();
+
+// Compute which lines in the current text differ from the original, correctly
+// handling insertions/deletions by trimming matching leading/trailing lines first.
+function computeModifiedLines(originalText, currentText) {
+  const o = originalText.split('\n');
+  const c = currentText.split('\n');
+  const oLen = o.length;
+  const cLen = c.length;
+
+  let start = 0;
+  while (start < oLen && start < cLen && o[start] === c[start]) start++;
+
+  let oEnd = oLen - 1;
+  let cEnd = cLen - 1;
+  while (oEnd >= start && cEnd >= start && o[oEnd] === c[cEnd]) { oEnd--; cEnd--; }
+
+  const modified = new Set();
+  for (let i = start; i <= cEnd; i++) modified.add(i + 1);
+  return modified;
+}
 
 // Language detection by file extension
 function getLanguage(filename) {
@@ -108,6 +128,11 @@ function App() {
   const [fileContents, setFileContents] = useState({});
   const [originalContents, setOriginalContents] = useState({});
   const [modifiedFiles, setModifiedFiles] = useState(new Set());
+  const activeFileRef = useRef(activeFile);
+  const fileContentsRef = useRef(fileContents);
+  const decorationsRef = useRef([]);
+  activeFileRef.current = activeFile;
+  fileContentsRef.current = fileContents;
 
   // UI state
   const [sidebarPanel, setSidebarPanel] = useState('explorer');
@@ -124,6 +149,11 @@ function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [showNewFilePrompt, setShowNewFilePrompt] = useState(false);
   const [showOpenFolder, setShowOpenFolder] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [searchSelectedIndex, setSearchSelectedIndex] = useState(0);
+  const searchTimerRef = useRef(null);
   // Seed projectName / projectRoot from a localStorage snapshot of the last
   // hydrated workspace so the title bar / SCM panel render the right value on
   // the very first frame. The Electron main process then overrides this via
@@ -170,10 +200,15 @@ function App() {
   const sidebarResizingRef = useRef(false);
   const rightPanelResizingRef = useRef(false);
   const [ideSettings, setIdeSettings] = useState(() => {
-    // Load saved settings on mount
     try {
       const raw = localStorage.getItem('nebula_ide_settings');
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (saved.theme === 'Nebula Light') {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+        return saved;
+      }
     } catch (_) {}
     return {};
   });
@@ -697,6 +732,52 @@ function App() {
     }
   }, [openFiles, webFolderHandle]);
 
+  const handleSearchChange = useCallback((e) => {
+    const q = e.target.value;
+    setSearchQuery(q);
+    setSearchSelectedIndex(0);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    if (!q.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await axios.get(`${API}/files/glob-search`, { params: { query: q } });
+        setSearchResults(res.data?.results || []);
+      } catch {
+        setSearchResults([]);
+      }
+    }, 150);
+  }, []);
+
+  const handleOpenSearchFile = useCallback((file) => {
+    setSearchQuery('');
+    setSearchResults([]);
+    setSearchFocused(false);
+    openFile(file);
+  }, [openFile]);
+
+  const handleSearchKeyDown = useCallback((e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSearchSelectedIndex(prev => Math.min(prev + 1, searchResults.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSearchSelectedIndex(prev => Math.max(prev - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (searchResults[searchSelectedIndex]) {
+        handleOpenSearchFile(searchResults[searchSelectedIndex]);
+      }
+    } else if (e.key === 'Escape') {
+      setSearchQuery('');
+      setSearchResults([]);
+      setSearchFocused(false);
+      e.target.blur();
+    }
+  }, [searchResults, searchSelectedIndex, handleOpenSearchFile]);
+
   useEffect(() => {
     const nav = pendingSearchNavRef.current;
     if (!nav || !editorRef.current || !monacoRef.current || activeFile !== nav.path) return;
@@ -799,11 +880,14 @@ function App() {
 
   // Save the current file — sequenced per path so rapid Ctrl+S presses on the
   // same file never cause out-of-order writes. Mirrors VS Code's ResourceQueue
-  // / SequencerByKey used for atomic file writes.
+  // for atomic file writes.
+  // Reads activeFile + fileContents from refs to avoid stale closures
+  // when called from the Monaco command registered on editor mount.
   const saveFile = useCallback(async () => {
-    if (!activeFile || !fileContents[activeFile]) return;
-    const path    = activeFile;
-    const content = fileContents[activeFile];
+    const path = activeFileRef.current;
+    const fc = fileContentsRef.current;
+    if (!path || !fc[path]) return;
+    const content = fc[path];
     try {
       await _fileSaveSequencer.queueFor(path, async () => {
         if (webFolderHandle) {
@@ -817,7 +901,7 @@ function App() {
     } catch (err) {
       console.error('Failed to save file:', err);
     }
-  }, [activeFile, fileContents, webFolderHandle]);
+  }, [webFolderHandle]);
 
   // Save all files
   const saveAllFiles = useCallback(async () => {
@@ -855,7 +939,29 @@ function App() {
     } else {
       setModifiedFiles(prev => { const next = new Set(prev); next.delete(activeFile); return next; });
     }
+    // Update gutter decorations for modified lines
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (editor && monaco) {
+      const modifiedLines = computeModifiedLines(originalContents[activeFile] || '', value);
+      const decos = [];
+      for (const line of modifiedLines) {
+        decos.push({
+          range: new monaco.Range(line, 1, line, 1),
+          options: {
+            isWholeLine: true,
+            linesDecorationsClassName: 'modified-line-gutter',
+          },
+        });
+      }
+      decorationsRef.current = editor.deltaDecorations(decorationsRef.current, decos);
+    }
   }, [activeFile, originalContents]);
+
+  // Clear gutter decorations when switching files
+  useEffect(() => {
+    decorationsRef.current = editorRef.current?.deltaDecorations(decorationsRef.current, []) || [];
+  }, [activeFile]);
 
   // Handle editor mount
   const handleEditorMount = useCallback((editor, monaco) => {
@@ -867,54 +973,145 @@ function App() {
       base: 'vs-dark',
       inherit: true,
       rules: [
-        { token: 'comment', foreground: '4a6a53', fontStyle: 'italic' },
-        { token: 'keyword', foreground: 'c792ea' },
-        { token: 'string', foreground: 'ecc48d' },
-        { token: 'number', foreground: 'f78c6c' },
-        { token: 'type', foreground: 'ffcb6b' },
-        { token: 'function', foreground: '82aaff' },
-        { token: 'variable', foreground: 'a9c0d6' },
-        { token: 'constant', foreground: '89ddff' },
-        { token: 'regexp', foreground: '89ddff' },
-        { token: 'operator', foreground: '89ddff' },
-        { token: 'tag', foreground: 'f07178' },
-        { token: 'attribute', foreground: 'c792ea' },
-        { token: 'delimiter', foreground: '7a8ba3' },
+        { token: 'comment', foreground: '7A7A74', fontStyle: 'italic' },
+        { token: 'keyword', foreground: 'FF6188' },
+        { token: 'keyword.control', foreground: 'FF6188' },
+        { token: 'keyword.operator', foreground: '78DCE8' },
+        { token: 'string', foreground: 'FFD866' },
+        { token: 'string.quoted', foreground: 'FFD866' },
+        { token: 'number', foreground: 'FC9483' },
+        { token: 'type', foreground: '78DCE8' },
+        { token: 'type.identifier', foreground: '78DCE8' },
+        { token: 'function', foreground: 'A9DC76' },
+        { token: 'function.declaration', foreground: 'A9DC76' },
+        { token: 'variable', foreground: 'FCFCFA' },
+        { token: 'variable.other', foreground: 'FCFCFA' },
+        { token: 'constant', foreground: 'AB9DF2' },
+        { token: 'constant.language', foreground: 'AB9DF2' },
+        { token: 'regexp', foreground: '78DCE8' },
+        { token: 'operator', foreground: '78DCE8' },
+        { token: 'tag', foreground: 'FF6188' },
+        { token: 'attribute', foreground: 'AB9DF2' },
+        { token: 'delimiter', foreground: 'B0B0A8' },
+        { token: 'meta.tag', foreground: 'FF6188' },
+        { token: 'string.key', foreground: 'FFD866' },
+        { token: 'entity.name.class', foreground: '78DCE8' },
+        { token: 'entity.name.function', foreground: 'A9DC76' },
+        { token: 'support.class', foreground: '78DCE8' },
+        { token: 'support.function', foreground: 'A9DC76' },
+        { token: 'support.constant', foreground: 'AB9DF2' },
+        { token: 'punctuation', foreground: 'B0B0A8' },
+        { token: 'storage', foreground: 'FF6188' },
+        { token: 'parameter', foreground: 'FC9483' },
       ],
       colors: {
-        'editor.background': '#0d1117',
-        'editor.foreground': '#c9d1d9',
-        'editor.lineHighlightBackground': '#131a2705',
-        'editor.lineHighlightBorder': '#182032',
-        'editor.selectionBackground': '#253551',
-        'editor.inactiveSelectionBackground': '#1e2a3f',
-        'editorLineNumber.foreground': '#2d3a4e',
-        'editorLineNumber.activeForeground': '#7a8ba3',
-        'editorCursor.foreground': '#f59e0b',
-        'editorCursor.background': '#000000',
-        'editor.selectionHighlightBackground': '#f59e0b12',
-        'editorBracketMatch.background': '#f59e0b15',
-        'editorBracketMatch.border': '#f59e0b40',
-        'editorIndentGuide.background1': '#1e2a3f',
-        'editorIndentGuide.activeBackground1': '#253551',
-        'editorWhitespace.foreground': '#1e2a3f',
-        'editorOverviewRuler.border': '#0d1117',
+        'editor.background': '#161618',
+        'editor.foreground': '#E6E6E0',
+        'editor.lineHighlightBackground': '#1E1E26',
+        'editor.lineHighlightBorder': '#2A2A35',
+        'editor.selectionBackground': '#3A3A4A',
+        'editor.inactiveSelectionBackground': '#2A2A38',
+        'editorLineNumber.foreground': '#46464A',
+        'editorLineNumber.activeForeground': '#7A7A74',
+        'editorCursor.foreground': '#7DD3FC',
+        'editorCursor.background': '#161618',
+        'editor.selectionHighlightBackground': '#7DD3FC15',
+        'editorBracketMatch.background': '#7DD3FC15',
+        'editorBracketMatch.border': '#7DD3FC40',
+        'editorIndentGuide.background1': '#2A2A32',
+        'editorIndentGuide.activeBackground1': '#3A3A46',
+        'editorWhitespace.foreground': '#2A2A32',
+        'editorOverviewRuler.border': '#161618',
         'scrollbar.shadow': '#00000000',
         'scrollbarSlider.background': '#ffffff0d',
         'scrollbarSlider.hoverBackground': '#ffffff1a',
         'scrollbarSlider.activeBackground': '#ffffff26',
-        'minimap.background': '#0d1117',
-        'editorWidget.background': '#131a27',
-        'editorWidget.border': '#1e2a3f',
-        'editorSuggestWidget.background': '#131a27',
-        'editorSuggestWidget.border': '#1e2a3f',
-        'editorSuggestWidget.selectedBackground': '#253551',
-        'input.background': '#0d1117',
-        'input.border': '#1e2a3f',
-        'focusBorder': '#f59e0b60',
+        'minimap.background': '#161618',
+        'editorWidget.background': '#1E1E24',
+        'editorWidget.border': '#2A2A35',
+        'editorSuggestWidget.background': '#1E1E24',
+        'editorSuggestWidget.border': '#2A2A35',
+        'editorSuggestWidget.selectedBackground': '#3A3A4A',
+        'editorSuggestWidget.foreground': '#E6E6E0',
+        'input.background': '#161618',
+        'input.border': '#2A2A35',
+        'focusBorder': '#7DD3FC60',
+        'editorBracketHighlight.foreground1': '#7DD3FC',
+        'editorBracketHighlight.foreground2': '#78DCE8',
+        'editorBracketHighlight.foreground3': '#FFD866',
+        'editorBracketHighlight.foreground4': '#A9DC76',
+        'editorBracketHighlight.foreground5': '#AB9DF2',
+        'editorBracketHighlight.foreground6': '#FC9483',
+        'editorBracketPairGuide.background1': '#7DD3FC20',
+        'editorBracketPairGuide.background2': '#78DCE820',
+        'editorBracketPairGuide.background3': '#FFD86620',
       }
     });
-    monaco.editor.setTheme('nebula');
+    monaco.editor.defineTheme('nebula-light', {
+      base: 'vs',
+      inherit: true,
+      rules: [
+        { token: 'comment', foreground: '8A8A92', fontStyle: 'italic' },
+        { token: 'keyword', foreground: '7B6FD4' },
+        { token: 'keyword.control', foreground: '7B6FD4' },
+        { token: 'keyword.operator', foreground: '4F9AC2' },
+        { token: 'string', foreground: 'C99F2E' },
+        { token: 'string.quoted', foreground: 'C99F2E' },
+        { token: 'number', foreground: 'D94A6E' },
+        { token: 'type', foreground: '4F9AC2' },
+        { token: 'type.identifier', foreground: '4F9AC2' },
+        { token: 'function', foreground: '5E9E6A' },
+        { token: 'function.declaration', foreground: '5E9E6A' },
+        { token: 'variable', foreground: '2C2C30' },
+        { token: 'variable.other', foreground: '2C2C30' },
+        { token: 'constant', foreground: '7B6FD4' },
+        { token: 'constant.language', foreground: '7B6FD4' },
+        { token: 'tag', foreground: '7B6FD4' },
+        { token: 'attribute', foreground: '4F9AC2' },
+        { token: 'delimiter', foreground: '5C5C62' },
+        { token: 'meta.tag', foreground: '7B6FD4' },
+        { token: 'entity.name.class', foreground: '4F9AC2' },
+        { token: 'entity.name.function', foreground: '5E9E6A' },
+      ],
+      colors: {
+        'editor.background': '#FAFAFA',
+        'editor.foreground': '#2C2C30',
+        'editor.lineHighlightBackground': '#E8E8EC',
+        'editor.lineHighlightBorder': '#D0D0D8',
+        'editor.selectionBackground': '#C4D8E8',
+        'editor.inactiveSelectionBackground': '#D8E4EE',
+        'editorLineNumber.foreground': '#C4C4CC',
+        'editorLineNumber.activeForeground': '#5C5C62',
+        'editorCursor.foreground': '#4F9AC2',
+        'editorCursor.background': '#FAFAFA',
+        'editor.selectionHighlightBackground': '#4F9AC215',
+        'editorBracketMatch.background': '#4F9AC215',
+        'editorBracketMatch.border': '#4F9AC240',
+        'editorIndentGuide.background1': '#E0E0E4',
+        'editorIndentGuide.activeBackground1': '#D0D0D8',
+        'editorWhitespace.foreground': '#E0E0E4',
+        'editorOverviewRuler.border': '#FAFAFA',
+        'scrollbar.shadow': '#00000000',
+        'scrollbarSlider.background': '#0000000d',
+        'scrollbarSlider.hoverBackground': '#0000001a',
+        'scrollbarSlider.activeBackground': '#00000026',
+        'minimap.background': '#FAFAFA',
+        'editorWidget.background': '#F0F0F2',
+        'editorWidget.border': '#D0D0D8',
+        'editorSuggestWidget.background': '#F0F0F2',
+        'editorSuggestWidget.border': '#D0D0D8',
+        'editorSuggestWidget.selectedBackground': '#C4D8E8',
+        'editorSuggestWidget.foreground': '#2C2C30',
+        'input.background': '#FAFAFA',
+        'input.border': '#D0D0D8',
+        'focusBorder': '#4F9AC260',
+      }
+    });
+    if (ideSettings.theme === 'Nebula Light') {
+      monaco.editor.setTheme('nebula-light');
+    } else {
+      monaco.editor.setTheme('nebula');
+    }
 
     // Track cursor position
     editor.onDidChangeCursorPosition((e) => {
@@ -1263,7 +1460,10 @@ function App() {
     const startW = rightPanelWidth;
     const handleMouseMove = (ev) => {
       const delta = startX - ev.clientX;
-      setRightPanelWidth(Math.max(260, Math.min(560, startW + delta)));
+      const activityBar = 48;
+      const sidebarW = sidebarPanel ? sidebarWidth + 3 : 0;
+      const maxW = window.innerWidth - activityBar - sidebarW - 200;
+      setRightPanelWidth(Math.max(260, Math.min(maxW, startW + delta)));
     };
     const handleMouseUp = () => {
       rightPanelResizingRef.current = false;
@@ -1282,6 +1482,14 @@ function App() {
   // Handle settings change — apply to editor in real-time
   const handleSettingsChange = useCallback((settings) => {
     setIdeSettings(settings);
+    const root = document.documentElement;
+    if (settings.theme === 'Nebula Light') {
+      root.setAttribute('data-theme', 'light');
+      if (monacoRef.current) monacoRef.current.editor.setTheme('nebula-light');
+    } else {
+      root.removeAttribute('data-theme');
+      if (monacoRef.current) monacoRef.current.editor.setTheme('nebula');
+    }
     if (editorRef.current && settings) {
       const opts = {};
       if (settings.fontSize !== undefined && settings.fontSize !== null) opts.fontSize = Number(settings.fontSize) || 14;
@@ -1569,23 +1777,35 @@ function App() {
           </div>
         </div>
         <div className="title-bar-center">
-          <button
-            className="title-bar-project-pill"
-            onClick={() => setShowOpenFolder(true)}
-            title="Switch project folder (⌘O)"
-          >
-            <span className="title-bar-project-pill-name">{projectName || 'Open Folder'}</span>
-            <span className="title-bar-project-pill-caret">▾</span>
-          </button>
-          {activeFile && (
-            <>
-              <span className="title-bar-separator">—</span>
-              <span className="title-bar-file">
-                {activeFile.split('/').pop()}
-                {modifiedFiles.has(activeFile) && ' ●'}
-              </span>
-            </>
-          )}
+          <div className="title-bar-search" style={{ position: 'relative' }}>
+            <div className="title-bar-search-wrapper">
+              <VscSearch size={14} className="title-bar-search-icon" />
+              <input
+                type="text"
+                className="title-bar-search-input"
+                placeholder={`Search files in ${projectName || 'project'}...`}
+                value={searchQuery}
+                onChange={handleSearchChange}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
+                onKeyDown={handleSearchKeyDown}
+              />
+            </div>
+            {searchFocused && searchResults.length > 0 && (
+              <div className="title-bar-search-results">
+                {searchResults.map((file, i) => (
+                  <div
+                    key={file}
+                    className={`title-bar-search-item ${i === searchSelectedIndex ? 'selected' : ''}`}
+                    onMouseDown={() => handleOpenSearchFile(file)}
+                  >
+                    <VscFile size={13} />
+                    <span className="title-bar-search-item-name">{file}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <div className="title-bar-right">
           <div className="layout-toggles">
@@ -1780,9 +2000,6 @@ function App() {
               gitDecorations={gitDecorations}
             />
 
-            {/* Breadcrumbs */}
-            {activeFile && !isDiffTabKey(activeFile) && renderBreadcrumbs()}
-
             {/* Editor */}
             <div className="editor-content">
               {activeFile && isDiffTabKey(activeFile) ? (
@@ -1871,7 +2088,7 @@ function App() {
               onMouseDown={handleRightPanelResizeStart}
               title="Drag to resize"
             />
-            <div className="sidebar" style={{ borderLeft: '1px solid var(--border)', borderRight: 'none', width: `${rightPanelWidth}px` }}>
+            <div className="sidebar-right" style={{ width: `${rightPanelWidth}px` }}>
               <CliPanel visible={showRightPanel} projectRoot={projectRoot} />
             </div>
           </>

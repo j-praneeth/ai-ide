@@ -82,7 +82,7 @@
 .title-bar-brand-icon {
   display: flex;
   align-items: center;
-  color: #7dd3fc;
+  color: var(--accent);
   animation: brand-star-spin 10s linear infinite;
   flex-shrink: 0;
 }
@@ -109,9 +109,90 @@
 .title-bar-center {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: var(--font-size-base);
+  justify-content: center;
+  flex: 1;
+  max-width: 500px;
+  margin: 0 auto;
   -webkit-app-region: no-drag;
+}
+
+.title-bar-search {
+  width: 100%;
+  max-width: 400px;
+}
+
+.title-bar-search-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.title-bar-search-wrapper:focus-within {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--accent);
+}
+
+.title-bar-search-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.title-bar-search-input {
+  flex: 1;
+  height: 100%;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.title-bar-search-input::placeholder {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.title-bar-search-results {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  max-height: 300px;
+  overflow-y: auto;
+  z-index: 1000;
+}
+
+.title-bar-search-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.title-bar-search-item:hover,
+.title-bar-search-item.selected {
+  background: var(--bg-hover);
+}
+
+.title-bar-search-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Project pill dropdown ── */
@@ -260,6 +341,9 @@
   border-right: none;
   z-index: 10;
   position: relative;
+  margin: 6px 0 6px 8px;
+  border-radius: 12px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
 }
 
 .activity-bar-top {
@@ -340,6 +424,15 @@
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
 }
 
+.sidebar-right {
+  background: var(--bg-deepest);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
 .sidebar-header {
   display: flex;
   align-items: center;
@@ -359,35 +452,6 @@
 .sidebar-actions {
   display: flex;
   gap: 1px;
-  opacity: 0;
-  transition: opacity var(--duration-fast);
-}
-
-.sidebar-header:hover .sidebar-actions {
-  opacity: 1;
-}
-
-/* Explorer header — always-visible search button alongside hover actions */
-.explorer-header-right {
-  display: flex;
-  align-items: center;
-  gap: 1px;
-}
-
-.explorer-search-btn {
-  opacity: 0.5;
-  flex-shrink: 0;
-  color: var(--text-muted);
-  transition: opacity var(--duration-fast), color var(--duration-fast);
-}
-
-.explorer-search-btn:hover {
-  opacity: 1;
-  color: var(--text-primary);
-}
-
-.sidebar-header:hover .explorer-search-btn {
-  opacity: 0.75;
 }
 
 /* ── Icon Button ── */
@@ -1462,7 +1526,7 @@
 
 .editor-tabs {
   height: var(--tab-height);
-  background: var(--bg-surface);
+  background: var(--bg-deepest);
   display: flex;
   align-items: stretch;
   overflow: hidden;
@@ -1481,7 +1545,10 @@
   gap: 0;
 }
 
-.tabs-scroll::-webkit-scrollbar { height: 0; }
+.tabs-scroll::-webkit-scrollbar { height: 4px; }
+.tabs-scroll::-webkit-scrollbar-track { background: transparent; }
+.tabs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.tabs-scroll::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 .tab {
   display: flex;
@@ -1567,6 +1634,13 @@
 .tab-modified-dot {
   color: var(--accent);
   margin-left: auto;
+}
+
+/* ── Modified Line Gutter Markers ── */
+
+.modified-line-gutter {
+  border-left: 3px solid var(--accent);
+  opacity: 0.8;
 }
 
 /* ============================================
@@ -1662,45 +1736,6 @@
 /* ============================================
    Breadcrumbs
    ============================================ */
-
-.breadcrumbs {
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  height: 24px;
-  background: var(--bg-deep);
-  border-bottom: 1px solid var(--border-subtle);
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.breadcrumb-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: var(--font-size-sm);
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
-  white-space: nowrap;
-  transition: all var(--duration-fast);
-}
-
-.breadcrumb-item:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.breadcrumb-item:last-child {
-  color: var(--text-secondary);
-}
-
-.breadcrumb-separator {
-  color: var(--text-ghost);
-  font-size: 10px;
-  margin: 0 1px;
-}
 
 /* ============================================
    Terminal Panel — VS Code / Cursor style
@@ -3149,12 +3184,12 @@
 }
 
 /* ============================================
-   Status Bar — Cursor blue
+   Status Bar — Monokai accent
    ============================================ */
 
 .status-bar {
   height: var(--statusbar-height);
-  background: #007ACC;
+  background: #004D80;
   border-top: none;
   display: flex;
   align-items: center;

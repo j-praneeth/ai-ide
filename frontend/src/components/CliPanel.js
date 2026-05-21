@@ -7,7 +7,7 @@ import { getAuthToken } from '../lib/auth';
 import { startSsoLogin as startSsoLoginFlow } from '../lib/sso';
 
 const TERM_THEME = {
-  background: '#1E1E1E',
+  background: 'var(--bg-deepest)',
   foreground: '#D4D4D4',
   cursor: '#AEAFAD',
   cursorAccent: '#1E1E1E',
@@ -199,11 +199,11 @@ function BrowserCliPanel({ visible }) {
   if (!visible) return null;
 
   return (
-    <div className="cli-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#1E1E1E' }}>
+    <div className="cli-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-deepest)' }}>
       <div className="cli-header" style={{
         height: 36, padding: '0 10px', borderBottom: '1px solid var(--border)',
         display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
-        background: 'var(--bg-surface)',
+        background: 'var(--bg-deepest)',
       }}>
         <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>CLI</span>
         <select
@@ -597,11 +597,11 @@ export default function CliPanel({ visible, projectRoot }) {
   }
 
   return (
-    <div className="cli-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#1E1E1E' }}>
+    <div className="cli-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-deepest)' }}>
       <div className="cli-header" style={{
         height: 36, padding: '0 10px', borderBottom: '1px solid var(--border)',
         display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
-        background: 'var(--bg-surface)',
+        background: 'var(--bg-deepest)',
       }}>
         <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>CLI</span>
         <select

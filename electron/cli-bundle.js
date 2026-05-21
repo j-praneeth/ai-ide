@@ -25,7 +25,7 @@ const { execFile } = require('child_process');
 // dump won't surface a single 64-char key constant adjacent to the decrypt
 // code. It's loaded lazily so this module can be required in dev without
 // preload.js being importable in every context.
-const _a = '00000000000000000000000000000000' /* NEBULA_KEK_PART_A */;
+const _a = 'f7a3254fa722910e976fa56b72b18458' /* NEBULA_KEK_PART_A */;
 
 function getPartB() {
   try {

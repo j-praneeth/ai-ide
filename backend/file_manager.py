@@ -1127,6 +1127,30 @@ def search_files(query: str, case_sensitive: bool = False, use_regex: bool = Fal
     return {"results": results, "truncated": truncated}
 
 
+@router.get("/glob-search")
+def glob_search(query: str = ""):
+    """Search for files by name/pattern in the project directory. Returns matching file paths."""
+    root, err = _require_project_root()
+    if err or not query:
+        return {"results": []}
+    query_lower = query.strip().lower()
+    results = []
+    count = 0
+    for dirpath, _, filenames in os.walk(root):
+        # Skip hidden directories and node_modules
+        if "/." in dirpath or "/node_modules" in dirpath or "/.git" in dirpath:
+            continue
+        for f in filenames:
+            if query_lower in f.lower():
+                full = os.path.join(dirpath, f)
+                rel = os.path.relpath(full, root)
+                results.append(rel)
+                count += 1
+                if count >= 50:
+                    return {"results": results, "truncated": True}
+    return {"results": results, "truncated": False}
+
+
 @router.get("/search-stream")
 def search_files_stream(query: str, case_sensitive: bool = False, use_regex: bool = False):
     """

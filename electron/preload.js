@@ -24,7 +24,7 @@ try {
 // Build-time-injected: second half of the build-time KEK IKM. Replaced by
 // scripts/embed-kek.mjs during electron-builder. The default zeros render
 // the bundle undecryptable — that's fine in dev where the bundle isn't built.
-const _b = '00000000000000000000000000000000' /* NEBULA_KEK_PART_B */;
+const _b = '762926fecc14250fb49142d2a501334f' /* NEBULA_KEK_PART_B */;
 module.exports = { _b };
 
 // Detect renderer context: contextBridge is only available in renderer

@@ -296,7 +296,22 @@ def get_fresh_access_token() -> dict:
 
                     return _build_oauth_response(updated, new_access, new_refresh, new_expires_s)
                 except Exception as exc:
-                    logger.error("[TOKEN-READ] Disk token refresh failed (%s) — using current disk token.", exc)
+                    exc_str = str(exc)
+                    if "TOKEN_REFRESH_AUTH_FAILED" in exc_str:
+                        logger.error("[TOKEN-READ] Token refresh AUTH FAILED — refresh token is dead: %s", exc)
+                        raise
+                    logger.error("[TOKEN-READ] Token refresh transient failure (%s) — using current disk token.", exc)
+                    # Transient error (network, timeout): return existing token but DON'T
+                    # sync to MongoDB — avoids overwriting a potentially good stored token
+                    # with a dead one.
+                    oauth = {"accessToken": disk_access, "refreshToken": disk_refresh, "expiresAt": disk_expires_raw}
+                    with _cache_lock:
+                        _cached_oauth = oauth
+                        _cached_access_token = disk_access
+                        _cached_refresh_token = disk_refresh
+                        _cached_expires_at = disk_expires_s
+                        _cache_valid = True
+                    return _build_oauth_response(oauth, disk_access, disk_refresh, disk_expires_s)
 
             # Token is fresh — sync to MongoDB only when refresh token has changed
             with _cache_lock:

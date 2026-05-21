@@ -3,7 +3,6 @@ import {
   VscFiles,
   VscSearch,
   VscSourceControl,
-  VscExtensions,
   VscSettingsGear,
 } from 'react-icons/vsc';
 import { GiCrown } from 'react-icons/gi';
@@ -12,10 +11,9 @@ import { AUTH_URL as AUTH } from '../config';
 import { startSsoLogin as startSsoLoginFlow } from '../lib/sso';
 
 const TOP_ITEMS = [
-  { id: 'explorer', icon: VscFiles, label: 'Explorer (⌘⇧E)' },
+  { id: 'explorer', icon: VscFiles, label: 'Files (⌘⇧E)' },
   { id: 'search', icon: VscSearch, label: 'Search (⌘⇧F)' },
   { id: 'source-control', icon: VscSourceControl, label: 'Source Control (⌘⇧G)' },
-  { id: 'extensions', icon: VscExtensions, label: 'Extensions (⌘⇧X)' },
 ];
 
 const BOTTOM_ITEMS = [

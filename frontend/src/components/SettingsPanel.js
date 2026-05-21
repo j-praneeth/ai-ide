@@ -26,7 +26,7 @@ const SETTINGS_GROUPS = [
     id: 'appearance',
     label: 'Appearance',
     settings: [
-      { key: 'theme', label: 'Theme', type: 'select', value: 'Nebula Dark', options: [{ value: 'Nebula Dark', label: 'Nebula Dark' }], description: 'Color theme for the IDE.' },
+      { key: 'theme', label: 'Theme', type: 'select', value: 'Nebula Dark', options: [{ value: 'Nebula Dark', label: 'Nebula Dark' }, { value: 'Nebula Light', label: 'Nebula Light' }], description: 'Color theme for the IDE.' },
       { key: 'fontFamily', label: 'Font Family', type: 'text', value: 'JetBrains Mono', description: 'Font family for the editor.' },
     ],
   },
