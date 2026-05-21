@@ -1,0 +1,13 @@
+{
+  "name": "Botanical Garden",
+  "primary": "#3a6b35",
+  "secondary": "#5e9a58",
+  "accent": "#a8d080",
+  "background": "#f4f8f0",
+  "surface": "#e4f0dc",
+  "text": "#1a2e18",
+  "text_muted": "#5a7855",
+  "heading_font": "DM Serif Display",
+  "body_font": "DM Sans",
+  "description": "Fresh organic palette of leafy greens and botanical accents — alive and full of natural energy"
+}

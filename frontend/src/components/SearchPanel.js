@@ -296,7 +296,7 @@ export default function SearchPanel({ onOpenFile, hasWorkspace = true }) {
           );
         }
       }
-      await axios.post(`${API}/files/write`, null, { params: { path: file, content: lines.join('\n') } });
+      await axios.post(`${API}/files/write`, { path: file, content: lines.join('\n') });
       setReplaceStatus(`Replaced in ${file}:${line}`);
       search();
     } catch (err) {
@@ -321,7 +321,7 @@ export default function SearchPanel({ onOpenFile, hasWorkspace = true }) {
         const regex   = new RegExp(wholeWord ? `\\b${pattern}\\b` : pattern, flags);
         const updated = content.replace(regex, replaceText);
         if (updated !== content) {
-          await axios.post(`${API}/files/write`, null, { params: { path: file, content: updated } });
+          await axios.post(`${API}/files/write`, { path: file, content: updated });
           count++;
         }
       } catch (_) {}

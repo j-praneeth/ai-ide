@@ -442,6 +442,7 @@ export default function FileExplorer({
   const [showNewFileInput,   setShowNewFileInput]   = useState(false);
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [newItemName,        setNewItemName]         = useState('');
+  const [newItemParent,      setNewItemParent]       = useState('');
   const [contextMenu,        setContextMenu]         = useState(null);
   const [renamePath,         setRenamePath]          = useState(null);
   const [renameValue,        setRenameValue]         = useState('');
@@ -716,33 +717,37 @@ export default function FileExplorer({
     }
   }, [triggerNewFile, onNewFileDone]);
 
-  const startNewFile = useCallback(() => {
-    setShowNewFolderInput(false); setShowNewFileInput(true); setNewItemName('');
+  const startNewFile = useCallback((parentPath = '') => {
+    setShowNewFolderInput(false); setShowNewFileInput(true);
+    setNewItemName(''); setNewItemParent(parentPath);
     setTimeout(() => newItemInputRef.current?.focus(), 0);
   }, []);
 
-  const startNewFolder = useCallback(() => {
-    setShowNewFileInput(false); setShowNewFolderInput(true); setNewItemName('');
+  const startNewFolder = useCallback((parentPath = '') => {
+    setShowNewFileInput(false); setShowNewFolderInput(true);
+    setNewItemName(''); setNewItemParent(parentPath);
     setTimeout(() => newItemInputRef.current?.focus(), 0);
   }, []);
 
   const cancelNewItem = useCallback(() => {
-    setShowNewFileInput(false); setShowNewFolderInput(false); setNewItemName('');
+    setShowNewFileInput(false); setShowNewFolderInput(false);
+    setNewItemName(''); setNewItemParent('');
   }, []);
 
   const submitNewItem = useCallback(async () => {
     const name = newItemName.trim();
     if (!name) { cancelNewItem(); return; }
     const isFolder = showNewFolderInput;
+    const fullPath = newItemParent ? `${newItemParent}/${name}` : name;
     try {
-      await axios.post(`${API}/files/create`, null, { params: { path: name, is_folder: isFolder } });
+      await axios.post(`${API}/files/create`, null, { params: { path: fullPath, is_folder: isFolder } });
       cancelNewItem();
       onRefresh?.();
-      if (!isFolder) openFile?.(name);
+      if (!isFolder) openFile?.(fullPath);
     } catch (err) {
       console.error('Failed to create:', err);
     }
-  }, [newItemName, showNewFolderInput, cancelNewItem, onRefresh, openFile]);
+  }, [newItemName, newItemParent, showNewFolderInput, cancelNewItem, onRefresh, openFile]);
 
   const handleNewItemKeyDown = useCallback((e) => {
     if (e.key === 'Enter')  { e.preventDefault(); submitNewItem(); }
@@ -913,6 +918,18 @@ export default function FileExplorer({
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={e => e.stopPropagation()}
         >
+          {contextMenu.type === 'folder' && (<>
+            <button type="button" className="context-menu-item" onClick={() => {
+              setContextMenu(null); startNewFile(contextMenu.path);
+            }}>
+              <VscNewFile size={14} /> New File Here
+            </button>
+            <button type="button" className="context-menu-item" onClick={() => {
+              setContextMenu(null); startNewFolder(contextMenu.path);
+            }}>
+              <VscNewFolder size={14} /> New Folder Here
+            </button>
+          </>)}
           <button type="button" className="context-menu-item" onClick={() => {
             setRenamePath(contextMenu.path);
             setRenameValue(contextMenu.path.split('/').pop());
@@ -979,7 +996,9 @@ export default function FileExplorer({
                   <input
                     ref={newItemInputRef}
                     className="search-input"
-                    placeholder={showNewFolderInput ? 'Folder name' : 'File name'}
+                    placeholder={newItemParent
+                      ? `${showNewFolderInput ? 'Folder' : 'File'} name in ${newItemParent.split('/').pop()}/`
+                      : (showNewFolderInput ? 'Folder name' : 'File name')}
                     value={newItemName}
                     onChange={e => setNewItemName(e.target.value)}
                     onKeyDown={handleNewItemKeyDown}

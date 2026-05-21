@@ -9,7 +9,7 @@ from typing import Optional
 
 import requests
 
-from db.mongo import app_config_collection, utcnow
+from db.mongo import app_config_collection, utcnow, is_mongo_available, mark_mongo_unreachable
 
 logger = logging.getLogger("security.claude_token")
 
@@ -83,15 +83,41 @@ def _client_id() -> str:
 
 
 def get_stored_oauth() -> Optional[dict]:
-    try:
-        doc = app_config_collection().find_one({"_id": _CREDS_DOC_ID})
-        return (doc or {}).get("oauth") or None
-    except Exception as e:
-        logger.error("Failed to read claude creds from DB: %s", e)
-        return None
+    """Read OAuth credentials — MongoDB first, disk as fallback when DB is unreachable."""
+    if is_mongo_available():
+        try:
+            doc = app_config_collection().find_one({"_id": _CREDS_DOC_ID})
+            return (doc or {}).get("oauth") or None
+        except Exception as e:
+            err_str = str(e)
+            # DNS/network failures → mark unreachable and fall through to disk
+            if any(kw in err_str for kw in ("nodename nor servname", "Name or service not known",
+                                             "ENOTFOUND", "getaddrinfo", "Timeout", "ServerSelectionTimeoutError")):
+                logger.warning("MongoDB unreachable, switching to disk fallback for %ds: %s",
+                               30, err_str[:120])
+                mark_mongo_unreachable()
+            else:
+                logger.error("Failed to read claude creds from DB: %s", e)
+                return None
+    else:
+        logger.debug("MongoDB in cooldown — using disk credentials fallback.")
+
+    # Disk fallback: read from ~/.claude/.credentials.json
+    refresh, access, expires = _read_disk_oauth()
+    if refresh:
+        logger.info("Returning disk credentials as MongoDB fallback (refresh=%s...)", refresh[:8])
+        return {
+            "refreshToken": refresh,
+            "accessToken": access,
+            "expiresAt": expires,
+        }
+    return None
 
 
 def save_oauth(oauth: dict, reason: str = "manual") -> None:
+    if not is_mongo_available():
+        logger.debug("save_oauth skipped — MongoDB unreachable [reason=%s]", reason)
+        return
     try:
         app_config_collection().update_one(
             {"_id": _CREDS_DOC_ID},
@@ -105,7 +131,13 @@ def save_oauth(oauth: dict, reason: str = "manual") -> None:
             (oauth or {}).get("expiresAt", 0),
         )
     except Exception as e:
-        logger.error("Failed to save claude creds to DB: %s", e)
+        err_str = str(e)
+        if any(kw in err_str for kw in ("nodename nor servname", "Name or service not known",
+                                         "ENOTFOUND", "getaddrinfo", "Timeout")):
+            logger.warning("MongoDB unreachable during save_oauth [reason=%s], marking cooldown.", reason)
+            mark_mongo_unreachable()
+        else:
+            logger.error("Failed to save claude creds to DB: %s", e)
 
 
 def seed_from_env() -> None:
@@ -212,52 +244,94 @@ def _ms_or_s_to_seconds(value: object) -> float:
 
 def get_fresh_access_token() -> dict:
     """
-    Returns the full OAuth object from MongoDB (single source of truth).
-    This is called by ALL devices (master and user).
+    Returns a fresh OAuth token.
 
-    IMPORTANT: We ALWAYS read from MongoDB to get the latest token.
-    The master device runs a background refresh loop that proactively refreshes
-    the token before it expires and saves to MongoDB. User devices simply read
-    from MongoDB - they never call Anthropic directly.
+    Master device flow:
+      1. Read ~/.claude/.credentials.json (primary source).
+      2. If token is expiring → refresh with Anthropic → write back to disk → save to MongoDB → return.
+      3. If token is fresh → sync disk → MongoDB (only when refresh token changed) → return.
 
-    Flow:
-      1. Always read from MongoDB (single source of truth).
-      2. Update in-memory cache.
-      3. Return token to client.
+    User device flow:
+      1. Read from MongoDB (master keeps it fresh) → return.
     """
     global _cached_access_token, _cached_refresh_token, _cached_expires_at, _cached_oauth, _cache_valid
 
     now = time.time()
-    is_master = is_master_device()
 
-    # Only log for master device - user devices silently read from DB
-    if is_master:
-        logger.info("[TOKEN-READ] (MASTER) Request for fresh token...")
+    if is_master_device():
+        # --- Master: disk is primary source ---
+        disk_refresh, disk_access, disk_expires_raw = _read_disk_oauth()
+        disk_expires_s = _ms_or_s_to_seconds(disk_expires_raw)
 
-    # ALWAYS read from MongoDB to get latest token (single source of truth)
+        if not disk_refresh:
+            logger.warning("[TOKEN-READ] Master device has no disk credentials — falling back to MongoDB.")
+        else:
+            needs_refresh = disk_expires_s <= now + _CACHE_MARGIN_SECONDS
+
+            if needs_refresh:
+                logger.warning("[TOKEN-READ] Disk token expired/expiring — refreshing with Anthropic...")
+                try:
+                    result = _do_refresh(disk_refresh)
+                    new_access = (result.get("access_token") or result.get("accessToken") or "").strip()
+                    new_refresh = (result.get("refresh_token") or result.get("refreshToken") or "").strip() or disk_refresh
+                    expires_in = int(result.get("expires_in") or 3600)
+                    new_expires_s = now + expires_in
+
+                    updated = {
+                        "accessToken": new_access,
+                        "refreshToken": new_refresh,
+                        "expiresAt": int(new_expires_s * 1000),
+                    }
+                    write_token_to_disk(updated, reason="refreshed")
+                    save_oauth(updated, reason="disk_refreshed")
+                    clear_cache()
+                    logger.info("[TOKEN-READ] Token refreshed — written to disk and saved to MongoDB.")
+
+                    with _cache_lock:
+                        _cached_oauth = updated
+                        _cached_access_token = new_access
+                        _cached_refresh_token = new_refresh
+                        _cached_expires_at = new_expires_s
+                        _cache_valid = True
+
+                    return _build_oauth_response(updated, new_access, new_refresh, new_expires_s)
+                except Exception as exc:
+                    logger.error("[TOKEN-READ] Disk token refresh failed (%s) — using current disk token.", exc)
+
+            # Token is fresh — sync to MongoDB only when refresh token has changed
+            with _cache_lock:
+                already_synced = _cache_valid and _cached_refresh_token == disk_refresh
+
+            oauth = {"accessToken": disk_access, "refreshToken": disk_refresh, "expiresAt": disk_expires_raw}
+            if not already_synced:
+                save_oauth(oauth, reason="disk_synced")
+                logger.info("[TOKEN-READ] Disk credentials synced to MongoDB.")
+                with _cache_lock:
+                    _cached_oauth = oauth
+                    _cached_access_token = disk_access
+                    _cached_refresh_token = disk_refresh
+                    _cached_expires_at = disk_expires_s
+                    _cache_valid = True
+            else:
+                with _cache_lock:
+                    oauth = _cached_oauth or oauth
+
+            return _build_oauth_response(oauth, disk_access, disk_refresh, disk_expires_s)
+
+    # --- User device (or master with no disk file): read from MongoDB ---
+    logger.debug("[TOKEN-READ] User device — reading token from MongoDB.")
     oauth = get_stored_oauth()
     if not oauth:
-        logger.error("[TOKEN-READ] No credentials in MongoDB!")
+        logger.error("[TOKEN-READ] No credentials found in MongoDB!")
         raise RuntimeError(
-            "No Claude credentials in database. "
-            "POST { oauth: { refreshToken } } to /auth/claude-credentials first."
+            "No Claude credentials found in database. "
+            "The master device must sync credentials first."
         )
 
     access_token = (oauth.get("accessToken") or "").strip()
-    expires_at_ms = oauth.get("expiresAt") or 0
     refresh_token = (oauth.get("refreshToken") or "").strip()
+    expires_at_s = _ms_or_s_to_seconds(oauth.get("expiresAt") or 0)
 
-    # expiresAt may be stored as ms or s — use the robust helper
-    expires_at_s = _ms_or_s_to_seconds(expires_at_ms)
-    time_until_expiry = expires_at_s - now
-
-    # Only log for master device
-    if is_master:
-        logger.info("[TOKEN-READ] (MASTER) Token from DB - expires in %ss (threshold: %ss)",
-                    time_until_expiry, _CACHE_MARGIN_SECONDS)
-        logger.info("[TOKEN-READ] (MASTER) Token is FRESH - returning to client")
-
-    # Update in-memory cache
     with _cache_lock:
         _cached_oauth = oauth
         _cached_access_token = access_token
@@ -455,15 +529,20 @@ def _do_master_refresh_check() -> None:
         return
 
     try:
-        # Step 1: Read current token from MongoDB
-        oauth = get_stored_oauth()
-        if not oauth:
-            logger.warning("[MASTER-REFRESH] No credentials in DB, skipping refresh check.")
-            return
-
-        refresh_token = (oauth.get("refreshToken") or "").strip()
-        expires_at_ms = oauth.get("expiresAt") or 0
-        expires_at_s = _ms_or_s_to_seconds(expires_at_ms)
+        # Step 1: Read from local disk first (primary source), fall back to MongoDB
+        disk_refresh, disk_access, disk_expires_raw = _read_disk_oauth()
+        if disk_refresh:
+            refresh_token = disk_refresh
+            expires_at_s = _ms_or_s_to_seconds(disk_expires_raw)
+            logger.info("[MASTER-REFRESH] Reading credentials from local disk.")
+        else:
+            oauth = get_stored_oauth()
+            if not oauth:
+                logger.warning("[MASTER-REFRESH] No credentials on disk or in DB, skipping.")
+                return
+            refresh_token = (oauth.get("refreshToken") or "").strip()
+            expires_at_s = _ms_or_s_to_seconds(oauth.get("expiresAt") or 0)
+            logger.info("[MASTER-REFRESH] No disk credentials — reading from MongoDB.")
         now = time.time()
         time_until_expiry = expires_at_s - now
         refresh_threshold = now + _CACHE_MARGIN_SECONDS
@@ -504,30 +583,27 @@ def _do_master_refresh_check() -> None:
         logger.info("[MASTER-REFRESH] Token refreshed successfully!")
         logger.info("[MASTER-REFRESH] New token expires in %ss", expires_in)
 
-        # Step 4: Save new token to MongoDB
+        # Step 4: Build updated oauth, merging any extra fields from MongoDB if available
         scope = (result.get("scope") or "").strip()
+        base = locals().get("oauth") or {}
         updated_oauth = {
-            **oauth,
+            **base,
             "accessToken": new_access,
             "refreshToken": new_refresh,
             "expiresAt": int(new_expires_at_s * 1000),
-            "scope": scope,
             "subscriptionType": result.get("subscriptionType") or "free",
             "rateLimitTier": result.get("rateLimitTier") or "default_claude_free_1x",
         }
         if scope:
             updated_oauth["scope"] = scope
 
-        logger.info("[MASTER-REFRESH] Saving new token to MongoDB...")
+        logger.info("[MASTER-REFRESH] Writing refreshed token to disk and MongoDB...")
+        write_token_to_disk(updated_oauth, reason="master_background_refresh")
         save_oauth(updated_oauth, reason="master_background_refresh")
         clear_cache()
-        logger.info("[MASTER-REFRESH] Token saved to MongoDB successfully!")
+        logger.info("[MASTER-REFRESH] Token refreshed — disk and MongoDB updated.")
         logger.info("[MASTER-REFRESH] New refreshToken: %s..., accessToken: %s...",
                     new_refresh[:10], new_access[:10])
-        # NOTE: We deliberately do NOT write to ~/.claude/.credentials.json here.
-        # That file belongs to `claude` CLI, which uses its own OAuth client ID.
-        # Our refreshed token uses a different client ID and would cause 401
-        # if claude CLI tried to use it. claude CLI manages its own file.
 
     except Exception as exc:
         logger.error("[MASTER-REFRESH] Error during token refresh: %s", exc)

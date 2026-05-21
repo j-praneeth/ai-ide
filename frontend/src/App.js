@@ -218,17 +218,28 @@ function App() {
       const path = (ws.path || '').trim();
       const name = (ws.name || '').trim();
       console.log(`[App] workspace hydrated from main: path="${path}" name="${name}"`);
-      if (path) setProjectRoot(path);
-      if (name) setProjectName(name);
-      else if (path) setProjectName(path.split(/[\\/]/).filter(Boolean).pop() || 'Nebula');
-      try {
-        if (path) {
+      if (path) {
+        setProjectRoot(path);
+        setProjectName(name || path.split(/[\\/]/).filter(Boolean).pop() || 'Nebula');
+        try {
           localStorage.setItem(
             'nebula_last_workspace',
             JSON.stringify({ path, name: name || (path.split(/[\\/]/).filter(Boolean).pop() || '') }),
           );
-        }
-      } catch (_) {}
+        } catch (_) {}
+      } else {
+        // Explicitly clear — fresh window with no project; override the localStorage seed.
+        _ipcSaidFreshWindow.current = true;
+        setProjectRoot('');
+        setProjectName('Nebula');
+        // Clear stored CLI session IDs so the CLI panel starts fresh (not reattached
+        // to the previous window's session which has the wrong project CWD).
+        try {
+          for (const key of Object.keys(localStorage)) {
+            if (key.startsWith('nebula_cli_session_')) localStorage.removeItem(key);
+          }
+        } catch (_) {}
+      }
     };
 
     if (api.getCurrentWorkspace) {
@@ -495,6 +506,9 @@ function App() {
   //   - Backend ready → succeeds immediately on first try
   const _startupFolderHandled = useRef(false);
   const _handleOpenFolder = useRef(null);
+  // Set to true when IPC app:get-workspace returns empty — prevents the backend
+  // HTTP /files/workspace from overwriting the cleared state with the old project.
+  const _ipcSaidFreshWindow = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -520,8 +534,9 @@ function App() {
     }
 
     const loadWorkspace = () => {
-      loadTree().catch(() => {}); // error already logged inside loadTree
+      if (!_ipcSaidFreshWindow.current) loadTree().catch(() => {});
       axios.get(`${API}/files/workspace`).then(res => {
+        if (_ipcSaidFreshWindow.current) { setWorkspaceLoading(false); return; }
         if (res.data.name) setProjectName(res.data.name);
         if (res.data.path) setProjectRoot(res.data.path);
         setWorkspaceLoading(false);
@@ -539,11 +554,14 @@ function App() {
     const startLoading = () => {
       if (backendSignalled) return;
       backendSignalled = true;
+      if (_ipcSaidFreshWindow.current) { setWorkspaceLoading(false); return; }
       loadTree().then(() => {
         axios.get(`${API}/files/workspace`).then(res => {
           if (!active) return;
-          if (res.data.name) setProjectName(res.data.name);
-          if (res.data.path) setProjectRoot(res.data.path);
+          if (!_ipcSaidFreshWindow.current) {
+            if (res.data.name) setProjectName(res.data.name);
+            if (res.data.path) setProjectRoot(res.data.path);
+          }
           setWorkspaceLoading(false);
         }).catch(() => { setWorkspaceLoading(false); });
       }).catch(() => {
@@ -566,6 +584,7 @@ function App() {
         if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
         attempts = 0;
         loadWorkspace();
+        try { window.dispatchEvent(new CustomEvent('nebula:backend-ready')); } catch (_) {}
       });
       cleanupFns.push(cleanup);
       // Fallback: if backend:ready never fires (e.g. backend startup failure),
@@ -750,8 +769,7 @@ function App() {
               const { writeFileToHandle } = await import('./lib/webFs');
               await writeFileToHandle(webFolderHandle, path, fileContents[path]);
             } else {
-              await axios.post(`${API}/files/write`, null, {
-                params: { path, content: fileContents[path] },
+              await axios.post(`${API}/files/write`, { path, content: fileContents[path] }, {
                 timeout: 10000,
               });
             }
@@ -791,9 +809,7 @@ function App() {
         if (webFolderHandle) {
           await writeFileToHandle(webFolderHandle, path, content);
         } else {
-          await axios.post(`${API}/files/write`, null, {
-            params: { path, content },
-          });
+          await axios.post(`${API}/files/write`, { path, content });
         }
       });
       setOriginalContents(prev => ({ ...prev, [path]: content }));
@@ -811,9 +827,7 @@ function App() {
           if (webFolderHandle) {
             await writeFileToHandle(webFolderHandle, path, fileContents[path]);
           } else {
-            await axios.post(`${API}/files/write`, null, {
-              params: { path, content: fileContents[path] }
-            });
+            await axios.post(`${API}/files/write`, { path, content: fileContents[path] });
           }
           return path;
         } catch (err) {
@@ -1289,10 +1303,20 @@ function App() {
     const hadWorkspace = !!(prevRoot || prevHandle);
     const openingSomething = !!(folderPath || handle);
 
-    // In Electron: if a workspace is already open, open the new folder in a fresh window.
-    // On macOS/Linux this spawns a new process; on Windows it creates an in-process
-    // BrowserWindow. Either way the main process closes this window once the new one is ready.
-    if (hadWorkspace && openingSomething && folderPath && window.electronAPI?.openFolderInNewWindow) {
+    // In Electron: if a workspace is already open and the new folder is DIFFERENT,
+    // open it in a fresh window. On macOS/Linux this spawns a new process; on Windows
+    // it creates an in-process BrowserWindow. The main process closes this window once
+    // the new one is ready.
+    //
+    // Guard: skip when folderPath === prevRoot — this happens during new-window
+    // initialization where the startup folder and current workspace are the same path
+    // (the main process already set currentProjectRoot before this window loaded).
+    // Without the guard the new window would cascade-open another window forever.
+    // Normalize separators for cross-platform comparison (Windows uses \, POSIX uses /)
+    const _normPath = (p) => (p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const folderAlreadyOpen = folderPath && prevRoot &&
+      _normPath(folderPath) === _normPath(prevRoot);
+    if (hadWorkspace && openingSomething && folderPath && !folderAlreadyOpen && window.electronAPI?.openFolderInNewWindow) {
       setWorkspaceLoading(true);
       try {
         const result = await window.electronAPI.openFolderInNewWindow(folderPath);
@@ -1794,7 +1818,7 @@ function App() {
               title="Drag to resize"
             />
             <div className="sidebar" style={{ borderLeft: '1px solid var(--border)', borderRight: 'none', width: `${rightPanelWidth}px` }}>
-              <CliPanel visible={showRightPanel} />
+              <CliPanel visible={showRightPanel} projectRoot={projectRoot} />
             </div>
           </>
         )}

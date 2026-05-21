@@ -1,0 +1,13 @@
+{
+  "name": "Forest Canopy",
+  "primary": "#2d5a27",
+  "secondary": "#4a7c40",
+  "accent": "#8fbc5e",
+  "background": "#0e1f0d",
+  "surface": "#1a3318",
+  "text": "#e8f0e4",
+  "text_muted": "#7a9e72",
+  "heading_font": "Merriweather",
+  "body_font": "Nunito",
+  "description": "Natural earth tones inspired by dense woodland canopies — greens and warm browns"
+}

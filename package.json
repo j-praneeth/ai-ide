@@ -79,6 +79,7 @@
           "requirements.txt",
           "relay_config.json",
           "agent/**/*.py",
+          "skill_scripts/**/*",
           "!__pycache__/**",
           "!*.pyc",
           "!build/**",
@@ -86,6 +87,10 @@
           "!venv/**",
           "!*.spec"
         ]
+      },
+      {
+        "from": "Skills.md",
+        "to": "Skills.md"
       },
       {
         "from": "build/",
@@ -167,6 +172,7 @@
     "concurrently": "^9.0.0",
     "electron": "33.0.0",
     "electron-builder": "^25.0.0",
+    "playwright-core": "^1.60.0",
     "wait-on": "^8.0.5"
   },
   "dependencies": {

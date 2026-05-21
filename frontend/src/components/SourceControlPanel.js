@@ -578,6 +578,17 @@ export default function SourceControlPanel({ onOpenFile, hasWorkspace = true }) 
   // Initial load
   useEffect(() => { fetchStatus(false); }, [fetchStatus]);
 
+  // If the initial fetch failed because the backend wasn't ready yet, retry
+  // automatically when Electron signals that the backend is now up.
+  useEffect(() => {
+    if (!hasWorkspace) return undefined;
+    const onBackendReady = () => {
+      if (!firstFetchDone.current || error) fetchStatus(false);
+    };
+    window.addEventListener('nebula:backend-ready', onBackendReady);
+    return () => window.removeEventListener('nebula:backend-ready', onBackendReady);
+  }, [fetchStatus, hasWorkspace, error]);
+
   // Live watcher: App.js opens a single WebSocket against /files/watch and
   // dispatches 'nebula:git-fs-change' whenever the OS watcher reports a
   // batch (debounced 200ms). We piggy-back on that so this panel refreshes

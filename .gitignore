@@ -73,3 +73,5 @@ build/creds.bundle.meta.json
 coverage/
 Thumbs.db
 .envbackend/nebula-backend.spec
+
+test-shots/

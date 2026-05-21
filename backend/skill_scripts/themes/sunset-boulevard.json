@@ -1,0 +1,13 @@
+{
+  "name": "Sunset Boulevard",
+  "primary": "#c94b2e",
+  "secondary": "#e8855a",
+  "accent": "#f4c542",
+  "background": "#1a0a05",
+  "surface": "#2e1208",
+  "text": "#fdf0e6",
+  "text_muted": "#c98b6e",
+  "heading_font": "Poppins",
+  "body_font": "Lora",
+  "description": "Warm vibrant sunset palette of rich oranges, corals, and golden highlights"
+}

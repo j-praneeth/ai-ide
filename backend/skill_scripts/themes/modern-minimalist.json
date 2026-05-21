@@ -1,0 +1,13 @@
+{
+  "name": "Modern Minimalist",
+  "primary": "#111111",
+  "secondary": "#555555",
+  "accent": "#111111",
+  "background": "#ffffff",
+  "surface": "#eeeeee",
+  "text": "#111111",
+  "text_muted": "#888888",
+  "heading_font": "Inter",
+  "body_font": "Inter",
+  "description": "Clean grayscale aesthetic — maximum clarity through restraint and precise whitespace"
+}

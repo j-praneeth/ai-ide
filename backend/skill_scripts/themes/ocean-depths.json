@@ -1,0 +1,13 @@
+{
+  "name": "Ocean Depths",
+  "primary": "#0a3d5c",
+  "secondary": "#1a6a8a",
+  "accent": "#00b4d8",
+  "background": "#051e2e",
+  "surface": "#0d3347",
+  "text": "#e8f4f8",
+  "text_muted": "#7ab3c8",
+  "heading_font": "Playfair Display",
+  "body_font": "Source Serif 4",
+  "description": "Professional maritime aesthetic with deep navy blues and luminous teal accents"
+}

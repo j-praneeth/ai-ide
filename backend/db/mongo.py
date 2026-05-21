@@ -15,7 +15,34 @@ _client: Optional[MongoClient] = None
 _db: Optional[Database] = None
 _initialized: bool = False
 _last_init_attempt: float = 0
-_INIT_RETRY_INTERVAL = 30  
+_INIT_RETRY_INTERVAL = 30
+
+# Track whether MongoDB is currently unreachable so callers can avoid
+# hammering a dead connection (each attempt blocks for connectTimeoutMS).
+_mongo_unreachable: bool = False
+_mongo_unreachable_until: float = 0.0
+_UNREACHABLE_COOLDOWN = 30.0  # seconds before retrying after a DNS/connect failure
+
+
+def is_mongo_available() -> bool:
+    """Returns False during the cooldown period after a connection failure."""
+    global _mongo_unreachable, _mongo_unreachable_until
+    if not _mongo_unreachable:
+        return True
+    if time.time() >= _mongo_unreachable_until:
+        _mongo_unreachable = False  # cooldown expired — allow one retry
+        return True
+    return False
+
+
+def mark_mongo_unreachable() -> None:
+    """Call when a MongoDB operation fails with a network/DNS error."""
+    global _mongo_unreachable, _mongo_unreachable_until, _client, _db
+    _mongo_unreachable = True
+    _mongo_unreachable_until = time.time() + _UNREACHABLE_COOLDOWN
+    # Reset cached client/db so the next retry creates a fresh connection.
+    _client = None
+    _db = None
 
 
 def _get_mongodb_uri() -> str:
@@ -112,12 +139,17 @@ def init_mongo() -> None:
         audit = db["audit_events"]
         audit.create_index([("ts", DESCENDING)], name="idx_audit_ts")
         audit.create_index([("user_id", ASCENDING), ("ts", DESCENDING)], name="idx_audit_user_ts")
-        
+
         print("DEBUG: MongoDB connected successfully.")
     except Exception as e:
-        print(f"DEBUG: MongoDB connection failed: {e}")
+        err_str = str(e)
+        print(f"DEBUG: MongoDB connection failed: {err_str[:200]}")
         with _lock:
             _initialized = False
+        # Mark unreachable so callers don't hammer a dead connection
+        if any(kw in err_str for kw in ("nodename nor servname", "Name or service not known",
+                                         "ENOTFOUND", "getaddrinfo", "Timeout", "ServerSelectionTimeoutError")):
+            mark_mongo_unreachable()
         raise e
 
 

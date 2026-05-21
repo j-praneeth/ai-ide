@@ -1,0 +1,13 @@
+{
+  "name": "Arctic Frost",
+  "primary": "#1a4a6e",
+  "secondary": "#3a7aaa",
+  "accent": "#a8d8f0",
+  "background": "#f0f6fa",
+  "surface": "#ddeef8",
+  "text": "#0d1f30",
+  "text_muted": "#5a8aaa",
+  "heading_font": "Raleway",
+  "body_font": "Open Sans",
+  "description": "Cool winter-inspired palette of icy blues and crisp whites evoking arctic stillness"
+}

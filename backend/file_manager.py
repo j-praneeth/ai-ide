@@ -932,13 +932,18 @@ def read_file(path: str):
         return {"error": str(e)}
 
 
+class _WriteRequest(BaseModel):
+    path: str
+    content: str
+
+
 @router.post("/write")
-def write_file(path: str, content: str):
+def write_file(req: _WriteRequest):
     root, err = _require_project_root()
     if err:
         return err
 
-    file_path = (root / path).resolve()
+    file_path = (root / req.path).resolve()
 
     # Security: prevent writing outside project root
     if not _is_within_root(file_path, root):
@@ -946,7 +951,7 @@ def write_file(path: str, content: str):
 
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content, encoding='utf-8')
+        file_path.write_text(req.content, encoding='utf-8')
         return {"status": "saved"}
     except Exception as e:
         return {"error": str(e)}

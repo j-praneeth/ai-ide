@@ -1,0 +1,13 @@
+{
+  "name": "Desert Rose",
+  "primary": "#8a5a6e",
+  "secondary": "#b07a8a",
+  "accent": "#d4a0a8",
+  "background": "#f5ede8",
+  "surface": "#ecddd5",
+  "text": "#3a2030",
+  "text_muted": "#9a7080",
+  "heading_font": "Josefin Sans",
+  "body_font": "Crimson Text",
+  "description": "Soft dusty tones of mauve, warm sand, and blush rose for an elegant understated feel"
+}

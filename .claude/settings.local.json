@@ -57,7 +57,19 @@
       "Bash(npx --no-install -- eslint --no-eslintrc --parser-options=ecmaVersion:latest,sourceType:module,ecmaFeatures:{jsx:true} src/App.js)",
       "Bash(node -e \"const fs=require\\('fs'\\); const acorn=require\\('acorn'\\); const t=fs.readFileSync\\('src/App.js','utf-8'\\); acorn.parse\\(t, {ecmaVersion:'latest', sourceType:'module', allowImportExportEverywhere:true, plugins:{}}\\); console.log\\('OK'\\);\")",
       "Bash(dir electron\\\\main.js)",
-      "Bash(Select-Object -ExpandProperty Name)"
+      "Bash(Select-Object -ExpandProperty Name)",
+      "WebFetch(domain:github.com)",
+      "Read(//e/tmp/**)",
+      "Bash(gh repo *)",
+      "WebFetch(domain:api.github.com)",
+      "PowerShell(Get-ChildItem -Path \"E:\\\\ai-ide\" -Force | Select-Object Name, @{Name=\"Type\";Expression={if\\($_.PSIsContainer\\){\"Dir\"}else{\"File\"}}} | Format-Table -AutoSize)",
+      "PowerShell(Get-ChildItem -Path \"E:\\\\ai-ide\\\\.claude\" -Force | Select-Object Name, @{Name=\"Type\";Expression={if\\($_.PSIsContainer\\){\"Dir\"}else{\"File\"}}} | Format-Table -AutoSize)",
+      "PowerShell(Get-ChildItem -Path \"E:\\\\ai-ide\\\\backend\" -Depth 0 -Force | Select-Object Name, @{Name=\"Type\";Expression={if\\($_.PSIsContainer\\){\"Dir\"}else{\"File\"}}} | Format-Table -AutoSize)",
+      "Bash(npm start *)",
+      "Bash(echo \"Frontend starting with PID $!\")",
+      "Bash(python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload)",
+      "Bash(echo \"Backend starting with PID $!\")",
+      "Bash(python -c ' *)"
     ]
   }
 }

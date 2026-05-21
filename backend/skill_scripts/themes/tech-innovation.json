@@ -1,0 +1,13 @@
+{
+  "name": "Tech Innovation",
+  "primary": "#0055ff",
+  "secondary": "#0088cc",
+  "accent": "#00e5ff",
+  "background": "#050a14",
+  "surface": "#0d1a2e",
+  "text": "#e8f0ff",
+  "text_muted": "#5a8acc",
+  "heading_font": "Space Grotesk",
+  "body_font": "IBM Plex Mono",
+  "description": "Bold modern tech aesthetic with electric blues on deep dark backgrounds for high impact"
+}

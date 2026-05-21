@@ -8,11 +8,16 @@ const http = require('http');
 const https = require('https');
 const pty = require('node-pty');
 const cliBundle = require('./cli-bundle');
+const claudeSkills = require('./claude-skills-bundle');
 
 // Keep a global reference of the window object
 let mainWindow = null;
 // Maps webContents.id → folderPath for in-process new windows (Windows only)
 const windowStartupFolders = new Map();
+// Maps webContents.id → folderPath for per-window workspace (avoids global broadcast)
+const windowWorkspaces = new Map();
+// Guard against rapid double-click spawning multiple windows simultaneously
+let _windowCreationInProgress = false;
 let backendProcess = null;
 let backendPort = null;
 let splashWindow = null;
@@ -956,6 +961,22 @@ function getCliLaunchConfig(tool) {
       if (bypass) {
         _logCliConfig(tool, bypass);
         return bypass;
+      }
+      // Claude CLI: launch via PowerShell interactive session (same approach as Codex).
+      // cmd.exe /c doesn't configure the ConPTY environment that Claude's TUI needs,
+      // causing the interactive prompt to never render. PowerShell -NoExit starts a
+      // proper interactive ConPTY and the bootstrapInput types the command into it.
+      if (tool === 'claude') {
+        const cfg = {
+          installed: true,
+          label: spec.label,
+          shellLabel: 'powershell',
+          file: 'powershell.exe',
+          args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit'],
+          bootstrapInput: 'claude\r',
+        };
+        _logCliConfig(tool, cfg);
+        return cfg;
       }
       const cfg = {
         installed: true,
@@ -2172,13 +2193,29 @@ async function installDependencies(pythonCmd, backendSourceDir) {
   const reqFile = path.join(backendSourceDir, 'requirements.txt');
   if (!fs.existsSync(reqFile)) return;
 
-  // Check if deps already installed by testing a key import.
-  // 20 s covers cold Python start (~2-3 s) + first-time import overhead.
+  // Fast path: a stamp file written after the last successful install.
+  // If it's newer than requirements.txt, deps are already installed — skip
+  // the slow Python import check entirely (avoids antivirus-induced timeouts).
+  const stampFile = path.join(backendSourceDir, '.deps_installed');
+  try {
+    if (fs.existsSync(stampFile)) {
+      const stampMtime = fs.statSync(stampFile).mtimeMs;
+      const reqMtime   = fs.statSync(reqFile).mtimeMs;
+      if (stampMtime >= reqMtime) {
+        console.log('Dependencies already installed (stamp file up-to-date)');
+        return;
+      }
+    }
+  } catch (_) {}
+
+  // Stamp absent or stale — check via Python import (30 s covers cold starts
+  // and antivirus scanning overhead on Windows).
   try {
     await runFile(pythonCmd, ['-c', 'import fastapi; import uvicorn'], {
-      timeout: 20000, env: { ...process.env },
+      timeout: 30000, env: { ...process.env },
     });
     console.log('Dependencies already installed');
+    try { fs.writeFileSync(stampFile, Date.now().toString(), 'utf8'); } catch (_) {}
     return;
   } catch (_) {
     // Need to install
@@ -2192,6 +2229,7 @@ async function installDependencies(pythonCmd, backendSourceDir) {
       timeout: 300000, env: { ...process.env },
     });
     console.log('Dependencies installed successfully');
+    try { fs.writeFileSync(stampFile, Date.now().toString(), 'utf8'); } catch (_) {}
   } catch (err) {
     console.error('Failed to install dependencies:', err.message);
     throw new Error('Failed to install Python dependencies. Check your internet connection.');
@@ -2562,13 +2600,29 @@ function createWindow() {
 // places a lockfile in the shared userData directory, causing the second instance
 // to crash silently before its window appears.
 function openFolderInProcessWindow(folderPath, prevWindow) {
+  // Guard: prevent rapid double-click from spawning multiple windows simultaneously.
+  if (_windowCreationInProgress) {
+    console.warn('[window] Window creation already in progress — ignoring duplicate request.');
+    return { ok: false, error: 'window_creation_in_progress' };
+  }
+  _windowCreationInProgress = true;
+
   try {
     const win = _makeBrowserWindow();
 
     // Register startup folder so app:get-startup-folder IPC returns it for this window.
+    // Store in per-window workspace map so app:get-workspace returns the right path for
+    // THIS window WITHOUT broadcasting project:root-changed to every other window.
+    // (Broadcasting was the root cause of the cascade: old windows changed project AND
+    //  the new window saw hadWorkspace=true + startupFolder=same path → infinite loop.)
+    //
+    // Always register in windowWorkspaces — even as empty string for fresh windows.
+    // app:get-workspace uses Map.has() so an empty-string entry means "no project"
+    // rather than falling back to the global currentProjectRoot.
+    windowWorkspaces.set(win.webContents.id, folderPath || '');
     if (folderPath) {
       windowStartupFolders.set(win.webContents.id, folderPath);
-      setCurrentProjectRoot(folderPath);
+      _applyWindowTitle(win, folderPath);
     }
 
     // Notify the running backend of the new project root so the new
@@ -2600,20 +2654,21 @@ function openFolderInProcessWindow(folderPath, prevWindow) {
     });
 
     win.once('ready-to-show', () => {
+      _windowCreationInProgress = false;
       win.show();
       win.focus();
-      // Close the old window only after the new one is visible — no white flash.
-      setTimeout(() => {
-        try { if (prevWindow && !prevWindow.isDestroyed()) prevWindow.close(); } catch (_) {}
-      }, 300);
     });
 
     win.on('closed', () => {
+      // Clean up per-window maps so we don't leak memory.
+      windowWorkspaces.delete(win.webContents.id);
+      windowStartupFolders.delete(win.webContents.id);
       if (mainWindow === win) mainWindow = null;
     });
 
     return { ok: true, inProcess: true };
   } catch (e) {
+    _windowCreationInProgress = false;
     return { ok: false, error: e?.message || String(e) };
   }
 }
@@ -2821,10 +2876,25 @@ ipcMain.handle('app:get-startup-folder', (event) => {
 // The renderer calls this on mount before any backend HTTP round-trip — so the
 // title bar / SCM / explorer all see the restored project synchronously and
 // never have to fall back to the default "Nebula" label.
-ipcMain.handle('app:get-workspace', () => {
-  const root = currentProjectRoot && fs.existsSync(currentProjectRoot)
-    ? currentProjectRoot
-    : '';
+//
+// Per-window override: when openFolderInProcessWindow creates a new in-process
+// window for a specific folder it registers the path in windowWorkspaces keyed
+// by webContents.id. We return that per-window path here so the new window sees
+// its correct project immediately, WITHOUT broadcasting setCurrentProjectRoot to
+// every other open window (which was the root cause of the cascade bug).
+ipcMain.handle('app:get-workspace', (event) => {
+  const wid = event?.sender?.id;
+  // Per-window entry takes priority over the global currentProjectRoot.
+  // Use Map.has() to distinguish:
+  //   - "not registered" (initial main window) → fall through to currentProjectRoot
+  //   - "registered as empty" (fresh window with no project) → return empty/no workspace
+  //   - "registered with a path" (in-process folder window) → return that path
+  if (wid !== undefined && windowWorkspaces.has(wid)) {
+    const perWindowPath = windowWorkspaces.get(wid) || '';
+    const root = perWindowPath && fs.existsSync(perWindowPath) ? perWindowPath : '';
+    return { path: root, name: root ? _projectNameFromRoot(root) : '', open: !!root };
+  }
+  const root = currentProjectRoot && fs.existsSync(currentProjectRoot) ? currentProjectRoot : '';
   return {
     path: root || '',
     name: root ? _projectNameFromRoot(root) : '',
@@ -2832,18 +2902,9 @@ ipcMain.handle('app:get-workspace', () => {
   };
 });
 
-/** Open a folder in a brand-new window and close this one after the new one launches. */
+/** Open a folder in a brand-new window, keeping the existing window open. */
 ipcMain.handle('app:open-in-new-window', (_event, folderPath) => {
-  const prevWindow = mainWindow; // capture before mainWindow may change
-  const result = spawnNewAppInstance(folderPath, prevWindow);
-  if (result.ok && !result.inProcess) {
-    // Out-of-process spawn (macOS/Linux): give the new process ~1.5s to start,
-    // then close this window. For in-process windows (Windows), openFolderInProcessWindow
-    // closes prevWindow itself once ready-to-show fires.
-    setTimeout(() => {
-      try { if (prevWindow && !prevWindow.isDestroyed()) prevWindow.close(); } catch (_) {}
-    }, 1500);
-  }
+  const result = spawnNewAppInstance(folderPath, null);
   return result;
 });
 
@@ -3371,6 +3432,17 @@ app.whenReady().then(async () => {
     }
     // Block window creation until CLI tools are installed (splash shows progress).
     await cliInstallDone;
+
+    // Install bundled Claude skills/commands/agents into ~/.claude/ so they are
+    // available to every Claude CLI session spawned by this app. Runs async and
+    // non-blocking; skill files are idempotent (skipped if already present).
+    if (!claudeSkills.areSkillsInstalled()) {
+      updateSplash('Setting up Claude skills...');
+      claudeSkills.installClaudeSkills({ log: (msg) => console.log(msg) }).catch(() => {});
+    } else {
+      // Re-run in background to pick up any updates bundled in a new app version.
+      claudeSkills.installClaudeSkills({ force: false, log: (msg) => console.log(msg) }).catch(() => {});
+    }
 
     // Unpack the shipped credential bundle into ~/.claude and ~/.codex.
     // Runs in parallel with backend startup; never blocks UI. `cli:start`

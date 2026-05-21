@@ -1,0 +1,13 @@
+{
+  "name": "Midnight Galaxy",
+  "primary": "#3a1a6e",
+  "secondary": "#6a35a8",
+  "accent": "#c8a8f8",
+  "background": "#08050f",
+  "surface": "#130a22",
+  "text": "#f0e8ff",
+  "text_muted": "#8a68b8",
+  "heading_font": "Cinzel",
+  "body_font": "Spectral",
+  "description": "Dramatic cosmic aesthetic of deep purples and star-silver highlights against the infinite dark"
+}

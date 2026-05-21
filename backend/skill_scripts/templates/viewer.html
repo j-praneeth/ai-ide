@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nebula IDE — Algorithmic Art Viewer</title>
+  <!-- p5.js loaded from CDN — PRESERVE: do not change this dependency -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <style>
+    /* ── PRESERVE: layout and branding styles ───────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Poppins', Arial, sans-serif;
+      background: #141413;
+      color: #faf9f5;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Fixed header — PRESERVE: structure and branding */
+    header {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.6rem 1.2rem;
+      background: #1c1c1a;
+      border-bottom: 1px solid #2e2e2b;
+      flex-wrap: wrap;
+    }
+
+    .brand {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #faf9f5;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+
+    .brand span {
+      color: #d97757; /* Anthropic accent orange */
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      flex: 1;
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    label {
+      font-size: 0.75rem;
+      color: #b0aea5;
+      white-space: nowrap;
+    }
+
+    input[type="number"], input[type="text"] {
+      width: 80px;
+      padding: 0.25rem 0.5rem;
+      background: #2a2a27;
+      border: 1px solid #3a3a36;
+      border-radius: 4px;
+      color: #faf9f5;
+      font-size: 0.8rem;
+    }
+
+    input[type="range"] {
+      width: 90px;
+      accent-color: #d97757;
+    }
+
+    button {
+      padding: 0.3rem 0.8rem;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-family: inherit;
+      font-weight: 500;
+      transition: opacity 0.15s;
+    }
+
+    button:hover { opacity: 0.85; }
+
+    #btn-randomize {
+      background: #d97757;
+      color: #fff;
+    }
+
+    #btn-download {
+      background: #6a9bcc;
+      color: #fff;
+    }
+
+    /* Dynamic parameter sliders area — REPLACE content via JS */
+    #param-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    /* Canvas container — PRESERVE: fills remaining viewport height */
+    #canvas-container {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0d0d0c;
+    }
+
+    #canvas-container canvas {
+      display: block;
+      max-width: 100%;
+      max-height: 100%;
+    }
+
+    .slider-val {
+      min-width: 28px;
+      font-size: 0.75rem;
+      color: #b0aea5;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── PRESERVE: header structure ───────────────────────────────── -->
+  <header>
+    <div class="brand">Nebula <span>IDE</span></div>
+
+    <div class="controls">
+      <!-- Seed control — PRESERVE -->
+      <div class="control-group">
+        <label for="seed-input">Seed</label>
+        <input type="number" id="seed-input" value="42" min="0" max="999999" />
+      </div>
+
+      <!-- PRESERVE: Randomize and Download buttons -->
+      <button id="btn-randomize">Randomize</button>
+      <button id="btn-download">Download</button>
+
+      <!-- REPLACE: parameter sliders are generated from PARAMS object below -->
+      <div id="param-controls"></div>
+    </div>
+  </header>
+
+  <!-- PRESERVE: canvas container -->
+  <div id="canvas-container" id="canvas-container"></div>
+
+  <script>
+    // ════════════════════════════════════════════════════════════════════
+    //  REPLACE THIS SECTION: algorithm, PARAMS, and draw() logic
+    //  Preserve everything outside this block (header wiring, download, etc.)
+    // ════════════════════════════════════════════════════════════════════
+
+    /**
+     * PARAMS — tunable parameters exposed as sliders in the header.
+     * Each entry: { label, min, max, step, default }
+     * REPLACE with values meaningful to your algorithm.
+     */
+    const PARAMS = {
+      speed:  { label: 'Speed',  min: 0.1, max: 5,   step: 0.1, default: 1.2 },
+      count:  { label: 'Count',  min: 10,  max: 300,  step: 10,  default: 80  },
+      size:   { label: 'Size',   min: 1,   max: 20,   step: 0.5, default: 4   },
+    };
+
+    // ── seed management ──────────────────────────────────────────────
+    let seed = 42;
+
+    // ── particle state (REPLACE with your algorithm's state) ─────────
+    let particles = [];
+
+    /**
+     * p5.js sketch — wrapped in instance mode so multiple sketches can coexist.
+     * REPLACE the body of setup() and draw() with your algorithm.
+     * PRESERVE the seed wiring and resize logic.
+     */
+    const sketch = (p) => {
+      // ── REPLACE: setup ─────────────────────────────────────────────
+      p.setup = () => {
+        const container = document.getElementById('canvas-container');
+        const cnv = p.createCanvas(container.offsetWidth, container.offsetHeight);
+        cnv.parent('canvas-container');
+
+        p.randomSeed(seed);   // PRESERVE: seed wiring
+        p.noiseSeed(seed);
+
+        initParticles(p);     // REPLACE: your init call
+      };
+
+      // ── REPLACE: draw ──────────────────────────────────────────────
+      p.draw = () => {
+        // Fading trail effect
+        p.fill(13, 13, 12, 18);
+        p.noStroke();
+        p.rect(0, 0, p.width, p.height);
+
+        const speedVal = getParam('speed');
+        const sizeVal  = getParam('size');
+
+        for (const pt of particles) {
+          // Flow-field steering using Perlin noise
+          const angle = p.noise(pt.x * 0.004, pt.y * 0.004, p.frameCount * 0.005 * speedVal) * p.TWO_PI * 3;
+          pt.vx += Math.cos(angle) * 0.4;
+          pt.vy += Math.sin(angle) * 0.4;
+
+          // Clamp velocity
+          const maxV = speedVal * 2;
+          const v = Math.hypot(pt.vx, pt.vy);
+          if (v > maxV) { pt.vx = (pt.vx / v) * maxV; pt.vy = (pt.vy / v) * maxV; }
+
+          pt.x += pt.vx;
+          pt.y += pt.vy;
+
+          // Wrap at edges
+          if (pt.x < 0) pt.x = p.width;
+          if (pt.x > p.width) pt.x = 0;
+          if (pt.y < 0) pt.y = p.height;
+          if (pt.y > p.height) pt.y = 0;
+
+          // Draw particle
+          p.fill(pt.r, pt.g, pt.b, 180);
+          p.ellipse(pt.x, pt.y, sizeVal, sizeVal);
+        }
+      };
+
+      // ── PRESERVE: resize handler ───────────────────────────────────
+      p.windowResized = () => {
+        const container = document.getElementById('canvas-container');
+        p.resizeCanvas(container.offsetWidth, container.offsetHeight);
+      };
+    };
+
+    // ── REPLACE: particle initializer ─────────────────────────────────
+    function initParticles(p) {
+      particles = [];
+      const count = getParam('count');
+      for (let i = 0; i < count; i++) {
+        particles.push({
+          x:  p.random(p.width),
+          y:  p.random(p.height),
+          vx: p.random(-1, 1),
+          vy: p.random(-1, 1),
+          // Color palette: Anthropic brand accents cycled
+          r: [217, 106, 120][i % 3],
+          g: [119, 155, 150][i % 3],
+          b: [ 87, 204, 150][i % 3],
+        });
+      }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  PRESERVE BELOW: param wiring, seed controls, download button
+    // ════════════════════════════════════════════════════════════════════
+
+    // Active p5 instance
+    let pInst = new p5(sketch);
+
+    /** Read current slider value for a param key */
+    function getParam(key) {
+      const el = document.getElementById(`param-${key}`);
+      return el ? parseFloat(el.value) : PARAMS[key].default;
+    }
+
+    /** Rebuild slider UI from PARAMS object */
+    function buildParamControls() {
+      const container = document.getElementById('param-controls');
+      container.innerHTML = '';
+      for (const [key, cfg] of Object.entries(PARAMS)) {
+        const group = document.createElement('div');
+        group.className = 'control-group';
+
+        const lbl = document.createElement('label');
+        lbl.htmlFor = `param-${key}`;
+        lbl.textContent = cfg.label;
+
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.id = `param-${key}`;
+        slider.min  = cfg.min;
+        slider.max  = cfg.max;
+        slider.step = cfg.step;
+        slider.value = cfg.default;
+
+        const valDisplay = document.createElement('span');
+        valDisplay.className = 'slider-val';
+        valDisplay.textContent = cfg.default;
+
+        slider.addEventListener('input', () => {
+          valDisplay.textContent = slider.value;
+          // Re-init particles when count or size changes meaningfully
+          if (key === 'count') {
+            pInst.randomSeed(seed);
+            initParticles(pInst);
+          }
+        });
+
+        group.appendChild(lbl);
+        group.appendChild(slider);
+        group.appendChild(valDisplay);
+        container.appendChild(group);
+      }
+    }
+
+    buildParamControls();
+
+    // Seed input wiring — PRESERVE
+    const seedInput = document.getElementById('seed-input');
+    seedInput.addEventListener('change', () => {
+      seed = parseInt(seedInput.value, 10) || 0;
+      pInst.randomSeed(seed);
+      pInst.noiseSeed(seed);
+      initParticles(pInst);
+    });
+
+    // Randomize button — PRESERVE
+    document.getElementById('btn-randomize').addEventListener('click', () => {
+      seed = Math.floor(Math.random() * 999999);
+      seedInput.value = seed;
+      pInst.randomSeed(seed);
+      pInst.noiseSeed(seed);
+      initParticles(pInst);
+    });
+
+    // Download button — saves canvas as PNG — PRESERVE
+    document.getElementById('btn-download').addEventListener('click', () => {
+      pInst.saveCanvas(`nebula-art-seed${seed}`, 'png');
+    });
+  </script>
+</body>
+</html>

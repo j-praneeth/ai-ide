@@ -1,1 +1,9 @@
 .env
+.deps_installed
+backend/__pycache__
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+backend/venv/
+/venv

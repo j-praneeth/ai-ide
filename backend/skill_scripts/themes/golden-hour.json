@@ -1,0 +1,13 @@
+{
+  "name": "Golden Hour",
+  "primary": "#7a3d0a",
+  "secondary": "#b05e1a",
+  "accent": "#e8a040",
+  "background": "#1a0e05",
+  "surface": "#2e1a08",
+  "text": "#faebd7",
+  "text_muted": "#b8896a",
+  "heading_font": "Cormorant Garamond",
+  "body_font": "EB Garamond",
+  "description": "Rich autumnal palette of deep ambers, burnt oranges, and warm honey golds"
+}

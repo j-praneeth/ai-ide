@@ -1,6 +1,5 @@
 import re
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -16,8 +15,20 @@ class Skill:
 
 
 def _skills_path() -> Path:
-    # Repo root is 3 levels above backend/agent/
-    return Path(__file__).resolve().parent.parent.parent / "Skills.md"
+    here = Path(__file__).resolve()
+    # Dev:       <repo>/backend/agent/skills_registry.py  → 3 levels up = repo root
+    # Packaged:  resources/backend-src/agent/             → 3 levels up = resources/
+    # Both layouts put Skills.md three levels above this file.
+    candidate = here.parent.parent.parent / "Skills.md"
+    if candidate.exists():
+        return candidate
+    # PyInstaller frozen: sys._MEIPASS / Skills.md
+    import sys
+    if getattr(sys, "frozen", False):
+        frozen_path = Path(sys._MEIPASS) / "Skills.md"
+        if frozen_path.exists():
+            return frozen_path
+    return candidate  # return anyway; caller checks existence
 
 
 def _parse_skill_block(title: str, meta: Dict[str, str], content_lines: List[str]) -> Skill:
@@ -37,11 +48,21 @@ def _parse_skill_block(title: str, meta: Dict[str, str], content_lines: List[str
     )
 
 
-@lru_cache(maxsize=1)
-def load_skills() -> List[Skill]:
+_skills_cache: List["Skill"] = []
+_skills_mtime: float = -1.0
+
+
+def load_skills() -> List["Skill"]:
+    global _skills_cache, _skills_mtime
     path = _skills_path()
     if not path.exists():
         return []
+    try:
+        mtime = path.stat().st_mtime
+        if mtime == _skills_mtime:
+            return _skills_cache
+    except OSError:
+        pass
 
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     skills: List[Skill] = []
@@ -74,6 +95,11 @@ def load_skills() -> List[Skill]:
             current_content.append(line)
 
     flush()
+    try:
+        _skills_mtime = path.stat().st_mtime
+    except OSError:
+        pass
+    _skills_cache = skills
     return skills
 
 

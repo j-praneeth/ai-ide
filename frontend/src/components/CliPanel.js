@@ -224,7 +224,7 @@ function BrowserCliPanel({ visible }) {
   );
 }
 
-export default function CliPanel({ visible }) {
+export default function CliPanel({ visible, projectRoot }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const fitAddonRef = useRef(null);
@@ -283,6 +283,13 @@ export default function CliPanel({ visible }) {
         }
       }
       sessionIdRef.current = null;
+    }
+
+    // Fresh window (no project) — don't reattach sessions that belong to other projects.
+    // Clear any stored IDs so we always spawn a clean session in this context.
+    if (reattach && !projectRoot) {
+      _clearStoredSessionId(cli);
+      reattach = false;
     }
 
     if (reattach) {
