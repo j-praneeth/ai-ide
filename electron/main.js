@@ -433,11 +433,28 @@ function ensureCliPaths(env = process.env) {
     if (nodeRoot) prependToPath(nodeRoot, env);
   } catch (_) {}
 
-  // On macOS/Linux, enrich PATH with common locations that are set up by shell
-  // init files (Homebrew, nvm, volta, fnm, etc.) but are absent in Electron's
-  // minimal process.env.PATH. This lets command-v resolution find CLIs even
-  // when the app was launched from Finder rather than a terminal.
-  if (process.platform !== 'win32') {
+  // On Windows, Electron's minimal PATH often lacks npm's global bin directory
+  // (%APPDATA%\npm). Users who run `npm install -g @anthropic-ai/claude-code`
+  // manually won't have `claude` resolvable without this.
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || '';
+    if (appData) {
+      const npmGlobalBin = path.join(appData, 'npm');
+      if (fs.existsSync(npmGlobalBin)) prependToPath(npmGlobalBin, env);
+    }
+    // Also check npm's own configured prefix for custom setups
+    try {
+      const prefix = execSync('npm config get prefix', {
+        stdio: 'pipe', timeout: 5000, windowsHide: true, encoding: 'utf-8',
+      }).trim();
+      if (prefix) {
+        const p = path.join(prefix, 'bin');
+        if (p.toLowerCase() !== npmGlobalBin.toLowerCase() && fs.existsSync(p)) {
+          prependToPath(p, env);
+        }
+      }
+    } catch (_) {}
+  } else {
     const home = os.homedir();
     const extraPaths = [
       // Homebrew (Apple Silicon)
