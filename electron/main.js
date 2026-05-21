@@ -3066,6 +3066,25 @@ ipcMain.handle('auth:get-pending-callback', () => {
   return url;
 });
 
+// Clipboard image normalizer — used by the CLI panel's Alt+V interceptor on Windows.
+// Electron's clipboard.readImage() handles all Windows clipboard formats (CF_DIB,
+// CF_BITMAP, CF_PNG, etc.) and converts them to a NativeImage. We then write the
+// image back to the clipboard as PNG so the Claude CLI process finds it in a format
+// it can actually read when it checks the clipboard a moment later.
+ipcMain.handle('clipboard:normalize-image', () => {
+  try {
+    const { clipboard } = require('electron');
+    const img = clipboard.readImage();
+    if (!img || img.isEmpty()) return { ok: false };
+    // Re-write as PNG — this ensures the clipboard has CF_PNG on Windows,
+    // which Claude CLI can reliably read regardless of the original format.
+    clipboard.writeImage(img);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e?.message };
+  }
+});
+
 ipcMain.handle('shell:open-external', async (_event, url) => {
   try {
     if (typeof url !== 'string' || !url.trim()) return { ok: false, error: 'Invalid URL' };

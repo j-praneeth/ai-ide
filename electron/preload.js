@@ -108,6 +108,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Open external URLs in the user's default browser
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
 
+  // Normalize the clipboard image to PNG so Claude CLI can read it on Windows.
+  // Call this before sending Alt+V to the CLI PTY.
+  normalizeClipboardImage: () => ipcRenderer.invoke('clipboard:normalize-image'),
+
   // Diagnostics — used by the SCM panel's error screen so users on packaged
   // builds (where the menu is hidden) can still inspect what's broken.
   openDevTools: () => ipcRenderer.invoke('app:open-devtools'),

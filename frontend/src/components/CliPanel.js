@@ -429,6 +429,28 @@ export default function CliPanel({ visible, projectRoot }) {
       });
     }
 
+    // Alt+V — paste image from clipboard into Claude CLI.
+    // On Windows the clipboard image is often stored as CF_DIB/CF_BITMAP which
+    // Claude CLI cannot read. We intercept the keypress, re-write the clipboard
+    // image as PNG via Electron (which handles all Windows formats), then send
+    // the escape sequence to the PTY so Claude CLI finds a proper PNG.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown' || !e.altKey || e.key !== 'v') return true;
+      if (!window.electronAPI?.normalizeClipboardImage) return true;
+      window.electronAPI.normalizeClipboardImage().then((res) => {
+        // Whether normalization succeeded or not, forward the keystroke so Claude
+        // CLI can show its own "no image" message if the clipboard is empty.
+        if (sessionIdRef.current && window.electronAPI?.writeCliSession) {
+          window.electronAPI.writeCliSession(sessionIdRef.current, '\x1bv');
+        }
+      }).catch(() => {
+        if (sessionIdRef.current && window.electronAPI?.writeCliSession) {
+          window.electronAPI.writeCliSession(sessionIdRef.current, '\x1bv');
+        }
+      });
+      return false; // block xterm from sending the keystroke itself
+    });
+
     requestAnimationFrame(() => { requestAnimationFrame(() => { try { fit.fit(); } catch (_) {} }); });
 
     // ResizeObserver — auto-refit whenever the container changes size (panel drag, etc.)
