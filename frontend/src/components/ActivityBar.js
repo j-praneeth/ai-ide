@@ -5,8 +5,8 @@ import {
   VscSourceControl,
   VscExtensions,
   VscSettingsGear,
-  VscAccount,
 } from 'react-icons/vsc';
+import { GiCrown } from 'react-icons/gi';
 import { getAuthUser, logout } from '../lib/auth';
 import { AUTH_URL as AUTH } from '../config';
 import { startSsoLogin as startSsoLoginFlow } from '../lib/sso';
@@ -19,8 +19,8 @@ const TOP_ITEMS = [
 ];
 
 const BOTTOM_ITEMS = [
+  { id: 'account', icon: GiCrown, label: 'Account' },
   { id: 'settings', icon: VscSettingsGear, label: 'Settings (⌘,)' },
-  { id: 'account', icon: VscAccount, label: 'Account' },
 ];
 
 /**

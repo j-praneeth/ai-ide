@@ -43,7 +43,7 @@
 
 .title-bar {
   height: var(--titlebar-height);
-  background: var(--bg-surface);
+  background: var(--bg-deepest);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -59,12 +59,45 @@
   left: 12px;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 0;
   -webkit-app-region: no-drag;
 }
 
 .platform-darwin .title-bar-left {
   left: 80px;
+}
+
+/* ── Brand logo section ── */
+.title-bar-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-right: 10px;
+  margin-right: 6px;
+  border-right: 1px solid var(--border);
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+}
+
+.title-bar-brand-icon {
+  display: flex;
+  align-items: center;
+  color: #7dd3fc;
+  animation: brand-star-spin 10s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes brand-star-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.title-bar-brand-name {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-bright);
+  letter-spacing: 0.04em;
+  user-select: none;
 }
 
 .title-bar-menu {
@@ -81,11 +114,43 @@
   -webkit-app-region: no-drag;
 }
 
-.title-bar-project {
-  color: var(--text-secondary);
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  font-size: 13px;
+/* ── Project pill dropdown ── */
+.title-bar-project-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 3px 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background var(--duration-fast), border-color var(--duration-fast);
+  -webkit-app-region: no-drag;
+  max-width: 200px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 400;
+}
+
+.title-bar-project-pill:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--text-bright);
+}
+
+.title-bar-project-pill-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title-bar-project-pill-caret {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-size: 9px;
+  line-height: 1;
+  margin-top: 1px;
 }
 
 .title-bar-separator {
@@ -95,6 +160,7 @@
 .title-bar-file {
   color: var(--text-muted);
   font-weight: 400;
+  font-size: 12px;
 }
 
 .title-bar-right {
@@ -104,6 +170,47 @@
   align-items: center;
   gap: 2px;
   -webkit-app-region: no-drag;
+}
+
+/* Push layout toggles left of the window control buttons on Windows */
+.platform-win .title-bar-right {
+  right: 142px;
+}
+
+/* ── Custom window controls (Windows frameless) ── */
+.win-controls {
+  position: absolute;
+  right: 0;
+  top: 0;
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.win-btn {
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+  border-radius: 0;
+  padding: 0;
+}
+
+.win-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.win-btn-close:hover {
+  background: #c42b1c;
+  color: #ffffff;
 }
 
 /* Layout Toggle Controls (Cursor-style) */
@@ -144,13 +251,13 @@
 /* ── Vertical Activity Bar (Cursor-style) ── */
 .activity-bar-vertical {
   width: var(--activitybar-width);
-  background: var(--bg-surface);
+  background: var(--bg-deepest);
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 4px 0;
+  padding: 8px 0;
   flex-shrink: 0;
-  border-right: 1px solid var(--border);
+  border-right: none;
   z-index: 10;
   position: relative;
 }
@@ -195,10 +302,10 @@
 }
 
 .activity-bar-item.active {
-  color: var(--text-bright);
+  color: #ffffff;
 }
 
-/* Active left-border indicator (Cursor style) */
+/* Active left-border indicator */
 .activity-bar-item.active::before {
   content: '';
   position: absolute;
@@ -206,9 +313,9 @@
   top: 50%;
   transform: translateY(-50%);
   width: 2px;
-  height: 24px;
-  background: var(--text-bright);
-  border-radius: 0 1px 1px 0;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 0 2px 2px 0;
 }
 
 /* Hide old horizontal bar */
@@ -222,28 +329,31 @@
 
 .sidebar {
   width: var(--sidebar-width);
-  background: var(--bg-deep);
-  border-right: 1px solid var(--border);
+  background: var(--bg-deepest);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   flex-shrink: 0;
+  margin: 6px 0 6px 5px;
+  border-radius: 10px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
 }
 
 .sidebar-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 16px 8px 16px;
-  min-height: 36px;
+  padding: 10px 8px 8px 16px;
+  min-height: 38px;
 }
 
 .sidebar-title {
-  font-size: var(--font-size-xs);
-  font-weight: 700;
-  color: var(--text-muted);
-  letter-spacing: 1px;
-  text-transform: uppercase;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .sidebar-actions {
@@ -255,6 +365,29 @@
 
 .sidebar-header:hover .sidebar-actions {
   opacity: 1;
+}
+
+/* Explorer header — always-visible search button alongside hover actions */
+.explorer-header-right {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.explorer-search-btn {
+  opacity: 0.5;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: opacity var(--duration-fast), color var(--duration-fast);
+}
+
+.explorer-search-btn:hover {
+  opacity: 1;
+  color: var(--text-primary);
+}
+
+.sidebar-header:hover .explorer-search-btn {
+  opacity: 0.75;
 }
 
 /* ── Icon Button ── */
@@ -383,7 +516,7 @@
 }
 
 .tree-item.selected {
-  background: var(--bg-active);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .tree-chevron {
@@ -1935,6 +2068,7 @@
   position: relative;
   flex-shrink: 0;
   z-index: 10;
+  margin: 6px 0;
 }
 
 .sidebar-resizer:hover,
@@ -3426,12 +3560,12 @@
 }
 
 .menu-trigger {
-  color: var(--text-muted);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  padding: 4px 10px;
+  color: rgba(255, 255, 255, 0.40);
+  font-size: 12px;
+  font-weight: 400;
+  padding: 3px 8px;
   border-radius: var(--radius-sm);
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   cursor: pointer;
   background: none;
   border: none;

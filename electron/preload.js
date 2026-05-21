@@ -174,6 +174,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Check if running in Electron
   isElectron: true,
 
+  // ── Window controls (custom frame) ──────────────────────────────────────────
+  minimizeWindow: () => ipcRenderer.invoke('win:minimize'),
+  maximizeWindow: () => ipcRenderer.invoke('win:maximize'),
+  closeWindow:    () => ipcRenderer.invoke('win:close'),
+
   // ── Auto-Update API ──────────────────────────────────────────
   updates: {
     checkForUpdates: () => ipcRenderer.invoke('update:check'),

@@ -37,7 +37,7 @@ import {
   VscChevronRight, VscChevronDown,
   VscNewFile, VscNewFolder, VscRefresh, VscCollapseAll,
   VscFolderOpened, VscEllipsis, VscEdit, VscTrash, VscCopy,
-  VscLoading,
+  VscLoading, VscSearch,
 } from 'react-icons/vsc';
 import {
   MdFolder, MdFolderOpen, MdInsertDriveFile,
@@ -899,15 +899,20 @@ export default function FileExplorer({
   return (
     <div className="file-explorer">
       <div className="sidebar-header">
-        <span className="sidebar-title">EXPLORER</span>
-        <div className="sidebar-actions">
-          <button className={`icon-btn ${showHiddenFiles ? 'active' : ''}`} title="Show hidden files" onClick={onToggleShowHidden}>
-            <VscEllipsis size={16} />
+        <span className="sidebar-title">Explorer</span>
+        <div className="explorer-header-right">
+          <div className="sidebar-actions">
+            <button className={`icon-btn ${showHiddenFiles ? 'active' : ''}`} title="Show hidden files" onClick={onToggleShowHidden}>
+              <VscEllipsis size={15} />
+            </button>
+            <button className="icon-btn" title="New File"    onClick={startNewFile}><VscNewFile size={15} /></button>
+            <button className="icon-btn" title="New Folder"  onClick={startNewFolder}><VscNewFolder size={15} /></button>
+            <button className="icon-btn" title="Refresh"     onClick={onRefresh}><VscRefresh size={15} /></button>
+            <button className="icon-btn" title="Collapse All" onClick={collapseAll}><VscCollapseAll size={15} /></button>
+          </div>
+          <button className="icon-btn explorer-search-btn" title="Search in files">
+            <VscSearch size={15} />
           </button>
-          <button className="icon-btn" title="New File"    onClick={startNewFile}><VscNewFile size={16} /></button>
-          <button className="icon-btn" title="New Folder"  onClick={startNewFolder}><VscNewFolder size={16} /></button>
-          <button className="icon-btn" title="Refresh"     onClick={onRefresh}><VscRefresh size={16} /></button>
-          <button className="icon-btn" title="Collapse All" onClick={collapseAll}><VscCollapseAll size={16} /></button>
         </div>
       </div>
 

@@ -2521,8 +2521,8 @@ function _makeBrowserWindow() {
     minHeight: 600,
     title: 'Nebula IDE',
     backgroundColor: '#08090d',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    frame: process.platform !== 'darwin',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
+    frame: false,
     autoHideMenuBar: true,
     trafficLightPosition: { x: 12, y: 12 },
     webPreferences: {
@@ -4244,6 +4244,19 @@ ipcMain.handle('ext:get-webview-url', (_event, id) => {
   } catch (_) {
     return null;
   }
+});
+
+// ── Window control buttons (custom frame on Windows) ──────────────────────────
+ipcMain.handle('win:minimize', (event) => {
+  BrowserWindow.fromWebContents(event.sender)?.minimize();
+});
+ipcMain.handle('win:maximize', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return;
+  if (win.isMaximized()) win.unmaximize(); else win.maximize();
+});
+ipcMain.handle('win:close', (event) => {
+  BrowserWindow.fromWebContents(event.sender)?.close();
 });
 
 process.on('uncaughtException', (err) => {

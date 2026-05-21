@@ -1500,8 +1500,10 @@ function App() {
     );
   };
 
-  // Detect platform for CSS adjustments (macOS traffic lights etc.)
-  const platformClass = navigator.platform?.toLowerCase().includes('mac') ? 'platform-darwin' : '';
+  // Detect platform for CSS adjustments and window controls
+  const isMac     = navigator.platform?.toLowerCase().includes('mac');
+  const isWindows = window.electronAPI?.isElectron && !isMac;
+  const platformClass = isMac ? 'platform-darwin' : isWindows ? 'platform-win' : '';
 
   return (
     <AuthGate>
@@ -1540,6 +1542,17 @@ function App() {
       {/* Title Bar */}
       <div className="title-bar">
         <div className="title-bar-left">
+          {/* Brand logo */}
+          <div className="title-bar-brand">
+            <span className="title-bar-brand-icon">
+              <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M7.5 0L8.9 5.6L14.5 7.5L8.9 9.4L7.5 15L6.1 9.4L0.5 7.5L6.1 5.6L7.5 0Z" fill="currentColor"/>
+                <path d="M7.5 3L8.3 6.2L11.5 7.5L8.3 8.8L7.5 12L6.7 8.8L3.5 7.5L6.7 6.2L7.5 3Z" fill="rgba(255,255,255,0.25)"/>
+              </svg>
+            </span>
+            <span className="title-bar-brand-name">Nebula</span>
+          </div>
+          {/* Menu items */}
           <div className="title-bar-menu" ref={menuRef}>
             {Object.keys(MENU_ITEMS).map(menuName => (
               <div key={menuName} className="menu-wrapper">
@@ -1556,7 +1569,14 @@ function App() {
           </div>
         </div>
         <div className="title-bar-center">
-          <span className="title-bar-project">{projectName}</span>
+          <button
+            className="title-bar-project-pill"
+            onClick={() => setShowOpenFolder(true)}
+            title="Switch project folder (⌘O)"
+          >
+            <span className="title-bar-project-pill-name">{projectName || 'Open Folder'}</span>
+            <span className="title-bar-project-pill-caret">▾</span>
+          </button>
           {activeFile && (
             <>
               <span className="title-bar-separator">—</span>
@@ -1643,6 +1663,40 @@ function App() {
             </button>
           )}
         </div>
+
+        {/* Custom window controls — Windows only (no native frame) */}
+        {isWindows && (
+          <div className="win-controls">
+            <button
+              className="win-btn win-btn-min"
+              title="Minimize"
+              onClick={() => window.electronAPI?.minimizeWindow?.()}
+            >
+              <svg width="11" height="1" viewBox="0 0 11 1" fill="currentColor">
+                <rect width="11" height="1" />
+              </svg>
+            </button>
+            <button
+              className="win-btn win-btn-max"
+              title="Maximize / Restore"
+              onClick={() => window.electronAPI?.maximizeWindow?.()}
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+                <rect x="0.5" y="0.5" width="9" height="9" />
+              </svg>
+            </button>
+            <button
+              className="win-btn win-btn-close"
+              title="Close"
+              onClick={() => window.electronAPI?.closeWindow?.()}
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
+                <line x1="1" y1="1" x2="9" y2="9" />
+                <line x1="9" y1="1" x2="1" y2="9" />
+              </svg>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Main Body */}
