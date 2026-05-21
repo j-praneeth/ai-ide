@@ -40,9 +40,37 @@ function writeFile(p, s) {
   fs.writeFileSync(p, s, 'utf8');
 }
 
+function readKek() {
+  // 1. Environment variable (explicit — highest priority)
+  const envVal = (process.env.NEBULA_CLI_KEK || '').trim();
+  if (envVal) return envVal;
+
+  // 2. backend/.env (source of truth for this project)
+  const dotEnvPaths = [
+    path.join(REPO_ROOT, 'backend', '.env'),
+    path.join(REPO_ROOT, '.env'),
+    path.join(REPO_ROOT, 'frontend', '.env'),
+  ];
+  for (const p of dotEnvPaths) {
+    try {
+      const raw = fs.readFileSync(p, 'utf8');
+      for (const line of raw.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx === -1) continue;
+        const key = trimmed.slice(0, eqIdx).trim();
+        const val = trimmed.slice(eqIdx + 1).trim();
+        if (key === 'NEBULA_CLI_KEK' && val) return val;
+      }
+    } catch (_) {}
+  }
+
+  die('NEBULA_CLI_KEK not found. Set it as an env var or add it to backend/.env.');
+}
+
 function embed() {
-  const kek = (process.env.NEBULA_CLI_KEK || '').trim();
-  if (!kek) die('NEBULA_CLI_KEK env var is required for embed.');
+  const kek = readKek();
   if (!/^[0-9a-fA-F]{64}$/.test(kek)) die('NEBULA_CLI_KEK must be 64 hex chars (32 bytes).');
 
   const partA = kek.slice(0, 32);
