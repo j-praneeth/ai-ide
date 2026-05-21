@@ -3373,11 +3373,54 @@ ipcMain.handle('cli:resize', (event, sessionId, cols, rows) => {
   return { ok: true };
 });
 
+// ─── CLI session history (persists scrollback across app restarts) ────────────
+
+const CLI_HISTORY_MAX_BYTES = 512 * 1024; // mirror in-memory cap
+
+function _getCliHistoryPath(tool) {
+  const dir = path.join(app.getPath('userData'), 'cli-history');
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `${String(tool).replace(/[^a-z0-9_-]/gi, '_')}.json`);
+}
+
+function _saveCliHistory(tool, scrollback) {
+  try {
+    if (!tool || !scrollback || !scrollback.length) return;
+    // Trim to the cap so disk files don't grow unbounded
+    const chunks = [...scrollback];
+    let bytes = chunks.reduce((s, c) => s + Buffer.byteLength(c, 'utf8'), 0);
+    while (bytes > CLI_HISTORY_MAX_BYTES && chunks.length) {
+      bytes -= Buffer.byteLength(chunks.shift(), 'utf8');
+    }
+    fs.writeFileSync(_getCliHistoryPath(tool), JSON.stringify({ tool, savedAt: Date.now(), scrollback: chunks }), 'utf-8');
+  } catch (_) {}
+}
+
+function _loadCliHistory(tool) {
+  try {
+    const raw = fs.readFileSync(_getCliHistoryPath(tool), 'utf-8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed.scrollback) ? parsed.scrollback : [];
+  } catch (_) { return []; }
+}
+
+ipcMain.handle('cli:get-history', (_event, tool) => {
+  const scrollback = _loadCliHistory(tool);
+  return { scrollback };
+});
+
+ipcMain.handle('cli:clear-history', (_event, tool) => {
+  try { fs.unlinkSync(_getCliHistoryPath(tool)); } catch (_) {}
+  return { ok: true };
+});
+
 ipcMain.handle('cli:close', (event, sessionId) => {
   // Detach the renderer without killing the PTY — page refresh path.
   // The PTY stays alive so the client can reattach on reconnect.
   const sess = cliSessions.get(sessionId);
   if (sess) {
+    // Persist scrollback so the conversation survives an app restart.
+    _saveCliHistory(sess.tool, sess.scrollback);
     sess.sender = null;
     sess.detached = true;
     sess.lastDetached = Date.now();
@@ -3666,6 +3709,10 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  // Persist every live session's scrollback before the PTYs are killed.
+  for (const sess of cliSessions.values()) {
+    _saveCliHistory(sess.tool, sess.scrollback);
+  }
   for (const sessionId of cliSessions.keys()) {
     closeCliSession(sessionId);
   }

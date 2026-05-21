@@ -123,6 +123,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resizeCliSession: (sessionId, cols, rows) => ipcRenderer.invoke('cli:resize', sessionId, cols, rows),
   closeCliSession: (sessionId) => ipcRenderer.invoke('cli:close', sessionId),
   reattachCliSession: (sessionId) => ipcRenderer.invoke('cli:reattach', sessionId),
+  getCliHistory: (tool) => ipcRenderer.invoke('cli:get-history', tool),
+  clearCliHistory: (tool) => ipcRenderer.invoke('cli:clear-history', tool),
   terminateCliSession: (sessionId) => ipcRenderer.invoke('cli:terminate', sessionId),
   listCliSessions: () => ipcRenderer.invoke('cli:list'),
   onCliData: (listener) => {

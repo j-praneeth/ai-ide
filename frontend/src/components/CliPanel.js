@@ -292,6 +292,8 @@ export default function CliPanel({ visible, projectRoot }) {
       reattach = false;
     }
 
+    let hasSavedHistory = false;
+
     if (reattach) {
       const storedId = _getStoredSessionId(cli);
       if (storedId && window.electronAPI?.reattachCliSession) {
@@ -310,13 +312,23 @@ export default function CliPanel({ visible, projectRoot }) {
           } catch (_) {}
           return;
         }
-        // Stored session is gone; clear it and fall through to spawn
+        // Stored session is gone (app restarted) — load history saved to disk
         _clearStoredSessionId(cli);
+        if (window.electronAPI?.getCliHistory) {
+          const hist = await window.electronAPI.getCliHistory(cli).catch(() => null);
+          if (hist?.scrollback?.length) {
+            hasSavedHistory = true;
+            for (const chunk of hist.scrollback) {
+              term.write(chunk.replace(/\r?\n/g, '\r\n'));
+            }
+            term.writeln('\r\n\x1b[2;37m  ── previous session ── starting new session below ──\x1b[0m\r\n');
+          }
+        }
       }
     }
 
     // ── Spawn a fresh session ───────────────────────────────────────
-    term.clear();
+    if (!hasSavedHistory) term.clear();
     term.writeln('');
     const label = CLI_LABELS[cli] || 'Terminal';
     term.writeln(`\x1b[1;33m  ✦ Starting ${label}...\x1b[0m`);
