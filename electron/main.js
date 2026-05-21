@@ -3827,6 +3827,22 @@ function _githubReleaseFallback(send, ghToken) {
               const release = JSON.parse(data);
               const latestVer = String(release.tag_name || '').replace(/^v/i, '');
               if (latestVer && _semverGt(latestVer, currentVersion)) {
+                // Verify the release actually ships an asset for this platform.
+                // Without this check a Windows-only release would falsely trigger
+                // an "update available" prompt on Mac and Linux.
+                const assetNames = (release.assets || []).map(a => (a.name || '').toLowerCase());
+                const plt = process.platform;
+                const hasPlatformAsset = assetNames.some(n => {
+                  if (plt === 'win32')  return n.endsWith('.exe');
+                  if (plt === 'darwin') return n.endsWith('.dmg') || (n.endsWith('.zip') && (n.includes('mac') || n.includes('darwin')));
+                  if (plt === 'linux')  return n.endsWith('.appimage') || n.endsWith('.deb') || n.endsWith('.rpm');
+                  return false;
+                });
+                if (!hasPlatformAsset) {
+                  console.log(`[updater] GitHub API: v${latestVer} has no asset for ${plt} — skipping`);
+                  resolve(false);
+                  return;
+                }
                 console.log(`[updater] GitHub API: newer version ${latestVer} > ${currentVersion}`);
                 send('update:available', {
                   version: latestVer,
