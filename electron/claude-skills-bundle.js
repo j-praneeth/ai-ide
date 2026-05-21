@@ -505,6 +505,76 @@ These rules apply to all code written in this project.
 - Avoid N+1 queries — use eager loading or DataLoaders
 `;
 
+// ─── Skills Installation ─────────────────────────────────────────────────────
+
+/**
+ * Resolve the directory containing the bundled .claude/skills/ folders.
+ * - Packaged app  → resources/claude-skills/  (extraResources target)
+ * - Dev / source  → <project-root>/.claude/skills/
+ */
+function _getSkillsSourceDir() {
+  // In a packaged Electron app process.resourcesPath points to the resources/
+  // directory next to the asar. The extraResources rule copies .claude/skills/
+  // there as 'claude-skills/'.
+  const packed = path.join(process.resourcesPath || '', 'claude-skills');
+  if (fs.existsSync(packed)) return packed;
+  // Dev: __dirname is electron/, one level up is the project root.
+  return path.join(__dirname, '..', '.claude', 'skills');
+}
+
+/** Recursively copy src dir into dest, returning counts. */
+function _copyDirSync(src, dest, force) {
+  fs.mkdirSync(dest, { recursive: true });
+  let installed = 0;
+  let skipped = 0;
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      const sub = _copyDirSync(srcPath, destPath, force);
+      installed += sub.installed;
+      skipped += sub.skipped;
+    } else {
+      if (!force && fs.existsSync(destPath)) { skipped++; continue; }
+      fs.copyFileSync(srcPath, destPath);
+      installed++;
+    }
+  }
+  return { installed, skipped };
+}
+
+/**
+ * Copy all skill folders from the app bundle into ~/.claude/skills/ so they
+ * are available globally in every Claude Code project on this machine.
+ */
+async function installNebulaSkills({ force, log }) {
+  const srcDir = _getSkillsSourceDir();
+  if (!fs.existsSync(srcDir)) {
+    log(`[claude-skills] Skills source not found at: ${srcDir} — skipping`);
+    return { installed: 0, skipped: 0 };
+  }
+
+  const destSkillsDir = path.join(os.homedir(), '.claude', 'skills');
+  fs.mkdirSync(destSkillsDir, { recursive: true });
+
+  let installed = 0;
+  let skipped = 0;
+
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const counts = _copyDirSync(
+      path.join(srcDir, entry.name),
+      path.join(destSkillsDir, entry.name),
+      force,
+    );
+    installed += counts.installed;
+    skipped += counts.skipped;
+  }
+
+  log(`[claude-skills] Skills: installed ${installed} files, ${skipped} already up-to-date`);
+  return { installed, skipped };
+}
+
 // ─── Installation Logic ──────────────────────────────────────────────────────
 
 const NEBULA_MARKER = '<!-- nebula-toolkit-installed -->';
@@ -569,6 +639,11 @@ async function installClaudeSkills(opts = {}) {
     } else {
       skipped++;
     }
+
+    // Install bundled skills into ~/.claude/skills/
+    const skillsCounts = await installNebulaSkills({ force, log });
+    installed += skillsCounts.installed;
+    skipped += skillsCounts.skipped;
 
     log(`[claude-skills] Installed ${installed} skill files (${skipped} already up-to-date)`);
     return { ok: true, installed, skipped };

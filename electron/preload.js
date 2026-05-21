@@ -82,6 +82,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openNewWindow: () => ipcRenderer.invoke('app:new-window'),
   openFolderInNewWindow: (folderPath) => ipcRenderer.invoke('app:open-in-new-window', folderPath),
 
+  /** Programmatically set this window's project root (per-window — does not affect other windows). */
+  setProjectRoot: (folderPath) => ipcRenderer.invoke('project:set-root', folderPath),
+
   /** The folder path this window was spawned to open (passed via --nebula-open-folder). */
   getStartupFolder: () => ipcRenderer.invoke('app:get-startup-folder'),
 

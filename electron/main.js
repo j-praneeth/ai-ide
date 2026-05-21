@@ -282,6 +282,36 @@ function setCurrentProjectRoot(folderPath) {
   }
 }
 
+// Per-window variant of setCurrentProjectRoot. Updates only the requesting
+// window's workspace entry and title, and sends project:root-changed to that
+// window only. Other windows are left untouched (VSCode-style isolation).
+function setWindowProjectRoot(win, folderPath) {
+  try {
+    const p = typeof folderPath === 'string' ? folderPath.trim() : '';
+    if (!p) return false;
+    const resolved = path.resolve(p);
+    if (!fs.existsSync(resolved)) return false;
+    if (!fs.statSync(resolved).isDirectory()) return false;
+
+    windowWorkspaces.set(win.webContents.id, resolved);
+    currentProjectRoot = resolved;
+    process.env.NEBULA_PROJECT_ROOT = resolved;
+    writeSessionState({ lastProjectRoot: resolved });
+    console.log(`[workspace] setWindowProjectRoot: win=${win.webContents.id} → ${resolved}`);
+
+    _applyWindowTitle(win, resolved);
+    if (!win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send('project:root-changed', {
+        projectRoot: resolved,
+        projectName: _projectNameFromRoot(resolved),
+      });
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function loadDotEnvFile(filePath) {
   try {
     if (!fs.existsSync(filePath)) return;
@@ -2771,22 +2801,24 @@ ipcMain.handle('auth:clear-disk', () => {
   return { ok: true };
 });
 
-ipcMain.handle('open-folder-dialog', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
+ipcMain.handle('open-folder-dialog', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+  const result = await dialog.showOpenDialog(win, {
     properties: ['openDirectory'],
     title: 'Open Folder',
   });
   if (!result.canceled && result.filePaths.length > 0) {
     const selected = result.filePaths[0];
-    setCurrentProjectRoot(selected);
+    setWindowProjectRoot(win, selected);
     return selected;
   }
   return null;
 });
 
-ipcMain.handle('project:set-root', async (_event, folderPath) => {
-  const ok = setCurrentProjectRoot(folderPath);
-  return { ok, projectRoot: currentProjectRoot };
+ipcMain.handle('project:set-root', async (event, folderPath) => {
+  const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+  const ok = setWindowProjectRoot(win, folderPath);
+  return { ok, projectRoot: ok ? path.resolve(folderPath) : currentProjectRoot };
 });
 
 // Explorer listing via Node fs — same caps as backend/file_manager._list_dir.
@@ -2919,7 +2951,13 @@ ipcMain.handle('term:start', async (event, payload) => {
     const rows = Math.max(10, Math.min(256, parseInt(payload && payload.rows, 10) || 24));
     let cwd = payload && typeof payload.cwd === 'string' ? payload.cwd.trim() : '';
     if (!cwd || !fs.existsSync(cwd)) {
-      cwd = (currentProjectRoot && fs.existsSync(currentProjectRoot)) ? currentProjectRoot : app.getPath('home');
+      const wid = event.sender.id;
+      if (windowWorkspaces.has(wid)) {
+        const perPath = windowWorkspaces.get(wid);
+        cwd = (perPath && fs.existsSync(perPath)) ? perPath : app.getPath('home');
+      } else {
+        cwd = (currentProjectRoot && fs.existsSync(currentProjectRoot)) ? currentProjectRoot : app.getPath('home');
+      }
     }
     const launch = getIntegratedTerminalLaunch(shell);
     const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' };
@@ -3226,9 +3264,18 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
     ? (options.cwd || options.projectRoot || '')
     : '';
   const sessionCwd = typeof requestedCwd === 'string' ? requestedCwd.trim() : '';
-  const cwd = (sessionCwd && fs.existsSync(sessionCwd))
-    ? sessionCwd
-    : ((currentProjectRoot && fs.existsSync(currentProjectRoot)) ? currentProjectRoot : app.getPath('home'));
+  let cwd;
+  if (sessionCwd && fs.existsSync(sessionCwd)) {
+    cwd = sessionCwd;
+  } else {
+    const wid = event.sender.id;
+    if (windowWorkspaces.has(wid)) {
+      const perPath = windowWorkspaces.get(wid);
+      cwd = (perPath && fs.existsSync(perPath)) ? perPath : app.getPath('home');
+    } else {
+      cwd = (currentProjectRoot && fs.existsSync(currentProjectRoot)) ? currentProjectRoot : app.getPath('home');
+    }
+  }
 
   let ptyProcess = null;
   try {

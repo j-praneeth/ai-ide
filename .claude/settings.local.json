@@ -69,7 +69,8 @@
       "Bash(echo \"Frontend starting with PID $!\")",
       "Bash(python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload)",
       "Bash(echo \"Backend starting with PID $!\")",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(node scripts/test-new-window.mjs)"
     ]
   }
 }
