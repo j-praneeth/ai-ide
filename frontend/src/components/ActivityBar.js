@@ -4,6 +4,7 @@ import {
   VscSearch,
   VscSourceControl,
   VscSettingsGear,
+  VscGraph,
 } from 'react-icons/vsc';
 import { GiCrown } from 'react-icons/gi';
 import { getAuthUser, logout } from '../lib/auth';
@@ -14,6 +15,7 @@ const TOP_ITEMS = [
   { id: 'explorer', icon: VscFiles, label: 'Files (⌘⇧E)' },
   { id: 'search', icon: VscSearch, label: 'Search (⌘⇧F)' },
   { id: 'source-control', icon: VscSourceControl, label: 'Source Control (⌘⇧G)' },
+  { id: 'token-dashboard', icon: VscGraph, label: 'Token Dashboard' },
 ];
 
 const BOTTOM_ITEMS = [

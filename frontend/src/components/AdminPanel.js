@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { API_URL as API, AUTH_URL as AUTH } from '../config';
-import { getAuthUser } from '../lib/auth';
+import { getAuthUser, authFetch } from '../lib/auth';
 import UsagePanel from './UsagePanel';
 
 const card = {
@@ -37,7 +37,9 @@ const buttonStyle = {
 export default function AdminPanel() {
   const user = getAuthUser();
   const isAdmin = user?.role === 'super_admin';
-  const [tab, setTab] = useState('users'); // 'users' | 'usage' | 'configurations'
+  const [tab, setTab] = useState('users'); // 'users' | 'usage' | 'configurations' | 'tokens'
+  const [tokenUsers, setTokenUsers] = useState([]);
+  const [tokenLoading, setTokenLoading] = useState(false);
   const [users, setUsers] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [createEmail, setCreateEmail] = useState('');
@@ -96,6 +98,14 @@ export default function AdminPanel() {
 
   useEffect(() => {
     if (tab === 'configurations') refreshBundleStatus();
+    if (tab === 'tokens' && isAdmin) {
+      setTokenLoading(true);
+      authFetch(`${API}/token-stats/all`)
+        .then(r => r.json())
+        .then(j => setTokenUsers(j.data || []))
+        .catch(() => setTokenUsers([]))
+        .finally(() => setTokenLoading(false));
+    }
   }, [tab, refreshBundleStatus]);
 
   const createUser = async () => {
@@ -251,6 +261,19 @@ export default function AdminPanel() {
           }}
         >
           Configurations
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('tokens')}
+          style={{
+            ...buttonStyle,
+            background: tab === 'tokens' ? 'var(--accent)' : 'var(--bg-elevated)',
+            color: tab === 'tokens' ? '#071018' : 'var(--text-primary)',
+            border: tab === 'tokens' ? 'none' : '1px solid var(--border)',
+            padding: '8px 10px',
+          }}
+        >
+          Token Stats
         </button>
       </div>
 
@@ -436,6 +459,55 @@ export default function AdminPanel() {
                     </div>
                   ))}
                 </div>
+              )}
+            </div>
+          </div>
+        )}
+        {tab === 'tokens' && (
+          <div style={{ padding: 12 }}>
+            <div style={card}>
+              <div style={{ fontSize: 13, fontWeight: 900, color: 'var(--text-primary)', marginBottom: 12 }}>
+                Token Optimization — All Users
+              </div>
+              {tokenLoading ? (
+                <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading…</div>
+              ) : tokenUsers.length === 0 ? (
+                <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                  No data yet. Users must open the Token Dashboard tab in the IDE at least once to sync their stats.
+                </div>
+              ) : (
+                <>
+                  {/* Aggregate row */}
+                  <div style={{ display: 'flex', gap: 20, marginBottom: 14, flexWrap: 'wrap' }}>
+                    {[
+                      { label: 'Users synced', value: tokenUsers.length },
+                      { label: 'Total sessions', value: tokenUsers.reduce((s, u) => s + (u.stats?.sessions || 0), 0) },
+                      { label: 'Avg cache hit', value: tokenUsers.length ? ((tokenUsers.reduce((s, u) => s + (u.stats?.avg_cache_hit || 0), 0) / tokenUsers.length) * 100).toFixed(0) + '%' : '—' },
+                      { label: 'Avg quality', value: tokenUsers.length ? (tokenUsers.reduce((s, u) => s + (u.stats?.avg_quality || 0), 0) / tokenUsers.length).toFixed(0) : '—' },
+                    ].map(({ label, value }) => (
+                      <div key={label} style={{ textAlign: 'center', minWidth: 80 }}>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--accent)' }}>{value}</div>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Per-user table */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 60px 60px 60px 60px 120px', gap: 4, fontSize: 11 }}>
+                    {['User', 'Sess', 'Cache%', 'Qual', 'Min', 'Last Sync'].map(h => (
+                      <div key={h} style={{ color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.06em', paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>{h}</div>
+                    ))}
+                    {tokenUsers.map((u, i) => (
+                      <React.Fragment key={i}>
+                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '5px 0', borderBottom: '1px solid var(--border)' }} title={u.email}>{u.email}</div>
+                        <div style={{ padding: '5px 0', borderBottom: '1px solid var(--border)' }}>{u.stats?.sessions || 0}</div>
+                        <div style={{ padding: '5px 0', borderBottom: '1px solid var(--border)' }}>{u.stats?.avg_cache_hit != null ? (u.stats.avg_cache_hit * 100).toFixed(0) + '%' : '—'}</div>
+                        <div style={{ padding: '5px 0', borderBottom: '1px solid var(--border)' }}>{u.stats?.avg_quality != null ? Number(u.stats.avg_quality).toFixed(0) : '—'}</div>
+                        <div style={{ padding: '5px 0', borderBottom: '1px solid var(--border)' }}>{u.stats?.duration_minutes != null ? Number(u.stats.duration_minutes).toFixed(0) : '—'}</div>
+                        <div style={{ padding: '5px 0', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>{u.last_sync ? new Date(u.last_sync).toLocaleDateString() : '—'}</div>
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
           </div>

@@ -11,6 +11,7 @@ import SourceControlPanel from './components/SourceControlPanel';
 import ExtensionsPanel from './components/ExtensionsPanel';
 import ExtensionAppPanel from './components/ExtensionAppPanel';
 import SettingsPanel from './components/SettingsPanel';
+import TokenDashboardPanel from './components/TokenDashboardPanel';
 import EditorTabs from './components/EditorTabs';
 import TerminalPanel from './components/TerminalPanel';
 import StatusBar from './components/StatusBar';
@@ -1982,6 +1983,7 @@ function App() {
             {sidebarPanel === 'settings' && (
               <SettingsPanel onSettingsChange={handleSettingsChange} />
             )}
+            {sidebarPanel === 'token-dashboard' && <TokenDashboardPanel />}
           </div>
           <div className="sidebar-resizer" onMouseDown={handleSidebarResizeStart} title="Drag to resize" />
           </>

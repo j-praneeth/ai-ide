@@ -30,6 +30,7 @@ from usage.routes import router as usage_router
 from db.mongo import init_mongo
 from admin_routes import router as admin_router
 from extensions_routes import router as extensions_router
+from token_stats_routes import router as token_stats_router
 
 logger = logging.getLogger("nebula.main")
 
@@ -140,6 +141,7 @@ app.include_router(auth_router)
 app.include_router(usage_router)
 app.include_router(admin_router)
 app.include_router(extensions_router)
+app.include_router(token_stats_router)
 
 app.add_api_route("/mobile/relay/qr", relay_qr, methods=["GET"])
 

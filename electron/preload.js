@@ -225,4 +225,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     uninstall: (id) => ipcRenderer.invoke('ext:uninstall', id),
     getWebviewUrl: (id) => ipcRenderer.invoke('ext:get-webview-url', id),
   },
+
+  tokenStatsReadLocal: () => ipcRenderer.invoke('token-stats:read-local'),
 });

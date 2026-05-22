@@ -80,7 +80,16 @@
       "Bash(echo \"electron exit=$?\")",
       "Bash(taskkill //F //IM \"electron.exe\")",
       "Bash(node \"C:\\\\Users\\\\mahes\\\\AppData\\\\Local\\\\Temp\\\\nebula-e2e.js\")",
-      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\mahes\\\\AppData\\\\Roaming\\\\nebula-ide\\\\cli-tools\" -Recurse -Depth 3 | Select-Object FullName | Where-Object { $_.FullName -match \"claude\" })"
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\mahes\\\\AppData\\\\Roaming\\\\nebula-ide\\\\cli-tools\" -Recurse -Depth 3 | Select-Object FullName | Where-Object { $_.FullName -match \"claude\" })",
+      "WebSearch",
+      "Bash(ELECTRON_DEV=true ./node_modules/electron/dist/electron.exe .)",
+      "PowerShell($dbPath = \"C:\\\\Users\\\\mahes\\\\.claude\\\\_backups\\\\token-optimizer\\\\trends.db\")",
+      "Bash(powershell *)",
+      "Bash(python -m py_compile E:/ai-ide/backend/token_stats_routes.py)",
+      "Bash(python -m py_compile E:/ai-ide/backend/main.py)",
+      "Bash(python -m py_compile E:/ai-ide/backend/db/mongo.py)",
+      "Bash(git -C E:/ai-ide add electron/main.js electron/preload.js backend/token_stats_routes.py backend/main.py backend/db/mongo.py frontend/src/components/TokenDashboardPanel.js frontend/src/components/ActivityBar.js frontend/src/App.js frontend/src/App.css)",
+      "Bash(git -C E:/ai-ide commit -m ' *)"
     ]
   }
 }

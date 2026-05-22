@@ -111,6 +111,12 @@ const embeddedPythonDir = path.join(userDataPath, 'python');
 const embeddedNodeDir = path.join(userDataPath, 'node');
 const cliToolsPrefixDir = path.join(userDataPath, 'cli-tools');
 const sessionStatePath = path.join(userDataPath, 'nebula-session.json');
+
+// Token-optimizer paths (lives in the user's Claude Code config, not in Nebula's userData)
+const CLAUDE_USER_CONFIG_DIR = path.join(os.homedir(), '.claude');
+const TOKEN_OPTIMIZER_DIR = path.join(CLAUDE_USER_CONFIG_DIR, 'token-optimizer');
+const TOKEN_OPTIMIZER_SCRIPT = path.join(TOKEN_OPTIMIZER_DIR, 'skills', 'token-optimizer', 'scripts', 'measure.py');
+const TOKEN_OPTIMIZER_REPO = 'https://github.com/alexgreensh/token-optimizer.git';
 const authPersistPath = path.join(userDataPath, 'nebula-auth.json');
 
 function readPersistedAuth() {
@@ -753,6 +759,70 @@ function findGitBash() {
   ];
 
   return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+function findGitExe() {
+  try {
+    execSync('git --version', { stdio: 'pipe', timeout: 5000, windowsHide: true });
+    return 'git';
+  } catch (_) {}
+  if (process.platform === 'win32') {
+    const bases = [
+      process.env.ProgramFiles || 'C:\\Program Files',
+      process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
+    ];
+    for (const base of bases) {
+      const candidate = path.join(base, 'Git', 'bin', 'git.exe');
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+function findPython3() {
+  const cmds = process.platform === 'win32' ? ['python', 'py', 'python3'] : ['python3', 'python'];
+  for (const cmd of cmds) {
+    try {
+      const out = execSync(`"${cmd}" --version`, {
+        stdio: 'pipe', timeout: 5000, windowsHide: true, encoding: 'utf-8',
+      });
+      if (/Python\s+3\./i.test(out)) return cmd;
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function ensureTokenOptimizer() {
+  try {
+    if (!fs.existsSync(TOKEN_OPTIMIZER_SCRIPT)) {
+      const gitExe = findGitExe();
+      if (!gitExe) {
+        console.log('[token-optimizer] git not found — skipping auto-install');
+        return;
+      }
+      console.log('[token-optimizer] Cloning token-optimizer into ~/.claude/...');
+      fs.mkdirSync(CLAUDE_USER_CONFIG_DIR, { recursive: true });
+      await runFile(gitExe, ['clone', '--depth=1', TOKEN_OPTIMIZER_REPO, TOKEN_OPTIMIZER_DIR], { timeout: 60000 });
+    } else {
+      const gitExe = findGitExe();
+      if (gitExe) {
+        try {
+          await runFile(gitExe, ['-C', TOKEN_OPTIMIZER_DIR, 'pull', '--ff-only'], { timeout: 30000 });
+        } catch (_) {}
+      }
+    }
+    const python = findPython3();
+    if (!python) {
+      console.warn('[token-optimizer] Python 3 not found — hooks not registered');
+      return;
+    }
+    await runFile(python, [TOKEN_OPTIMIZER_SCRIPT, 'setup-all-hooks'], {
+      timeout: 30000, cwd: TOKEN_OPTIMIZER_DIR,
+    });
+    console.log('[token-optimizer] UserPromptSubmit hook registered in ~/.claude/settings.json');
+  } catch (e) {
+    console.warn('[token-optimizer] Setup failed (non-fatal):', e && e.message);
+  }
 }
 
 function _exeExists(p) {
@@ -2022,6 +2092,11 @@ async function ensureCliToolsInstalled() {
   cliToolsInstallInProgress = false;
 
   console.log(`[cli-install] Complete. installed=${anyInstalled} errors=${installErrors.length} failedCount=${cliToolsInstallFailedCount}`);
+
+  // Run in background — failure is non-fatal and won't delay app startup.
+  // On first install this sets up the UserPromptSubmit hook so token optimization
+  // runs automatically on every Claude prompt for this user.
+  ensureTokenOptimizer().catch(() => {});
 }
 
 // ─── Splash Screen (shows during setup) ─────────────────────────
@@ -3710,8 +3785,11 @@ app.whenReady().then(async () => {
       // If persistent state says install succeeded, don't re-install at startup
       if (state.lastResult === 'success') {
         console.log('[cli-install] Skipping startup install — last result was success.');
-        // Still warm the cache
-        cliInstallDone = prewarmCommandCache().catch(() => {});
+        // Still warm the cache and keep token-optimizer up to date.
+        cliInstallDone = Promise.all([
+          prewarmCommandCache().catch(() => {}),
+          ensureTokenOptimizer().catch(() => {}),
+        ]);
       } else {
         const p = ensureCliToolsInstalled()
           .catch(() => {})
@@ -4441,6 +4519,33 @@ ipcMain.handle('win:maximize', (event) => {
 });
 ipcMain.handle('win:close', (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
+});
+
+ipcMain.handle('token-stats:read-local', async () => {
+  try {
+    const dbPath = path.join(os.homedir(), '.claude', '_backups', 'token-optimizer', 'trends.db');
+    if (!fs.existsSync(dbPath)) return { ok: true, data: null };
+    const python = findPython3();
+    if (!python) return { ok: false, error: 'Python 3 not found' };
+    const script = [
+      'import sqlite3,json,sys',
+      'db=sqlite3.connect(sys.argv[1])',
+      'db.row_factory=sqlite3.Row',
+      'c=db.cursor()',
+      'c.execute("SELECT * FROM daily_stats ORDER BY date DESC LIMIT 30")',
+      'daily=[dict(r) for r in c.fetchall()]',
+      'c.execute("SELECT date,project,cost_usd,quality_score,quality_grade,input_tokens,output_tokens FROM session_log ORDER BY rowid DESC LIMIT 20")',
+      'sessions=[dict(r) for r in c.fetchall()]',
+      'c.execute("SELECT SUM(total_input) ti,SUM(total_output) to_,SUM(session_count) sc,AVG(avg_cache_hit) ch,AVG(avg_quality_score) qs,SUM(total_duration) dur FROM daily_stats")',
+      'row=c.fetchone()',
+      'totals=dict(row) if row else {}',
+      'print(json.dumps({"daily":daily,"sessions":sessions,"totals":totals}))',
+    ].join(';');
+    const res = await runFile(python, ['-c', script, dbPath], { timeout: 10000 });
+    return { ok: true, data: JSON.parse(res.stdout.trim()) };
+  } catch (e) {
+    return { ok: false, error: e && e.message };
+  }
 });
 
 process.on('uncaughtException', (err) => {

@@ -104,6 +104,10 @@ def app_config_collection() -> Collection:
     return get_db()["app_config"]
 
 
+def token_stats_collection() -> Collection:
+    return get_db()["token_stats"]
+
+
 def init_mongo() -> None:
     """
     Attempt to initialize the database connection.
