@@ -886,7 +886,7 @@ function _windowsShimBypass(spec, shimPath) {
         pkgRoots.push(guess);
       }
     }
-    if (pkgRoots.length === 0) return null;
+    if (pkgRoots.length === 0) return { brokenShim: true };
 
     // Read a package's declared bin entries (relative paths), tolerating a
     // missing/empty bin field.
@@ -943,7 +943,7 @@ function _windowsShimBypass(spec, shimPath) {
       }
       if (entry) break;
     }
-    if (!entry) return null;
+    if (!entry) return { brokenShim: true };
 
     // Resolve `node.exe` from the same prefix the shim lives in, falling back
     // to the embedded node runtime that we ship with Nebula.
@@ -1067,9 +1067,23 @@ function getCliLaunchConfig(tool) {
       // when only the POSIX `claude` script exists). Detect that and bypass the
       // shim by spawning `node` directly against the package's JS entry point.
       const bypass = _windowsShimBypass(spec, commandPath);
-      if (bypass) {
+      if (bypass && !bypass.brokenShim) {
         _logCliConfig(tool, bypass);
         return bypass;
+      }
+      // Shim is broken and no working .exe or JS fallback was found — treat as
+      // not installed so the caller triggers a background reinstall rather than
+      // spawning a cmd.exe session that immediately fails with "not recognized".
+      if (bypass && bypass.brokenShim) {
+        console.warn(`[cli-launch] Shim "${commandPath}" target missing and no bypass found — marking not installed`);
+        const cfg = {
+          installed: false,
+          label: spec.label,
+          packageName: spec.packageName,
+          shellLabel: 'powershell',
+        };
+        _logCliConfig(tool, cfg);
+        return cfg;
       }
       // Claude CLI: launch via an interactive cmd.exe session. On modern Windows
       // (ConPTY, Win10 1809+) cmd renders Claude's TUI correctly — verified under
@@ -1918,9 +1932,19 @@ async function ensureCliToolsInstalled() {
     if (!cli.packageName && !cli.installScript) continue;
     const cliPath = await resolveCommandPathAsync(cli.command);
     if (cliPath && _exeExists(cliPath)) {
-      console.log(`[cli-install] ${cli.label} already installed at: ${cliPath}`);
-      anyInstalled = true;
-      continue;
+      // On Windows a .cmd shim may exist even when its exe target was deleted
+      // (e.g. after an in-place update). Verify the exe actually exists before
+      // skipping reinstall, otherwise the broken shim silently survives.
+      const isStaleShim = process.platform === 'win32'
+        && cliPath.toLowerCase().endsWith('.cmd')
+        && cli.packageName
+        && !fs.existsSync(path.join(path.dirname(cliPath), 'node_modules', cli.packageName, 'bin', `${cli.command}.exe`));
+      if (!isStaleShim) {
+        console.log(`[cli-install] ${cli.label} already installed at: ${cliPath}`);
+        anyInstalled = true;
+        continue;
+      }
+      console.warn(`[cli-install] ${cli.label} .cmd shim exists but target .exe is missing — forcing reinstall`);
     }
 
     updateSplash(`Installing ${cli.label}...`);

@@ -79,7 +79,8 @@
       "Bash(MSYS_NO_PATHCONV=1 timeout 80 ./node_modules/electron/dist/electron.exe \"C:\\\\\\\\Users\\\\\\\\mahes\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\nebula-verify-app\")",
       "Bash(echo \"electron exit=$?\")",
       "Bash(taskkill //F //IM \"electron.exe\")",
-      "Bash(node \"C:\\\\Users\\\\mahes\\\\AppData\\\\Local\\\\Temp\\\\nebula-e2e.js\")"
+      "Bash(node \"C:\\\\Users\\\\mahes\\\\AppData\\\\Local\\\\Temp\\\\nebula-e2e.js\")",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\mahes\\\\AppData\\\\Roaming\\\\nebula-ide\\\\cli-tools\" -Recurse -Depth 3 | Select-Object FullName | Where-Object { $_.FullName -match \"claude\" })"
     ]
   }
 }
