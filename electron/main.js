@@ -4551,7 +4551,7 @@ ipcMain.handle('token-stats:read-local', async () => {
       'c=db.cursor()',
       'c.execute("SELECT * FROM daily_stats ORDER BY date DESC LIMIT 30")',
       'daily=[dict(r) for r in c.fetchall()]',
-      'c.execute("SELECT date,project,cost_usd,quality_score,quality_grade,input_tokens,output_tokens FROM session_log ORDER BY rowid DESC LIMIT 20")',
+      'c.execute("SELECT date,project,duration_minutes,cache_hit_rate,quality_score,quality_grade,input_tokens,output_tokens FROM session_log ORDER BY rowid DESC LIMIT 20")',
       'sessions=[dict(r) for r in c.fetchall()]',
       'c.execute("SELECT SUM(total_input) ti,SUM(total_output) to_,SUM(session_count) sc,AVG(avg_cache_hit) ch,AVG(avg_quality_score) qs,SUM(total_duration) dur FROM daily_stats")',
       'row=c.fetchone()',

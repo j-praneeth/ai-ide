@@ -42,7 +42,7 @@ export default function TokenDashboardPanel() {
                   sessions: totals.sc || 0,
                   avg_cache_hit: totals.ch || 0,
                   avg_quality: totals.qs || 0,
-                  duration_minutes: ((totals.dur || 0) / 60).toFixed(1),
+                  duration_minutes: (totals.dur || 0).toFixed(1),
                 },
                 recent_daily: (recent_daily || []).slice(0, 30),
               }),
@@ -70,7 +70,8 @@ export default function TokenDashboardPanel() {
   const quality = t.qs != null ? Number(t.qs).toFixed(0) : '—';
   const totalSessions = t.sc || 0;
   const totalInputM = t.ti ? (t.ti / 1e6).toFixed(1) : '—';
-  const durationMin = t.dur ? (t.dur / 60).toFixed(0) : '—';
+  // total_duration in daily_stats is in minutes; convert to hours for display
+  const durationHrs = t.dur ? (t.dur / 60).toFixed(1) : '—';
 
   // Admin aggregate totals across all users
   const adminTotals = allUsers.reduce((acc, u) => ({
@@ -99,7 +100,7 @@ export default function TokenDashboardPanel() {
               <div className="tok-stat-grid">
                 <StatCard label="Cache Hit" value={`${cacheHitPct}%`} sub="tokens saved" />
                 <StatCard label="Quality" value={quality} sub="avg / 100" />
-                <StatCard label="Sessions" value={totalSessions} sub={`${durationMin} min`} />
+                <StatCard label="Sessions" value={totalSessions} sub={`${durationHrs} hrs`} />
                 <StatCard label="Input" value={`${totalInputM}M`} sub="tokens" />
               </div>
 
@@ -113,14 +114,14 @@ export default function TokenDashboardPanel() {
                     <span className="tok-sess-grade" style={{ color: GRADE_COLOR[s.quality_grade] || 'var(--text-muted)' }}>
                       {s.quality_grade || '—'}
                     </span>
-                    <span className="tok-sess-cost">${(s.cost_usd || 0).toFixed(3)}</span>
+                    <span className="tok-sess-cost">{s.duration_minutes != null ? `${Number(s.duration_minutes).toFixed(0)}m` : '—'}</span>
                   </div>
                 ))}
               </div>
             </>
           ) : (
             <div className="tok-empty tok-empty-main">
-              No data yet. Open the Claude CLI tab to start a session — token optimization runs automatically.
+              No data yet. Start a session in the Claude CLI tab — stats appear here automatically once your first session completes.
             </div>
           )}
 
