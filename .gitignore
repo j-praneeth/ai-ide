@@ -29,6 +29,9 @@ backend/.env.example
 *~
 .DS_Store
 
+# Claude Code local permissions (machine-specific, contains local paths)
+.claude/settings.local.json
+
 # Build output
 frontend/build/
 frontend/.env.local
