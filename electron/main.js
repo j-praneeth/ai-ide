@@ -784,6 +784,17 @@ function _exeExists(p) {
   } catch (_) { return false; }
 }
 
+// Resolve an absolute path to Windows PowerShell. Handing node-pty a bare
+// 'powershell.exe' fails on machines whose process PATH lacks System32 /
+// WindowsPowerShell\v1.0 (cleaned PATH, policy, winpty fallback) — node-pty
+// then throws "File not found:". An absolute path sidesteps PATH resolution.
+function _powershellPath() {
+  if (process.platform !== 'win32') return 'powershell';
+  const sysRoot = process.env.SystemRoot || 'C:\\Windows';
+  const abs = path.join(sysRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return fs.existsSync(abs) ? abs : 'powershell.exe';
+}
+
 function _logCliConfig(tool, cfg) {
   const diag = {
     tool,
@@ -848,40 +859,91 @@ function _windowsShimBypass(spec, shimPath) {
     // normal cmd.exe routing in place.
     if (referencedTargets.some((t) => fs.existsSync(t))) return null;
 
-    // Shim is broken. Locate the package's real JS entry point and run it
-    // through `node` instead. We look both inside the npm prefix (where this
-    // shim lives) and inside the per-user cliTools prefix.
-    const candidateRoots = [
+    // Shim is broken (its target doesn't exist). Repair it by finding a working
+    // copy of the package and launching it directly. Two strategies, in order:
+    //   1. Native binary: modern Claude Code ships a native `<command>.exe`
+    //      (~200 MB) instead of a JS `cli.js`. An in-place update can rename the
+    //      old exe to `<command>.exe.old.<ts>`, leaving a dangling shim — but a
+    //      healthy native exe usually exists in a sibling install (e.g. Nebula's
+    //      embedded-node prefix). node-pty can spawn the .exe directly.
+    //   2. JS entry: older installs expose a `cli.js` we can run via `node`.
+    // We gather every known package root and scan them all (the shim's own prefix
+    // is the broken one; the working copy lives in another root).
+    const searchRoots = [
       path.dirname(shimPath),
       cliToolsPrefixDir,
       path.join(cliToolsPrefixDir, 'node_modules'),
     ];
-    let pkgRoot = null;
-    for (const root of candidateRoots) {
-      const guess = path.join(root, 'node_modules', spec.packageName);
-      if (fs.existsSync(path.join(guess, 'package.json'))) { pkgRoot = guess; break; }
-    }
-    if (!pkgRoot) return null;
-
-    let entry = null;
     try {
-      const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf-8'));
-      const binField = pkg.bin;
-      if (typeof binField === 'string') {
-        entry = path.join(pkgRoot, binField);
-      } else if (binField && typeof binField === 'object') {
-        const rel = binField[spec.command] || binField[pkg.name] || Object.values(binField)[0];
-        if (rel) entry = path.join(pkgRoot, rel);
+      const embeddedNodeRoot = getEmbeddedNodeRoot();
+      if (embeddedNodeRoot) searchRoots.push(embeddedNodeRoot);
+    } catch (_) {}
+
+    const pkgRoots = [];
+    for (const root of searchRoots) {
+      const guess = path.join(root, 'node_modules', spec.packageName);
+      if (fs.existsSync(path.join(guess, 'package.json')) && !pkgRoots.includes(guess)) {
+        pkgRoots.push(guess);
       }
-      if (!entry || !fs.existsSync(entry)) {
-        // Fall back to common entry-point filenames.
+    }
+    if (pkgRoots.length === 0) return null;
+
+    // Read a package's declared bin entries (relative paths), tolerating a
+    // missing/empty bin field.
+    const binRels = (pkgRoot) => {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf-8'));
+        const b = pkg.bin;
+        if (typeof b === 'string') return [b];
+        if (b && typeof b === 'object') {
+          const ordered = [b[spec.command], b[pkg.name], ...Object.values(b)].filter(Boolean);
+          return [...new Set(ordered)];
+        }
+      } catch (_) {}
+      return [];
+    };
+
+    // ── Strategy 1: native <command>.exe ──────────────────────────────
+    const exeName = `${spec.command}.exe`;
+    for (const pkgRoot of pkgRoots) {
+      const nativeCandidates = [];
+      for (const rel of binRels(pkgRoot)) {
+        if (typeof rel === 'string' && rel.toLowerCase().endsWith('.exe')) {
+          nativeCandidates.push(path.join(pkgRoot, rel));
+        }
+      }
+      nativeCandidates.push(path.join(pkgRoot, 'bin', exeName));
+      const nativeExe = nativeCandidates.find((c) => fs.existsSync(c));
+      if (nativeExe) {
+        console.warn(`[cli-launch] Shim "${shimPath}" target missing — bypassing via native exe "${nativeExe}"`);
+        return {
+          installed: true,
+          label: spec.label,
+          shellLabel: 'native',
+          file: nativeExe,
+          args: [],
+          bypassedShim: shimPath,
+        };
+      }
+    }
+
+    // ── Strategy 2: JS entry via node ─────────────────────────────────
+    let entry = null;
+    for (const pkgRoot of pkgRoots) {
+      for (const rel of binRels(pkgRoot)) {
+        if (typeof rel === 'string' && rel.toLowerCase().endsWith('.exe')) continue; // handled above
+        const candidate = path.join(pkgRoot, rel);
+        if (fs.existsSync(candidate)) { entry = candidate; break; }
+      }
+      if (!entry) {
         for (const guess of ['cli.js', 'index.js', 'dist/cli.js']) {
           const candidate = path.join(pkgRoot, guess);
           if (fs.existsSync(candidate)) { entry = candidate; break; }
         }
       }
-    } catch (_) { /* fall through */ }
-    if (!entry || !fs.existsSync(entry)) return null;
+      if (entry) break;
+    }
+    if (!entry) return null;
 
     // Resolve `node.exe` from the same prefix the shim lives in, falling back
     // to the embedded node runtime that we ship with Nebula.
@@ -960,7 +1022,7 @@ function getCliLaunchConfig(tool) {
       installed: true,
       label: spec.label,
       shellLabel: 'powershell',
-      file: 'powershell.exe',
+      file: _powershellPath(),
       args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit'],
       bootstrapInput: 'codex\r',
     };
@@ -1009,17 +1071,29 @@ function getCliLaunchConfig(tool) {
         _logCliConfig(tool, bypass);
         return bypass;
       }
-      // Claude CLI: launch via PowerShell interactive session (same approach as Codex).
-      // cmd.exe /c doesn't configure the ConPTY environment that Claude's TUI needs,
-      // causing the interactive prompt to never render. PowerShell -NoExit starts a
-      // proper interactive ConPTY and the bootstrapInput types the command into it.
+      // Claude CLI: launch via an interactive cmd.exe session. On modern Windows
+      // (ConPTY, Win10 1809+) cmd renders Claude's TUI correctly — verified under
+      // node-pty — and cmd.exe is more universally available than powershell.exe
+      // on locked-down devices (AppLocker / WDAC / PowerShell Constrained Language
+      // Mode often block powershell.exe but not cmd.exe). It also avoids PowerShell
+      // execution-policy and profile baggage.
+      //
+      // We type bare `claude` via bootstrapInput rather than `/k <commandPath>` on
+      // purpose: commandPath may be a broken npm shim (its body points at a
+      // claude.exe that doesn't exist — see _windowsShimBypass). Typing `claude`
+      // lets the enriched PATH (cli-tools is prepended by ensureCliPaths) resolve to
+      // a working shim instead. `/k` keeps the shell open so the panel survives if
+      // the CLI exits. ComSpec is absolute; fall back to System32 so node-pty never
+      // receives a bare name.
       if (tool === 'claude') {
+        const cmdExe = process.env.ComSpec
+          || path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
         const cfg = {
           installed: true,
           label: spec.label,
-          shellLabel: 'powershell',
-          file: 'powershell.exe',
-          args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit'],
+          shellLabel: 'cmd',
+          file: cmdExe,
+          args: ['/k'],
           bootstrapInput: 'claude\r',
         };
         _logCliConfig(tool, cfg);
@@ -1040,7 +1114,7 @@ function getCliLaunchConfig(tool) {
         installed: true,
         label: spec.label,
         shellLabel: 'powershell',
-        file: 'powershell.exe',
+        file: _powershellPath(),
         args: ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', commandPath],
       };
       _logCliConfig(tool, cfg);
@@ -3361,6 +3435,22 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
     }
   }
 
+  // Guard: node-pty throws a bare "File not found:" when launch.file is empty or
+  // unresolvable, which gives the user no actionable detail. Catch it here with the
+  // actual target and a hint so support can see exactly what failed to resolve.
+  if (!launch.file || !_exeExists(launch.file)) {
+    console.warn(`[cli-launch] ABORT: launch target unresolvable file="${launch.file || '(empty)'}" tool=${tool}`);
+    return {
+      ok: false,
+      installed: true,
+      message: `Failed to start ${launch.label}: launch target not found on this machine (${launch.file || 'no executable resolved'}). `
+        + `Ensure ${tool === 'claude' ? 'Claude CLI' : tool} is installed (npm install -g ${launch.packageName || '@anthropic-ai/claude-code'}) `
+        + `and that PowerShell (System32) is on PATH, then restart Nebula.`,
+      shell: launch.shellLabel,
+      launchFile: launch.file || null,
+    };
+  }
+
   let ptyProcess = null;
   try {
     ptyProcess = pty.spawn(launch.file, launch.args, {
@@ -3371,11 +3461,13 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
       env,
     });
   } catch (e) {
+    const detail = e?.message ? `${e.message} (target: ${launch.file})` : `target: ${launch.file}`;
     return {
       ok: false,
       installed: true,
-      message: e?.message ? `Failed to start ${launch.label}: ${e.message}` : `Failed to start ${launch.label}.`,
+      message: `Failed to start ${launch.label}: ${detail}`,
       shell: launch.shellLabel,
+      launchFile: launch.file || null,
     };
   }
 
@@ -3625,7 +3717,10 @@ app.whenReady().then(async () => {
     try {
       cliBundle.init(app);
       cliBundleReadyPromise = cliBundle.ensureInstalled().then((res) => {
-        if (!res.ok) {
+        if (!res.ok && res.errorCode === 'BUNDLE_DEV_UNBUILT') {
+          // Expected when running unbuilt source (no embedded KEK) — not a failure.
+          console.log('[cli-bundle] dev build (KEK not embedded) — using on-disk/backend credentials.');
+        } else if (!res.ok) {
           console.warn(`[cli-bundle] install failed: ${res.errorCode} — ${res.message || ''}`);
           if (mainWindow && !mainWindow.isDestroyed()) {
             try { mainWindow.webContents.send('cli-bundle:event', { type: 'install-failed', ...res }); } catch (_) {}

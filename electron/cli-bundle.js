@@ -39,6 +39,16 @@ function getPartB() {
   return '00000000000000000000000000000000';
 }
 
+const _KEK_PLACEHOLDER = '0'.repeat(32);
+
+// True when running unbuilt source: a real build embeds non-zero KEK halves via
+// scripts/embed-kek.mjs, so all-zero halves mean the shipped bundle can't be
+// decrypted. Detecting this lets us skip the futile decrypt (which otherwise
+// logs an alarming BUNDLE_AUTH_FAIL error) and fall back to on-disk/backend creds.
+function isUnbuiltDevKek() {
+  return _a === _KEK_PLACEHOLDER && getPartB() === _KEK_PLACEHOLDER;
+}
+
 // ── Constants ───────────────────────────────────────────────────────────────
 const SCHEMA_VERSION = 1;
 const HKDF_SALT_BUILD_PREFIX = 'nebula-cli-bundle-v1';
@@ -775,6 +785,10 @@ async function _doInstall({ ignoreMarker = false, override = false } = {}) {
 }
 
 async function ensureInstalled() {
+  if (isUnbuiltDevKek()) {
+    logInfo(null, 'Unbuilt dev build (KEK not embedded) — skipping shipped credential bundle; using on-disk / backend credentials.');
+    return { ok: false, errorCode: 'BUNDLE_DEV_UNBUILT', message: 'dev build: shipped credential bundle skipped (no embedded KEK)' };
+  }
   try {
     return await _doInstall({ ignoreMarker: false, override: false });
   } catch (e) {

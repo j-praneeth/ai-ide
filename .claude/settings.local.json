@@ -70,7 +70,16 @@
       "Bash(python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload)",
       "Bash(echo \"Backend starting with PID $!\")",
       "Bash(python -c ' *)",
-      "Bash(node scripts/test-new-window.mjs)"
+      "Bash(node scripts/test-new-window.mjs)",
+      "Read(//tmp/**)",
+      "Bash(node -e \"console.log\\(require\\('os'\\).tmpdir\\(\\)\\)\")",
+      "Read(//c/Users/mahes/AppData/Local/Temp/**)",
+      "Bash(MSYS_NO_PATHCONV=1 timeout 70 ./node_modules/electron/dist/electron.exe /tmp/nebula-verify-pty.js)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(MSYS_NO_PATHCONV=1 timeout 80 ./node_modules/electron/dist/electron.exe \"C:\\\\\\\\Users\\\\\\\\mahes\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\nebula-verify-app\")",
+      "Bash(echo \"electron exit=$?\")",
+      "Bash(taskkill //F //IM \"electron.exe\")",
+      "Bash(node \"C:\\\\Users\\\\mahes\\\\AppData\\\\Local\\\\Temp\\\\nebula-e2e.js\")"
     ]
   }
 }
