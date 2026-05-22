@@ -116,6 +116,7 @@ const sessionStatePath = path.join(userDataPath, 'nebula-session.json');
 const CLAUDE_USER_CONFIG_DIR = path.join(os.homedir(), '.claude');
 const TOKEN_OPTIMIZER_DIR = path.join(CLAUDE_USER_CONFIG_DIR, 'token-optimizer');
 const TOKEN_OPTIMIZER_SCRIPT = path.join(TOKEN_OPTIMIZER_DIR, 'skills', 'token-optimizer', 'scripts', 'measure.py');
+const TOKEN_OPTIMIZER_HOOKS_SH = path.join(TOKEN_OPTIMIZER_DIR, 'hooks', 'python-launcher.sh');
 const TOKEN_OPTIMIZER_REPO = 'https://github.com/alexgreensh/token-optimizer.git';
 const authPersistPath = path.join(userDataPath, 'nebula-auth.json');
 
@@ -794,23 +795,39 @@ function findPython3() {
 
 async function ensureTokenOptimizer() {
   try {
-    if (!fs.existsSync(TOKEN_OPTIMIZER_SCRIPT)) {
-      const gitExe = findGitExe();
+    const scriptExists = fs.existsSync(TOKEN_OPTIMIZER_SCRIPT);
+    const hooksExist = fs.existsSync(TOKEN_OPTIMIZER_HOOKS_SH);
+    const gitExe = findGitExe();
+
+    if (!scriptExists || !hooksExist) {
       if (!gitExe) {
         console.log('[token-optimizer] git not found — skipping auto-install');
         return;
       }
-      console.log('[token-optimizer] Cloning token-optimizer into ~/.claude/...');
-      fs.mkdirSync(CLAUDE_USER_CONFIG_DIR, { recursive: true });
-      await runFile(gitExe, ['clone', '--depth=1', TOKEN_OPTIMIZER_REPO, TOKEN_OPTIMIZER_DIR], { timeout: 60000 });
-    } else {
-      const gitExe = findGitExe();
-      if (gitExe) {
+      if (fs.existsSync(TOKEN_OPTIMIZER_DIR)) {
+        // Existing dir but missing files — repair via fetch + hard reset to remote HEAD
+        console.log('[token-optimizer] Incomplete install detected — repairing...');
         try {
-          await runFile(gitExe, ['-C', TOKEN_OPTIMIZER_DIR, 'pull', '--ff-only'], { timeout: 30000 });
-        } catch (_) {}
+          await runFile(gitExe, ['-C', TOKEN_OPTIMIZER_DIR, 'fetch', '--depth=1', 'origin', 'HEAD'], { timeout: 30000 });
+          await runFile(gitExe, ['-C', TOKEN_OPTIMIZER_DIR, 'reset', '--hard', 'FETCH_HEAD'], { timeout: 15000 });
+        } catch (_) {
+          // Repair failed — delete and re-clone fresh
+          console.log('[token-optimizer] Repair failed — re-cloning...');
+          try { fs.rmSync(TOKEN_OPTIMIZER_DIR, { recursive: true, force: true }); } catch (_e) {}
+          fs.mkdirSync(CLAUDE_USER_CONFIG_DIR, { recursive: true });
+          await runFile(gitExe, ['clone', '--depth=1', TOKEN_OPTIMIZER_REPO, TOKEN_OPTIMIZER_DIR], { timeout: 60000 });
+        }
+      } else {
+        console.log('[token-optimizer] Cloning token-optimizer into ~/.claude/...');
+        fs.mkdirSync(CLAUDE_USER_CONFIG_DIR, { recursive: true });
+        await runFile(gitExe, ['clone', '--depth=1', TOKEN_OPTIMIZER_REPO, TOKEN_OPTIMIZER_DIR], { timeout: 60000 });
       }
+    } else if (gitExe) {
+      try {
+        await runFile(gitExe, ['-C', TOKEN_OPTIMIZER_DIR, 'pull', '--ff-only'], { timeout: 30000 });
+      } catch (_) {}
     }
+
     const python = findPython3();
     if (!python) {
       console.warn('[token-optimizer] Python 3 not found — hooks not registered');
@@ -819,7 +836,7 @@ async function ensureTokenOptimizer() {
     await runFile(python, [TOKEN_OPTIMIZER_SCRIPT, 'setup-all-hooks'], {
       timeout: 30000, cwd: TOKEN_OPTIMIZER_DIR,
     });
-    console.log('[token-optimizer] UserPromptSubmit hook registered in ~/.claude/settings.json');
+    console.log('[token-optimizer] hooks registered in ~/.claude/settings.json');
   } catch (e) {
     console.warn('[token-optimizer] Setup failed (non-fatal):', e && e.message);
   }
