@@ -90,7 +90,8 @@
       "Bash(python -m py_compile E:/ai-ide/backend/db/mongo.py)",
       "Bash(git -C E:/ai-ide add electron/main.js electron/preload.js backend/token_stats_routes.py backend/main.py backend/db/mongo.py frontend/src/components/TokenDashboardPanel.js frontend/src/components/ActivityBar.js frontend/src/App.js frontend/src/App.css)",
       "Bash(git -C E:/ai-ide commit -m ' *)",
-      "PowerShell(Get-ChildItem *)"
+      "PowerShell(Get-ChildItem *)",
+      "Bash(python *)"
     ]
   }
 }

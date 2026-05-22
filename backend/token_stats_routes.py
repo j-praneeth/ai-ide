@@ -19,6 +19,8 @@ async def sync_token_stats(request: Request):
     if not is_mongo_available():
         return {"ok": True, "stored": False}
     body = await request.json()
+    raw_sessions = body.get("recent_sessions", [])
+    recent_sessions = raw_sessions[:50] if isinstance(raw_sessions, list) else []
     _col().update_one(
         {"user_id": str(user.id)},
         {"$set": {
@@ -27,6 +29,7 @@ async def sync_token_stats(request: Request):
             "last_sync": datetime.utcnow().isoformat(),
             "stats": body.get("stats", {}),
             "recent_daily": body.get("recent_daily", []),
+            "recent_sessions": recent_sessions,
         }},
         upsert=True,
     )

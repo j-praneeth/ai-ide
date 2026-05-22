@@ -3351,6 +3351,43 @@ ipcMain.handle('cli:start', async (event, tool = 'claude', options = {}) => {
   // installs its own credentials as a fallback.
   let _tokenResult = { ok: false };
 
+  // ── Phase 0: Check per-user usage limits ──────────────────────────────
+  const _persistedAuth = readPersistedAuth();
+  if (_persistedAuth?.token) {
+    try {
+      const _base = _getNebulaBackendUrl();
+      const _limitCheck = await new Promise((resolve) => {
+        const _isHttps = _base.startsWith('https://');
+        const _mod = _isHttps ? https : http;
+        const _req = _mod.get(
+          `${_base}/usage-limits/check`,
+          { headers: { Authorization: `Bearer ${_persistedAuth.token}` }, timeout: 5000 },
+          (res) => {
+            let _body = '';
+            res.on('data', c => { _body += c; });
+            res.on('end', () => {
+              try { resolve(JSON.parse(_body)); }
+              catch (_) { resolve({ allowed: true }); }
+            });
+          }
+        );
+        _req.on('error', () => resolve({ allowed: true }));
+        _req.on('timeout', () => { _req.destroy(); resolve({ allowed: true }); });
+      });
+      if (_limitCheck.ok === true && _limitCheck.allowed === false) {
+        return {
+          ok: false,
+          installed: true,
+          limitExceeded: true,
+          message: `Usage limit exceeded: ${_limitCheck.reason || 'Contact your administrator.'}`,
+        };
+      }
+    } catch (_limitErr) {
+      // Fail open — if limit check fails, allow the session
+      console.warn('[usage-limits] Limit check failed, allowing session:', _limitErr?.message);
+    }
+  }
+
   // ── Phase 1: Ensure on-disk credentials exist ──────────────────────────
   // The shipped credential bundle (cli-bundle) is the first source. If it
   // fails (e.g. KEK not embedded in dev builds), fall back to the backend

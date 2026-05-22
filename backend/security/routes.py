@@ -17,10 +17,12 @@ from .auth import (
     create_user,
     get_user_for_token,
     has_users,
+    hash_password,
     issue_jwt,
     list_users,
     record_login_audit,
 )
+from db.mongo import users_collection
 from .middleware import get_request_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -431,3 +433,35 @@ def list_users_route(request: Request):
         return {"users": list_users()}
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.patch("/users/{user_id}")
+async def update_user_route(user_id: str, request: Request):
+    current = get_request_user(request)
+    if not current or current.role != ROLE_SUPER_ADMIN:
+        return JSONResponse({"error": "Forbidden"}, status_code=403)
+    body = await request.json()
+    update: dict = {}
+    if "role" in body:
+        if body["role"] not in (ROLE_SUPER_ADMIN, ROLE_USER):
+            return JSONResponse({"error": "Invalid role"}, status_code=400)
+        update["role"] = body["role"]
+    if body.get("password"):
+        salt, pw_hash, iters = hash_password(body["password"])
+        update["password_salt"] = salt
+        update["password_hash"] = pw_hash
+        update["password_iters"] = iters
+    if update:
+        users_collection().update_one({"_id": user_id}, {"$set": update})
+    return {"ok": True}
+
+
+@router.delete("/users/{user_id}")
+def delete_user_route(user_id: str, request: Request):
+    current = get_request_user(request)
+    if not current or current.role != ROLE_SUPER_ADMIN:
+        return JSONResponse({"error": "Forbidden"}, status_code=403)
+    if user_id == str(current.id):
+        return JSONResponse({"error": "Cannot delete your own account"}, status_code=400)
+    users_collection().delete_one({"_id": user_id})
+    return {"ok": True}

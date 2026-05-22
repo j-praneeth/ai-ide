@@ -4967,7 +4967,7 @@
 .tok-session-list { padding: 0 12px 8px; }
 .tok-session-row {
   display: grid;
-  grid-template-columns: 70px 1fr 18px 48px;
+  grid-template-columns: 70px 1fr 18px 44px 50px;
   gap: 4px;
   align-items: center;
   padding: 4px 0;
@@ -4980,6 +4980,29 @@
 .tok-sess-cost { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); }
 .tok-empty { padding: 6px 12px; color: var(--text-muted); font-style: italic; }
 .tok-empty-main { padding: 16px 12px; font-style: normal; line-height: 1.5; }
+.tok-savings-banner {
+  margin: 0 12px 8px;
+  padding: 6px 10px;
+  background: rgba(var(--accent-rgb, 0,255,150), 0.08);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+.tok-session-hdr {
+  display: grid;
+  grid-template-columns: 70px 1fr 18px 44px 50px;
+  gap: 4px;
+  padding: 0 0 4px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+.tok-sess-saved { text-align: right; font-variant-numeric: tabular-nums; color: #4caf50; font-size: 10px; }
 .tok-admin-summary {
   display: flex;
   gap: 10px;
@@ -5012,3 +5035,95 @@
 }
 .tok-admin-row:last-child { border-bottom: none; }
 .tok-admin-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+
+/* ── Token Dashboard: user identity pill next to section title ── */
+.tok-section-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tok-user-pill {
+  font-size: 9px;
+  font-weight: 600;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 7px;
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ── Token Dashboard: expandable per-user cards (admin view) ── */
+.tok-user-cards { padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 4px; }
+.tok-user-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+.tok-user-card-hdr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  user-select: none;
+}
+.tok-user-card-hdr:hover { background: var(--bg-elevated); }
+.tok-expand-icon { color: var(--text-muted); display: flex; align-items: center; flex-shrink: 0; }
+.tok-user-badge {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tok-cache-badge { color: var(--accent); font-weight: 700; }
+.tok-sync-badge { margin-left: auto; }
+.tok-user-detail {
+  border-top: 1px solid var(--border);
+  background: var(--bg-primary);
+  padding: 8px;
+}
+.tok-user-stat-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.tok-user-stat-box {
+  background: var(--bg-elevated);
+  border-radius: 5px;
+  padding: 6px 4px;
+  text-align: center;
+}
+.tok-user-stat-val { font-size: 14px; font-weight: 700; color: var(--accent); line-height: 1.2; }
+.tok-user-stat-lbl { font-size: 9px; color: var(--text-muted); margin-top: 2px; text-transform: uppercase; }
+.tok-detail-sep {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.tok-daily-mini { font-size: 10px; }
+.tok-daily-hdr {
+  display: grid;
+  grid-template-columns: 80px 32px 52px 40px;
+  gap: 4px;
+  color: var(--text-muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--border);
+}
+.tok-daily-row {
+  display: grid;
+  grid-template-columns: 80px 32px 52px 40px;
+  gap: 4px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.tok-daily-row:last-child { border-bottom: none; }
