@@ -14,7 +14,7 @@ from db.mongo import app_config_collection, utcnow, is_mongo_available, mark_mon
 logger = logging.getLogger("security.claude_token")
 
 _CREDS_DOC_ID = "claude_master_creds"
-_CACHE_MARGIN_SECONDS = 5 * 60  # Refresh 5 min before expiry
+_CACHE_MARGIN_SECONDS = 10 * 60  # Refresh 10 min before expiry
 
 _cache_lock = threading.RLock()  # Reentrant lock for read-modify-write patterns
 _cached_access_token: Optional[str] = None
@@ -516,7 +516,7 @@ def _master_refresh_loop(interval_seconds: int = 300) -> None:
     before it expires. This ensures MongoDB always has a fresh token
     that user devices can read.
 
-    Runs every 5 minutes and only refreshes when token is 5 minutes from expiry.
+    Runs every 5 minutes and refreshes when token is within 10 minutes of expiry.
     Only runs on master device.
     """
     import sys
@@ -621,7 +621,21 @@ def _do_master_refresh_check() -> None:
                     new_refresh[:10], new_access[:10])
 
     except Exception as exc:
-        logger.error("[MASTER-REFRESH] Error during token refresh: %s", exc)
+        exc_str = str(exc)
+        if "TOKEN_REFRESH_AUTH_FAILED" in exc_str:
+            logger.error(
+                "[MASTER-REFRESH] Token refresh FAILED — refresh token is permanently dead. "
+                "Will check again in 30 minutes. Paste new credentials in admin panel to resume."
+            )
+            print(
+                "[MASTER-REFRESH] Token refresh FAILED — refresh token is dead. "
+                "Sleeping 30 min before next check.",
+                flush=True, file=sys.stderr,
+            )
+            clear_cache()
+            time.sleep(1800)
+        else:
+            logger.error("[MASTER-REFRESH] Transient error during token refresh: %s", exc)
 
 
 def start_master_refresh_loop(interval_seconds: int = 5 * 60) -> None:
